@@ -16,7 +16,7 @@
 - [📖 Overview](#-overview)
 - [🚀 Quick Start](#-quick-start)
 - [⚡ Core Features](#-core-features)
-- [🎯 Path Expressions](#-path-expressions)
+- [🎯 Path Expressions](#-Base-Path-Expressions)
 - [🔧 Configuration Options](#-configuration-options)
 - [📁 File Operations](#-file-operations)
 - [🔄 Data Validation](#-data-validation)
@@ -719,10 +719,10 @@ item.ForeachReturnNested(path, callback) error
 **Use case comparison:**
 
 | Method | Return Value | Data Modification | Traversal Range | Usage Scenarios | 
-|------|--------|----------|----------|----------|
-| `Foreach` | `error` | ❌ Not supported | Complete JSON | Read-only traversal of the entire JSON |
-| `ForeachWithPath` | `error` | ❌ Not supported | Specified path | Read-only traversal of JSON subset |
-| `ForeachReturn` | `(string, error)` | ✅ Supported | Complete JSON | Data modification, batch update |
+|------|--------|-------------------|----------|----------|
+| `Foreach` | `error` | ❌ Not allow       | Complete JSON | Read-only traversal of the entire JSON |
+| `ForeachWithPath` | `error` | ❌ Not allow       | Specified path | Read-only traversal of JSON subset |
+| `ForeachReturn` | `(string, error)` | ✅ Allow           | Complete JSON | Data modification, batch update |
 
 
 ### File Operation Methods

@@ -16,7 +16,7 @@
 - [📖 概述](#-概述)
 - [🚀 快速开始](#-快速开始)
 - [⚡ 核心功能](#-核心功能)
-- [🎯 路径表达式](#-路径表达式)
+- [🎯 路径表达式](#-基础路径语法)
 - [🔧 配置选项](#-配置选项)
 - [📁 文件操作](#-文件操作)
 - [🔄 数据验证](#-数据验证)
@@ -720,9 +720,9 @@ item.ForeachReturnNested(path, callback) error
 
 | 方法                | 返回值               | 数据修改  | 遍历范围   | 使用场景       |
 |-------------------|-------------------|-------|--------|------------|
-| `Foreach`         | `error`           | ❌ 不支持 | 完整JSON | 只读遍历整个JSON |
-| `ForeachWithPath` | `error`           | ❌ 不支持 | 指定路径   | 只读遍历JSON子集 |
-| `ForeachReturn`   | `(string, error)` | ✅ 支持  | 完整JSON | 数据修改、批量更新  |
+| `Foreach`         | `error`           | ❌ 不允许 | 完整JSON | 只读遍历整个JSON |
+| `ForeachWithPath` | `error`           | ❌ 不允许 | 指定路径   | 只读遍历JSON子集 |
+| `ForeachReturn`   | `(string, error)` | ✅ 允许  | 完整JSON | 数据修改、批量更新  |
 
 ### 文件操作方法
 
