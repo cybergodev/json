@@ -276,7 +276,7 @@ func TestPathExpressions(t *testing.T) {
 			]
 		},
 		"metadata": {
-			"tags": ["enterprise", "tech", "startup"],
+			"tags": ["technology", "tech", "startup"],
 			"founded": 2020
 		}
 	}`
@@ -302,13 +302,13 @@ func TestPathExpressions(t *testing.T) {
 		// Test basic slice
 		firstTwoTags, err := Get(complexData, "metadata.tags[0:2]")
 		helper.AssertNoError(err, "Should get first two tags")
-		expected := []any{"enterprise", "tech"}
+		expected := []any{"technology", "tech"}
 		helper.AssertEqual(expected, firstTwoTags, "First two tags should match")
 
 		// Test slice with step
 		everyOtherTag, err := Get(complexData, "metadata.tags[::2]")
 		helper.AssertNoError(err, "Should get every other tag")
-		expectedStep := []any{"enterprise", "startup"}
+		expectedStep := []any{"technology", "startup"}
 		helper.AssertEqual(expectedStep, everyOtherTag, "Every other tag should match")
 
 		// Test negative slice

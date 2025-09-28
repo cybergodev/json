@@ -380,7 +380,7 @@ func advancedFeaturesDemo() {
 		}
 
 		// Add new tag by appending to the array
-		newTags := append(tagsArray, "enterprise")
+		newTags := append(tagsArray, "production")
 		modifiedJSON, err = json.Set(modifiedJSON, "tags", newTags)
 		if err != nil {
 			fmt.Printf("Error setting new tags array: %v\n", err)

@@ -66,7 +66,7 @@ The example uses three different JSON data structures:
 
 1. **Basic JSON** (`jsonStr`): Complex structure with nested arrays and objects
 2. **User Array JSON** (`arrayJsonStr`): User list and metadata
-3. **Complex Enterprise JSON** (`complexJsonStr`): Multi-level nested enterprise organizational structure
+3. **Complex Organizational JSON** (`complexJsonStr`): Multi-level nested organizational structure
 
 ## Key Features
 
