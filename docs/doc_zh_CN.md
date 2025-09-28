@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/go-%3E%3D1.24-blue.svg)](https://golang.org/)
 [![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
-[![Performance](https://img.shields.io/badge/performance-enterprise%20grade-green.svg)](https://github.com/cybergodev/json)
+[![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-yes-brightgreen.svg)](https://github.com/cybergodev/json)
 
 > 高性能、功能强大的 Go JSON 处理库，100% 兼容标准 `encoding/json`，提供强大的路径操作、类型安全、性能优化和丰富的高级功能。
@@ -36,7 +36,7 @@
 
 - **🔄 完全兼容** - 100% 兼容标准 `encoding/json`，零学习成本，可直接替换
 - **🎯 强大路径** - 支持复杂路径表达式，一行代码完成复杂数据操作
-- **🚀 高性能** - 智能缓存、并发安全、内存优化、企业级性能
+- **🚀 高性能** - 智能缓存、并发安全、内存优化、生产级性能
 - **📋 类型安全** - 泛型支持、编译时检查、智能类型转换
 - **🔧 功能丰富** - 批量操作、数据验证、文件操作、性能监控
 - **🏗️ 生产就绪** - 线程安全、错误处理、安全配置、监控指标
@@ -718,11 +718,11 @@ item.ForeachReturnNested(path, callback) error
 
 **使用场景对比：**
 
-| 方法                | 返回值               | 数据修改  | 遍历范围   | 使用场景       |
-|-------------------|-------------------|-------|--------|------------|
-| `Foreach`         | `error`           | ❌ 不允许 | 完整JSON | 只读遍历整个JSON |
-| `ForeachWithPath` | `error`           | ❌ 不允许 | 指定路径   | 只读遍历JSON子集 |
-| `ForeachReturn`   | `(string, error)` | ✅ 允许  | 完整JSON | 数据修改、批量更新  |
+| 方法                | 返回值               | 数据修改 | 遍历范围   | 使用场景       |
+|-------------------|-------------------|------|--------|------------|
+| `Foreach`         | `error`           | 不允许  | 完整JSON | 只读遍历整个JSON |
+| `ForeachWithPath` | `error`           | 不允许  | 指定路径   | 只读遍历JSON子集 |
+| `ForeachReturn`   | `(string, error)` | 允许   | 完整JSON | 数据修改、批量更新  |
 
 ### 文件操作方法
 

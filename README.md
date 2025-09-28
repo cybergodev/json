@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/go-%3E%3D1.24-blue.svg)](https://golang.org/)
 [![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
-[![Performance](https://img.shields.io/badge/performance-enterprise%20grade-green.svg)](https://github.com/cybergodev/json)
+[![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-yes-brightgreen.svg)](https://github.com/cybergodev/json)
 
 > A high-performance, feature-rich Go JSON processing library with 100% `encoding/json` compatibility, providing powerful path operations, type safety, performance optimization, and rich advanced features.
@@ -36,7 +36,7 @@
 
 - **🔄 Full Compatibility** - 100% compatible with standard `encoding/json`, zero learning curve, drop-in replacement
 - **🎯 Powerful Paths** - Support for complex path expressions, complete complex data operations in one line
-- **🚀 High Performance** - Smart caching, concurrent safety, memory optimization, enterprise-grade performance
+- **🚀 High Performance** - Smart caching, concurrent safety, memory optimization, production-ready performance
 - **🛡️ Type Safety** - Generic support, compile-time checking, intelligent type conversion
 - **🔧 Feature Rich** - Batch operations, data validation, file operations, performance monitoring
 - **🏗️ Production Ready** - Thread-safe, error handling, security configuration, monitoring metrics
@@ -718,11 +718,11 @@ item.ForeachReturnNested(path, callback) error
 
 **Use case comparison:**
 
-| Method | Return Value | Data Modification | Traversal Range | Usage Scenarios | 
-|------|--------|-------------------|----------|----------|
-| `Foreach` | `error` | ❌ Not allow       | Complete JSON | Read-only traversal of the entire JSON |
-| `ForeachWithPath` | `error` | ❌ Not allow       | Specified path | Read-only traversal of JSON subset |
-| `ForeachReturn` | `(string, error)` | ✅ Allow           | Complete JSON | Data modification, batch update |
+| Method            | Return Value      | Data Modification | Traversal Range | Usage Scenarios                        | 
+|-------------------|-------------------|-------------------|-----------------|----------------------------------------|
+| `Foreach`         | `error`           | Not allow         | Complete JSON   | Read-only traversal of the entire JSON |
+| `ForeachWithPath` | `error`           | Not allow         | Specified path  | Read-only traversal of JSON subset     |
+| `ForeachReturn`   | `(string, error)` | Allow             | Complete JSON   | Data modification, batch update        |
 
 
 ### File Operation Methods

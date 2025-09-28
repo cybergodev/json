@@ -275,7 +275,7 @@ These utility methods are essential for:
 ## 🔧 Use Cases
 
 - **Data Transformation**: Convert JSON structures between different formats
-- **Conditional Processing**: Apply business logic during JSON traversal
+- **Conditional Processing**: Apply custom logic during JSON traversal
 - **Data Enrichment**: Add computed fields or metadata to existing JSON
 - **Data Cleaning**: Remove unwanted fields or normalize data
 - **Complex Queries**: Extract specific data from nested structures
