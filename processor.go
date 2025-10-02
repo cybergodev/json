@@ -15,81 +15,57 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// Processor is the main JSON processing engine with enhanced thread safety and performance
+// Processor is the main JSON processing engine with thread safety and performance optimization
 type Processor struct {
-	// Core configuration (immutable after creation)
-	config *Config
-
-	// Cache management with improved concurrency
-	cache *internal.CacheManager
-
-	// Lifecycle management with atomic operations
-	state       int32 // 0=active, 1=closing, 2=closed
-	cleanupOnce sync.Once
-
-	// Pre-compiled patterns for optimal performance (immutable after creation)
-	pathPatterns *internal.PathPatterns
-
-	// Resource management (consolidated)
-	resources *processorResources
-
-	// Performance tracking (consolidated)
-	metrics *processorMetrics
-
-	// Resource monitoring for leak detection and optimization
-	resourceMonitor *ResourceMonitor
-
-	// Concurrency management for thread safety and performance
+	config             *Config
+	cache              *internal.CacheManager
+	state              int32 // 0=active, 1=closing, 2=closed
+	cleanupOnce        sync.Once
+	pathPatterns       *internal.PathPatterns
+	resources          *processorResources
+	metrics            *processorMetrics
+	resourceMonitor    *ResourceMonitor
 	concurrencyManager *ConcurrencyManager
-
-	// Structured logging
-	logger *slog.Logger
+	logger             *slog.Logger
 }
 
-// processorResources consolidates all resource management with enhanced memory safety
+// processorResources consolidates all resource management
 type processorResources struct {
-	// Resource pools for memory efficiency with size limits
 	stringBuilderPool *sync.Pool
 	pathSegmentPool   *sync.Pool
-
-	// Parsing caches with automatic cleanup and size limits
-	pathParseCache  map[string][]internal.PathSegment
-	pathCacheMutex  sync.RWMutex
-	pathCacheSize   int64 // Track cache size for memory management
-	jsonParseCache  map[string]any
-	jsonCacheMutex  sync.RWMutex
-	jsonCacheSize   int64 // Track cache size for memory management
-	maxCacheEntries int   // Maximum cache entries to prevent memory bloat
-
-	// Pool reset tracking with memory pressure detection
-	lastPoolReset   int64 // Last operation count when pools were reset
-	lastMemoryCheck int64 // Last time memory usage was checked
-	memoryPressure  int32 // Memory pressure indicator (atomic)
+	pathParseCache    map[string]*cacheEntry
+	pathCacheMutex    sync.RWMutex
+	pathCacheSize     int64
+	jsonParseCache    map[string]*cacheEntry
+	jsonCacheMutex    sync.RWMutex
+	jsonCacheSize     int64
+	maxCacheEntries   int
+	lastPoolReset     int64
+	lastMemoryCheck   int64
+	memoryPressure    int32
 }
 
-// processorMetrics consolidates all metrics and performance tracking with enhanced concurrency
+// cacheEntry represents a cache entry with access tracking for proper LRU
+type cacheEntry struct {
+	value      any
+	lastAccess int64 // Unix nanoseconds
+}
+
+// processorMetrics consolidates all metrics and performance tracking
 type processorMetrics struct {
-	// Performance counters (atomic)
-	operationCount   int64
-	errorCount       int64
-	concurrentOps    int64 // Current concurrent operations
-	maxConcurrentOps int64 // Maximum concurrent operations seen
-	totalWaitTime    int64 // Total time spent waiting for concurrency slots
-
-	// Rate limiting for security
-	lastOperationTime int64 // Unix nanoseconds
-	operationWindow   int64 // Operations per second limit
-
-	// Concurrency control
-	concurrencySemaphore chan struct{} // Semaphore for limiting concurrent operations
-
-	// Metrics collection
-	collector *internal.MetricsCollector
+	operationCount       int64
+	errorCount           int64
+	concurrentOps        int64
+	maxConcurrentOps     int64
+	totalWaitTime        int64
+	lastOperationTime    int64
+	operationWindow      int64
+	concurrencySemaphore chan struct{}
+	collector            *internal.MetricsCollector
 }
 
-// New creates a new JSON processor with enhanced resource management and thread safety
-// Parameters:
-//   - config: optional configuration parameter - if not provided, uses default configuration
+// New creates a new JSON processor with the given configuration.
+// If no configuration is provided, uses default configuration.
 func New(config ...*Config) *Processor {
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
@@ -98,7 +74,6 @@ func New(config ...*Config) *Processor {
 		cfg = DefaultConfig()
 	}
 
-	// Valid configuration
 	if err := ValidateConfig(cfg); err != nil {
 		panic(fmt.Sprintf("invalid configuration: %v", err))
 	}
@@ -108,45 +83,38 @@ func New(config ...*Config) *Processor {
 		cache:              internal.NewCacheManager(cfg),
 		pathPatterns:       internal.NewPathPatterns(),
 		resourceMonitor:    NewResourceMonitor(),
-		concurrencyManager: NewConcurrencyManager(cfg.MaxConcurrency, 0), // No rate limiting by default
+		concurrencyManager: NewConcurrencyManager(cfg.MaxConcurrency, 0),
 		logger:             slog.Default().With("component", "json-processor"),
 
-		// Initialize consolidated resources with optimized memory management
 		resources: &processorResources{
 			stringBuilderPool: &sync.Pool{
 				New: func() interface{} {
 					sb := &strings.Builder{}
-					sb.Grow(256) // Reduced initial capacity for better memory efficiency
+					sb.Grow(256)
 					return sb
 				},
 			},
 			pathSegmentPool: &sync.Pool{
 				New: func() interface{} {
-					return make([]PathSegment, 0, 8) // Optimized for typical path depths
+					return make([]PathSegment, 0, 8)
 				},
 			},
-			pathParseCache:  make(map[string][]internal.PathSegment, 128), // Power of 2 for better hash performance
-			jsonParseCache:  make(map[string]any, 64),                     // Reduced for better memory usage
-			maxCacheEntries: 512,                                          // Optimized cache size limit
+			pathParseCache:  make(map[string]*cacheEntry, 128),
+			jsonParseCache:  make(map[string]*cacheEntry, 64),
+			maxCacheEntries: 512,
 		},
 
-		// Initialize consolidated metrics with concurrency control
 		metrics: &processorMetrics{
-			operationWindow:      0, // Default: rate limiting disabled (0 = no limit)
+			operationWindow:      0,
 			concurrencySemaphore: make(chan struct{}, cfg.MaxConcurrency),
 			collector:            internal.NewMetricsCollector(),
 		},
 	}
 
-	// Background maintenance removed to avoid lifecycle conflicts
-	// Cache cleanup will be performed on-demand during operations
-
 	return p
 }
 
-// getStringBuilder gets a string builder from the pool (private)
-
-// getPathSegments gets a path segments slice from the pool (private)
+// getPathSegments gets a path segments slice from the pool
 func (p *Processor) getPathSegments() []PathSegment {
 	if p.resources.pathSegmentPool == nil {
 		return make([]PathSegment, 0, 8)
@@ -156,19 +124,17 @@ func (p *Processor) getPathSegments() []PathSegment {
 	return segments[:0] // Reset length but keep capacity
 }
 
-// putPathSegments returns a path segments slice to the pool with enhanced safety (private)
+// putPathSegments returns a path segments slice to the pool
 func (p *Processor) putPathSegments(segments []PathSegment) {
 	if p.resources.pathSegmentPool != nil && segments != nil && !p.isClosing() {
-		// Only return to pool if capacity is reasonable (prevent memory bloat)
-		// Optimized limits for better memory management
 		if cap(segments) <= 128 && cap(segments) >= 8 {
-			segments = segments[:0] // Reset length but keep capacity
+			segments = segments[:0]
 			p.resources.pathSegmentPool.Put(segments)
 		}
 	}
 }
 
-// performMaintenance performs periodic maintenance tasks with enhanced memory management
+// performMaintenance performs periodic maintenance tasks
 func (p *Processor) performMaintenance() {
 	if p.isClosing() {
 		return // Skip maintenance if closing
@@ -198,40 +164,79 @@ func (p *Processor) performMaintenance() {
 	}
 }
 
-// cleanParsingCaches cleans parsing caches when they grow too large
+// cleanParsingCaches cleans parsing caches when they grow too large using proper LRU
 func (p *Processor) cleanParsingCaches() {
-	// Clean path parse cache
+	// Clean path parse cache with proper LRU
 	p.resources.pathCacheMutex.Lock()
 	if len(p.resources.pathParseCache) > p.resources.maxCacheEntries {
-		// Keep only the most recently used entries (simple LRU approximation)
-		newCache := make(map[string][]internal.PathSegment, p.resources.maxCacheEntries/2)
-		count := 0
+		// Find and keep the most recently accessed entries
+		type entryWithKey struct {
+			key        string
+			entry      *cacheEntry
+			lastAccess int64
+		}
+
+		entries := make([]entryWithKey, 0, len(p.resources.pathParseCache))
 		for k, v := range p.resources.pathParseCache {
-			if count < p.resources.maxCacheEntries/2 {
-				newCache[k] = v
-				count++
-			} else {
-				break
+			entries = append(entries, entryWithKey{
+				key:        k,
+				entry:      v,
+				lastAccess: atomic.LoadInt64(&v.lastAccess),
+			})
+		}
+
+		// Sort by last access time (descending)
+		for i := 0; i < len(entries)-1; i++ {
+			for j := i + 1; j < len(entries); j++ {
+				if entries[j].lastAccess > entries[i].lastAccess {
+					entries[i], entries[j] = entries[j], entries[i]
+				}
 			}
+		}
+
+		// Keep only the top half
+		newCache := make(map[string]*cacheEntry, p.resources.maxCacheEntries/2)
+		keepCount := p.resources.maxCacheEntries / 2
+		for i := 0; i < keepCount && i < len(entries); i++ {
+			newCache[entries[i].key] = entries[i].entry
 		}
 		p.resources.pathParseCache = newCache
 		atomic.StoreInt64(&p.resources.pathCacheSize, int64(len(newCache)))
 	}
 	p.resources.pathCacheMutex.Unlock()
 
-	// Clean JSON parse cache
+	// Clean JSON parse cache with proper LRU
 	p.resources.jsonCacheMutex.Lock()
 	if len(p.resources.jsonParseCache) > p.resources.maxCacheEntries {
-		// Keep only the most recently used entries
-		newCache := make(map[string]any, p.resources.maxCacheEntries/2)
-		count := 0
+		type entryWithKey struct {
+			key        string
+			entry      *cacheEntry
+			lastAccess int64
+		}
+
+		entries := make([]entryWithKey, 0, len(p.resources.jsonParseCache))
 		for k, v := range p.resources.jsonParseCache {
-			if count < p.resources.maxCacheEntries/2 {
-				newCache[k] = v
-				count++
-			} else {
-				break
+			entries = append(entries, entryWithKey{
+				key:        k,
+				entry:      v,
+				lastAccess: atomic.LoadInt64(&v.lastAccess),
+			})
+		}
+
+		// Sort by last access time (descending)
+		for i := 0; i < len(entries)-1; i++ {
+			for j := i + 1; j < len(entries); j++ {
+				if entries[j].lastAccess > entries[i].lastAccess {
+					entries[i], entries[j] = entries[j], entries[i]
+				}
 			}
+		}
+
+		// Keep only the top half
+		newCache := make(map[string]*cacheEntry, p.resources.maxCacheEntries/2)
+		keepCount := p.resources.maxCacheEntries / 2
+		for i := 0; i < keepCount && i < len(entries); i++ {
+			newCache[entries[i].key] = entries[i].entry
 		}
 		p.resources.jsonParseCache = newCache
 		atomic.StoreInt64(&p.resources.jsonCacheSize, int64(len(newCache)))
@@ -305,18 +310,15 @@ func (p *Processor) recreateResourcePools() {
 	}
 }
 
-// Close closes the processor and cleans up resources with enhanced cleanup
+// Close closes the processor and cleans up resources
 func (p *Processor) Close() error {
 	p.cleanupOnce.Do(func() {
-		// Set state to closing first
 		atomic.StoreInt32(&p.state, 1)
 
-		// Clear cache to free memory
 		if p.cache != nil {
 			p.cache.ClearCache()
 		}
 
-		// Clear path parsing cache with proper cleanup
 		p.resources.pathCacheMutex.Lock()
 		for k := range p.resources.pathParseCache {
 			delete(p.resources.pathParseCache, k)
@@ -325,7 +327,6 @@ func (p *Processor) Close() error {
 		atomic.StoreInt64(&p.resources.pathCacheSize, 0)
 		p.resources.pathCacheMutex.Unlock()
 
-		// Clear JSON parsing cache with proper cleanup
 		p.resources.jsonCacheMutex.Lock()
 		for k := range p.resources.jsonParseCache {
 			delete(p.resources.jsonParseCache, k)
@@ -334,21 +335,13 @@ func (p *Processor) Close() error {
 		atomic.StoreInt64(&p.resources.jsonCacheSize, 0)
 		p.resources.jsonCacheMutex.Unlock()
 
-		// Clear resource pools (set to nil, let GC handle cleanup)
 		p.resources.stringBuilderPool = nil
 		p.resources.pathSegmentPool = nil
 
-		// Reset memory pressure indicators
 		atomic.StoreInt32(&p.resources.memoryPressure, 0)
 		atomic.StoreInt64(&p.resources.lastMemoryCheck, 0)
 		atomic.StoreInt64(&p.resources.lastPoolReset, 0)
 
-		// Clear metrics
-		if p.metrics != nil {
-			// Metrics cleanup is handled automatically
-		}
-
-		// Set final state to closed
 		atomic.StoreInt32(&p.state, 2)
 	})
 	return nil
@@ -359,7 +352,7 @@ func (p *Processor) IsClosed() bool {
 	return atomic.LoadInt32(&p.state) == 2
 }
 
-// isClosing returns true if the processor is in the process of closing (internal use)
+// isClosing returns true if the processor is in the process of closing
 func (p *Processor) isClosing() bool {
 	state := atomic.LoadInt32(&p.state)
 	return state == 1 || state == 2
@@ -463,7 +456,7 @@ func (p *Processor) executeOperation(operationName string, operation func() erro
 	return err
 }
 
-// GetStats returns enhanced processor performance statistics
+// GetStats returns processor performance statistics
 func (p *Processor) GetStats() Stats {
 	cacheStats := p.cache.GetStats()
 
@@ -477,13 +470,13 @@ func (p *Processor) GetStats() Stats {
 		CacheTTL:         p.config.CacheTTL,
 		CacheEnabled:     p.config.EnableCache,
 		IsClosed:         p.IsClosed(),
-		MemoryEfficiency: 0.0, // Will be calculated differently
+		MemoryEfficiency: 0.0,
 		OperationCount:   atomic.LoadInt64(&p.metrics.operationCount),
 		ErrorCount:       atomic.LoadInt64(&p.metrics.errorCount),
 	}
 }
 
-// getDetailedStats returns detailed performance statistics (internal use)
+// getDetailedStats returns detailed performance statistics for internal debugging
 func (p *Processor) getDetailedStats() DetailedStats {
 	stats := p.GetStats()
 
@@ -498,7 +491,7 @@ func (p *Processor) getDetailedStats() DetailedStats {
 	}
 }
 
-// getMetrics returns comprehensive processor metrics (internal use)
+// getMetrics returns comprehensive processor metrics for internal use
 func (p *Processor) getMetrics() ProcessorMetrics {
 	if p.metrics == nil {
 		// Return empty metrics if collector is not initialized
@@ -528,7 +521,7 @@ func (p *Processor) getMetrics() ProcessorMetrics {
 	}
 }
 
-// Helper functions for metric calculations (private)
+// Helper functions for metric calculations
 func calculateSuccessRate(successful, total int64) float64 {
 	if total == 0 {
 		return 0.0
@@ -679,16 +672,6 @@ func (p *Processor) WarmupCache(jsonStr string, paths []string, opts ...*Process
 		FailedPaths: failedPaths,
 	}
 
-	// Optional: Log warmup results (can be disabled if user prefers)
-	// if p.logger != nil {
-	// 	p.logger.Info("Cache warmup completed",
-	// 		"total_paths", len(paths),
-	// 		"successful", successCount,
-	// 		"failed", errorCount,
-	// 		"success_rate", successRate,
-	// 	)
-	// }
-
 	// Return error if all paths failed
 	if successCount == 0 && errorCount > 0 {
 		return result, &JsonsError{
@@ -701,7 +684,7 @@ func (p *Processor) WarmupCache(jsonStr string, paths []string, opts ...*Process
 	return result, nil
 }
 
-// warmupCacheWithSampleData pre-loads paths using sample JSON data for better cache preparation (internal use)
+// warmupCacheWithSampleData pre-loads paths using sample JSON data for better cache preparation
 func (p *Processor) warmupCacheWithSampleData(sampleData map[string]string, opts ...*ProcessorOptions) (*WarmupResult, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
@@ -767,17 +750,6 @@ func (p *Processor) warmupCacheWithSampleData(sampleData map[string]string, opts
 		Failed:      errorCount,
 		SuccessRate: successRate,
 		FailedPaths: allFailedPaths,
-	}
-
-	// Optional: Log overall results (can be disabled if user prefers)
-	if p.logger != nil {
-		p.logger.Info("Sample data cache warmup completed",
-			"total_samples", len(sampleData),
-			"total_paths", totalPaths,
-			"successful", successCount,
-			"failed", errorCount,
-			"success_rate", successRate,
-		)
 	}
 
 	// Return error if all operations failed
@@ -861,7 +833,7 @@ func (p *Processor) incrementErrorCount() {
 	atomic.AddInt64(&p.metrics.errorCount, 1)
 }
 
-// logError logs an error with structured logging and enhanced context (sanitized)
+// logError logs an error with structured logging and enhanced context
 func (p *Processor) logError(ctx context.Context, operation, path string, err error) {
 	if p.logger == nil {
 		return
@@ -1864,8 +1836,11 @@ func (p *Processor) lightweightJSONNormalize(jsonStr string) string {
 func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, error) {
 	// Check cache first (read lock)
 	p.resources.pathCacheMutex.RLock()
-	if cached, exists := p.resources.pathParseCache[path]; exists {
+	if entry, exists := p.resources.pathParseCache[path]; exists {
+		// Update last access time
+		atomic.StoreInt64(&entry.lastAccess, time.Now().UnixNano())
 		// Make a copy to avoid race conditions
+		cached := entry.value.([]internal.PathSegment)
 		result := make([]internal.PathSegment, len(cached))
 		copy(result, cached)
 		p.resources.pathCacheMutex.RUnlock()
@@ -1885,8 +1860,8 @@ func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, 
 	defer p.resources.pathCacheMutex.Unlock()
 
 	// Double-check: another goroutine might have cached it while we were parsing
-	if cached, exists := p.resources.pathParseCache[path]; exists {
-		return cached, nil
+	if entry, exists := p.resources.pathParseCache[path]; exists {
+		return entry.value.([]internal.PathSegment), nil
 	}
 
 	// Check cache size to prevent memory bloat and ensure processor is still active
@@ -1894,7 +1869,11 @@ func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, 
 		// Make a copy for caching
 		cached := make([]internal.PathSegment, len(segments))
 		copy(cached, segments)
-		p.resources.pathParseCache[path] = cached
+		p.resources.pathParseCache[path] = &cacheEntry{
+			value:      cached,
+			lastAccess: time.Now().UnixNano(),
+		}
+		atomic.StoreInt64(&p.resources.pathCacheSize, int64(len(p.resources.pathParseCache)))
 	}
 
 	return segments, nil
@@ -1906,7 +1885,10 @@ func (p *Processor) getCachedParsedJSON(jsonStr string) (any, error) {
 	if len(jsonStr) < 2048 {
 		// Check cache first (read lock)
 		p.resources.jsonCacheMutex.RLock()
-		if cached, exists := p.resources.jsonParseCache[jsonStr]; exists {
+		if entry, exists := p.resources.jsonParseCache[jsonStr]; exists {
+			// Update last access time
+			atomic.StoreInt64(&entry.lastAccess, time.Now().UnixNano())
+			cached := entry.value
 			p.resources.jsonCacheMutex.RUnlock()
 			return cached, nil
 		}
@@ -1926,13 +1908,17 @@ func (p *Processor) getCachedParsedJSON(jsonStr string) (any, error) {
 		defer p.resources.jsonCacheMutex.Unlock()
 
 		// Double-check: another goroutine might have cached it while we were parsing
-		if cached, exists := p.resources.jsonParseCache[jsonStr]; exists {
-			return cached, nil
+		if entry, exists := p.resources.jsonParseCache[jsonStr]; exists {
+			return entry.value, nil
 		}
 
 		// Check cache size to prevent memory bloat and ensure processor is still active
 		if p.resources.jsonParseCache != nil && len(p.resources.jsonParseCache) < 100 && atomic.LoadInt32(&p.state) == 0 {
-			p.resources.jsonParseCache[jsonStr] = data
+			p.resources.jsonParseCache[jsonStr] = &cacheEntry{
+				value:      data,
+				lastAccess: time.Now().UnixNano(),
+			}
+			atomic.StoreInt64(&p.resources.jsonCacheSize, int64(len(p.resources.jsonParseCache)))
 		}
 	}
 

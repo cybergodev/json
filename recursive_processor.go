@@ -146,9 +146,6 @@ func (urp *RecursiveProcessor) processRecursivelyAtSegmentsWithOptions(data any,
 	currentSegment := segments[segmentIndex]
 	isLastSegment := segmentIndex == len(segments)-1
 
-	// Debug output for troubleshooting
-	// fmt.Printf("DEBUG: processRecursivelyAtSegmentsWithOptions - segmentIndex: %d, type: %s, value: %s, isLastSegment: %t\n", segmentIndex, currentSegment.TypeString(), currentSegment.Value, isLastSegment)
-
 	switch currentSegment.Type {
 	case internal.PropertySegment:
 		return urp.handlePropertySegmentUnified(data, currentSegment, segments, segmentIndex, isLastSegment, operation, value, createPaths)
@@ -272,8 +269,6 @@ func (urp *RecursiveProcessor) handlePropertySegmentUnified(data any, segment in
 
 // handleArrayIndexSegmentUnified handles array index access segments for all operations
 func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment internal.PathSegment, segments []internal.PathSegment, segmentIndex int, isLastSegment bool, operation Operation, value any, createPaths bool) (any, error) {
-	// Debug output for troubleshooting
-	// fmt.Printf("DEBUG: handleArrayIndexSegmentUnified called - segment: [%d], isLastSegment: %t, isDistributed: %t, dataType: %T\n", segment.Index, isLastSegment, segment.IsDistributed, data)
 	switch container := data.(type) {
 	case []any:
 		// Determine if this should be a distributed operation based on actual data structure
@@ -620,8 +615,6 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 
 // handleExtractSegmentUnified handles extraction segments for all operations
 func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment internal.PathSegment, segments []internal.PathSegment, segmentIndex int, isLastSegment bool, operation Operation, value any, createPaths bool) (any, error) {
-	// Debug output for troubleshooting
-	// fmt.Printf("DEBUG: handleExtractSegmentUnified called - segment: {%s}, isLastSegment: %t, dataType: %T\n", segment.Extract, isLastSegment, data)
 	// Check for special flat extraction syntax - use the IsFlat flag from parsing
 	isFlat := segment.IsFlat
 	actualKey := segment.Key

@@ -233,11 +233,6 @@ func (p *Processor) GetMultiple(jsonStr string, paths []string, opts ...*Process
 		return nil, err
 	}
 
-	// TODO: Implement parallel processing
-	// if options.EnableParallel && len(paths) > 1 {
-	//     return p.getMultipleParallel(data, paths, options)
-	// }
-
 	// Sequential processing
 	results := make(map[string]any, len(paths))
 	for _, path := range paths {
