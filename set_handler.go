@@ -61,12 +61,6 @@ func (p *Processor) setValueAdvancedPath(data any, path string, value any, creat
 		return err
 	}
 
-	// Check for distributed operations
-	// TODO: Implement distributed operation handling
-	// if p.isDistributedOperationPath(path) {
-	//     return p.setValueWithDistributedOperation(data, path, value, createPaths)
-	// }
-
 	// Use dot notation with segments for simple paths
 	return p.setValueDotNotationWithCreation(data, path, value, createPaths)
 }
@@ -311,16 +305,6 @@ func (p *Processor) setValueWithSegments(data any, segments []PathSegment, value
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
 	}
-
-	// TODO: Implement deep extraction and consecutive extraction handling
-	// if p.hasDeepExtractionPattern(segments) {
-	//     extractionGroups := p.groupConsecutiveExtractions(segments)
-	//     return p.setValueWithDeepExtraction(data, segments, extractionGroups, value)
-	// }
-
-	// if p.hasConsecutiveExtractions(segments, 0) {
-	//     return p.setValueWithConsecutiveExtractions(data, segments, value)
-	// }
 
 	// Navigate to the parent of the target
 	current := data

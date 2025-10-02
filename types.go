@@ -413,28 +413,7 @@ func (opts *ProcessorOptions) Clone() *ProcessorOptions {
 	}
 }
 
-// cacheEntry represents a cached value with metadata
-// type cacheEntry struct {
-// 	data      any       // The cached data
-// 	timestamp time.Time // When the entry was created
-// 	hits      int64     // Number of times this entry was accessed (atomic)
-// 	size      int32     // Estimated size in bytes
-// }
-//
-// // isExpired checks if the cache entry has expired
-// func (e *cacheEntry) isExpired(ttl time.Duration) bool {
-// 	return time.Since(e.timestamp) > ttl
-// }
-//
-// // incrementHits atomically increments the hit counter
-// func (e *cacheEntry) incrementHits() {
-// 	atomic.AddInt64(&e.hits, 1)
-// }
-//
-// // getHits atomically gets the hit count
-// func (e *cacheEntry) getHits() int64 {
-// 	return atomic.LoadInt64(&e.hits)
-// }
+
 
 // Stats provides processor performance statistics
 type Stats struct {

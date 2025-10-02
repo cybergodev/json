@@ -13,21 +13,22 @@ type ConcurrencyManager struct {
 	// Concurrency limits
 	maxConcurrency    int32
 	currentOperations int64
-	
+
 	// Rate limiting
 	operationsPerSecond int64
 	lastResetTime       int64
 	currentSecondOps    int64
-	
+
 	// Circuit breaker
 	failureCount    int64
 	lastFailureTime int64
 	circuitOpen     int32 // 0=closed, 1=open
-	
+
 	// Deadlock detection
 	operationTimeouts map[uint64]int64 // goroutine ID -> start time
 	timeoutMutex      sync.RWMutex
-	
+	lastCleanupTime   int64 // Last cleanup timestamp for timeout map
+
 	// Performance tracking
 	totalOperations   int64
 	totalWaitTime     int64
@@ -41,6 +42,7 @@ func NewConcurrencyManager(maxConcurrency int, operationsPerSecond int) *Concurr
 		operationsPerSecond: int64(operationsPerSecond),
 		lastResetTime:       time.Now().Unix(),
 		operationTimeouts:   make(map[uint64]int64),
+		lastCleanupTime:     time.Now().Unix(),
 	}
 }
 
@@ -97,8 +99,16 @@ func (cm *ConcurrencyManager) ExecuteWithConcurrencyControl(
 	if gid != 0 {
 		cm.timeoutMutex.Lock()
 		cm.operationTimeouts[gid] = time.Now().UnixNano()
+
+		// Periodic cleanup to prevent memory leak
+		now := time.Now().Unix()
+		if now-atomic.LoadInt64(&cm.lastCleanupTime) > 300 { // Cleanup every 5 minutes
+			if atomic.CompareAndSwapInt64(&cm.lastCleanupTime, atomic.LoadInt64(&cm.lastCleanupTime), now) {
+				cm.cleanupStaleTimeouts()
+			}
+		}
 		cm.timeoutMutex.Unlock()
-		
+
 		defer func() {
 			cm.timeoutMutex.Lock()
 			delete(cm.operationTimeouts, gid)
@@ -243,11 +253,11 @@ type ConcurrencyStats struct {
 func (cm *ConcurrencyManager) DetectDeadlocks() []DeadlockInfo {
 	cm.timeoutMutex.RLock()
 	defer cm.timeoutMutex.RUnlock()
-	
+
 	var deadlocks []DeadlockInfo
 	now := time.Now().UnixNano()
 	threshold := int64(30 * time.Second) // 30 second threshold
-	
+
 	for gid, startTime := range cm.operationTimeouts {
 		if now-startTime > threshold {
 			deadlocks = append(deadlocks, DeadlockInfo{
@@ -257,8 +267,26 @@ func (cm *ConcurrencyManager) DetectDeadlocks() []DeadlockInfo {
 			})
 		}
 	}
-	
+
 	return deadlocks
+}
+
+// cleanupStaleTimeouts removes stale entries from operationTimeouts map
+// Must be called with timeoutMutex held
+func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
+	now := time.Now().UnixNano()
+	threshold := int64(60 * time.Second) // Remove entries older than 60 seconds
+
+	for gid, startTime := range cm.operationTimeouts {
+		if now-startTime > threshold {
+			delete(cm.operationTimeouts, gid)
+		}
+	}
+
+	// If map is still too large, clear it entirely
+	if len(cm.operationTimeouts) > 10000 {
+		cm.operationTimeouts = make(map[uint64]int64)
+	}
 }
 
 // DeadlockInfo represents information about a potential deadlock
@@ -270,7 +298,37 @@ type DeadlockInfo struct {
 
 // getGoroutineIDForConcurrency returns the current goroutine ID for concurrency tracking
 func getGoroutineIDForConcurrency() uint64 {
-	// This is a simplified implementation
-	// In production, you might want to use a more robust method
-	return uint64(runtime.NumGoroutine())
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+
+	// Parse goroutine ID from stack trace
+	// Format: "goroutine 123 [running]:"
+	if n < 10 {
+		return 0
+	}
+
+	// Look for "goroutine " prefix
+	const prefix = "goroutine "
+	if n < len(prefix) {
+		return 0
+	}
+
+	// Check if it starts with "goroutine "
+	for i := 0; i < len(prefix); i++ {
+		if buf[i] != prefix[i] {
+			return 0
+		}
+	}
+
+	// Parse the number after "goroutine "
+	var id uint64
+	for i := len(prefix); i < n && buf[i] != ' '; i++ {
+		if buf[i] >= '0' && buf[i] <= '9' {
+			id = id*10 + uint64(buf[i]-'0')
+		} else {
+			break
+		}
+	}
+
+	return id
 }

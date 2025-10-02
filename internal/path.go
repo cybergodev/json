@@ -26,8 +26,7 @@ type PathSegment struct {
 	OperationContext *OperationContext `json:"operation_context"` // Operation context for distributed operations
 	MappingInfo      *MappingInfo      `json:"mapping_info"`      // Reverse mapping information
 
-	// Legacy compatibility fields (minimal set for backward compatibility)
-	Value   string `json:"value"`   // The actual segment value (for legacy parsing)
+	Value   string `json:"value"`   // The actual segment value
 	Extract string `json:"extract"` // For extract operations: the property to extract
 }
 
@@ -202,10 +201,10 @@ type PathPatterns struct {
 func NewPathPatterns() *PathPatterns {
 	return &PathPatterns{
 		dotNotation:    regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
-		arrayIndex:     regexp.MustCompile(`^\[(-?\d+)\]$`),
+		arrayIndex:     regexp.MustCompile(`^\[(-?\d+)]$`),
 		jsonPointer:    regexp.MustCompile(`^/([^/]*)$`),
-		extractSyntax:  regexp.MustCompile(`^\{([^}]+)\}$`),
-		rangeSyntax:    regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?\]$`),
+		extractSyntax:  regexp.MustCompile(`^\{([^}]+)}$`),
+		rangeSyntax:    regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?]$`),
 		SimpleProperty: regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
 		NumericIndex:   regexp.MustCompile(`^-?\d+$`),
 	}
@@ -685,9 +684,7 @@ func (pp *PathParser) parseComplexSegment(part string) ([]PathSegment, error) {
 				return nil, fmt.Errorf("invalid array access '%s': %w", arrayPart, err)
 			}
 
-			// Set Value field for backward compatibility
 			segment.Value = remaining[:bracketEnd+1]
-			// Legacy fields are no longer needed - they were cleaned up
 
 			segments = append(segments, segment)
 			remaining = remaining[bracketEnd+1:]
