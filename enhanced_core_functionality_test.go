@@ -51,7 +51,7 @@ func TestEnhancedCoreOperations(t *testing.T) {
 			{"ArrayNegativeOutOfBounds", `{"arr": [1,2,3]}`, "arr[-10]", nil, false}, // Library returns nil without error
 
 			// Error cases
-			{"NonexistentPath", `{"key": "value"}`, "nonexistent", nil, false}, // Library returns nil without error
+			{"NonexistentPath", `{"key": "value"}`, "nonexistent", nil, true}, // Should return error for nonexistent path
 			{"InvalidArrayIndex", `{"arr": [1,2,3]}`, "arr[abc]", nil, true},
 			{"PathThroughNonObject", `{"num": 42}`, "num.invalid", nil, false},  // Library returns nil without error
 			{"PathThroughArray", `{"arr": [1,2,3]}`, "arr.invalid", nil, false}, // Library returns nil without error
@@ -161,11 +161,13 @@ func TestEnhancedCoreOperations(t *testing.T) {
 
 					if tc.checkPath != "" {
 						checkValue, checkErr := Get(result, tc.checkPath)
-						helper.AssertNoError(checkErr, "Should not error when getting deleted path for %s", tc.name)
 						if tc.shouldBeNil {
+							// Deleted fields should return error for nonexistent path
+							helper.AssertError(checkErr, "Should return error when getting deleted path for %s", tc.name)
 							helper.AssertNil(checkValue, "Deleted value should be nil for %s", tc.name)
 						} else {
 							// For array deletions, the element might shift or be replaced
+							helper.AssertNoError(checkErr, "Should not error for array element access after deletion for %s", tc.name)
 							t.Logf("After deletion %s, path %s has value: %v", tc.name, tc.checkPath, checkValue)
 						}
 					}

@@ -157,10 +157,10 @@ func TestErrorHandlingComprehensive(t *testing.T) {
 	})
 
 	t.Run("BoundaryConditions", func(t *testing.T) {
-		// Test empty JSON
+		// Test empty JSON - should return error for nonexistent path
 		emptyJSON := `{}`
 		result, err := Get(emptyJSON, "nonexistent")
-		helper.AssertNoError(err, "Empty JSON should not error")
+		helper.AssertError(err, "Empty JSON should return error for nonexistent path")
 		helper.AssertNil(result, "Non-existent key should return nil")
 
 		// Test very deep nesting

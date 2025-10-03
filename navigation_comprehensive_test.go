@@ -180,10 +180,10 @@ func TestNavigationComprehensive(t *testing.T) {
 		processor := New()
 		defer processor.Close()
 
-		// Test empty object navigation
+		// Test empty object navigation - should return error for nonexistent path
 		emptyObj := `{}`
 		result, err := processor.Get(emptyObj, "nonexistent")
-		helper.AssertNoError(err, "Navigation in empty object should not error")
+		helper.AssertError(err, "Navigation in empty object should return error for nonexistent path")
 		helper.AssertNil(result, "Nonexistent property should be nil")
 
 		// Test empty array navigation

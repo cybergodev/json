@@ -31,9 +31,9 @@ func TestDeleteOperationsComprehensive(t *testing.T) {
 		result, err := processor.Delete(testData, "age")
 		helper.AssertNoError(err, "Simple property deletion should work")
 
-		// Verify the property was deleted
+		// Verify the property was deleted - should return error for nonexistent path
 		deletedValue, err := processor.Get(result, "age")
-		helper.AssertNoError(err, "Getting deleted property should not error")
+		helper.AssertError(err, "Getting deleted property should return error")
 		helper.AssertNil(deletedValue, "Deleted property should be nil")
 
 		// Verify other properties still exist
@@ -46,7 +46,7 @@ func TestDeleteOperationsComprehensive(t *testing.T) {
 		helper.AssertNoError(err, "Nested property deletion should work")
 
 		deletedPhone, err := processor.Get(result, "profile.phone")
-		helper.AssertNoError(err, "Getting deleted nested property should not error")
+		helper.AssertError(err, "Getting deleted nested property should return error")
 		helper.AssertNil(deletedPhone, "Deleted nested property should be nil")
 
 		// Test deep nested property deletion
@@ -54,7 +54,7 @@ func TestDeleteOperationsComprehensive(t *testing.T) {
 		helper.AssertNoError(err, "Deep nested property deletion should work")
 
 		deletedZip, err := processor.Get(result, "profile.address.zip")
-		helper.AssertNoError(err, "Getting deleted deep nested property should not error")
+		helper.AssertError(err, "Getting deleted deep nested property should return error")
 		helper.AssertNil(deletedZip, "Deleted deep nested property should be nil")
 	})
 
@@ -232,9 +232,9 @@ func TestDeleteOperationsComprehensive(t *testing.T) {
 		result, err := processor.Delete(testData, "company.departments[0].employees[1].benefits.dental")
 		helper.AssertNoError(err, "Complex nested deletion should work")
 
-		// Verify specific nested property was deleted
+		// Verify specific nested property was deleted - should return error for nonexistent path
 		dental, err := processor.Get(result, "company.departments[0].employees[1].benefits.dental")
-		helper.AssertNoError(err, "Getting deleted complex nested property should not error")
+		helper.AssertError(err, "Getting deleted complex nested property should return error")
 		helper.AssertNil(dental, "Complex nested property should be deleted")
 
 		// Test extraction from nested structure

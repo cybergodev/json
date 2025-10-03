@@ -34,10 +34,7 @@ func (n *navigator) NavigateToPath(data any, segments []PathSegmentInfo) (any, e
 		}
 
 		if !result.Exists {
-			// Check if this is a boundary case (property doesn't exist on valid object)
-			if n.isBoundaryCase(current, segment) {
-				return nil, nil // Return nil for boundary cases
-			}
+			// Path not found - return error as documented
 			return nil, ErrPathNotFoundNew
 		}
 

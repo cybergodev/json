@@ -241,10 +241,10 @@ func TestEnhancedPathExpressions(t *testing.T) {
 		// Should return nil without error (library behavior)
 		helper.AssertNoError(err, "Path through non-object should not error")
 
-		// Test empty extraction
+		// Test empty extraction - should return error for nonexistent path
 		_, err = Get(complexJSON, "company.nonexistent{field}")
-		// Should handle gracefully
-		helper.AssertNoError(err, "Empty extraction should not error")
+		// Should return ErrPathNotFound as documented
+		helper.AssertError(err, "Empty extraction should return error for nonexistent path")
 	})
 }
 

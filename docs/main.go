@@ -6,19 +6,17 @@ import (
 	"github.com/cybergodev/json"
 )
 
-// Temporary test case
-
 func main() {
+	jsonData := `{"user": {"name": "Alice"}}`
 
-	arrayData := `{
-	  "numbers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-	  "users": [
-		{"name": "Alice", "age": 25},
-		{"name": "Bob", "age": 30}
-	  ]
-	}`
+	// Missing field
+	email, err := json.GetString(jsonData, "user.email")
+	// err = ErrPathNotFound
+	fmt.Println(email, err)
 
-	step, _ := json.Get(arrayData, "numbers[::-2]") // [10 8 6 4 2]
-	fmt.Println(step)
-
+	// Null field
+	jsonData2 := `{"user": {"name": "Alice", "email": null}}`
+	email2, err2 := json.GetString(jsonData2, "user.email")
+	// email2 = "", err2 = nil (null converts to empty string)
+	fmt.Println(email2, err2)
 }
