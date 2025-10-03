@@ -177,7 +177,8 @@ func (urp *RecursiveProcessor) handlePropertySegmentUnified(data any, segment in
 				if val, exists := container[segment.Key]; exists {
 					return val, nil
 				}
-				return nil, nil
+				// Property doesn't exist - return ErrPathNotFound as documented
+				return nil, ErrPathNotFound
 			case OpSet:
 				container[segment.Key] = value
 				return value, nil
@@ -229,7 +230,12 @@ func (urp *RecursiveProcessor) handlePropertySegmentUnified(data any, segment in
 			return nil, fmt.Errorf("path not found: %s", segment.Key)
 		}
 
-		return nil, nil // Property doesn't exist for Get/Delete
+		// For Get operation, return ErrPathNotFound as documented
+		if operation == OpGet {
+			return nil, ErrPathNotFound
+		}
+
+		return nil, nil // Property doesn't exist for Delete
 
 	case []any:
 		// Apply property access to each array element recursively

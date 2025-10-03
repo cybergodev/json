@@ -116,10 +116,10 @@ func TestProcessorCoreComprehensive(t *testing.T) {
 			helper.AssertEqual(float64(35), age, "Age should be updated in set result")
 		}
 
-		// Verify delete result
+		// Verify delete result - should return error for deleted field
 		if deleteResult, ok := results[2].Result.(string); ok {
 			city, err := processor.Get(deleteResult, "city")
-			helper.AssertNoError(err, "Should not error getting deleted field")
+			helper.AssertError(err, "Should return error for deleted field")
 			helper.AssertNil(city, "City should be deleted")
 		}
 	})

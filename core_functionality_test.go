@@ -98,7 +98,7 @@ func TestCoreJSONOperations(t *testing.T) {
 		helper.AssertNoError(err, "Delete should work")
 
 		result, err := Get(newJSON, "age")
-		helper.AssertNoError(err, "Get deleted field should not error")
+		helper.AssertError(err, "Get deleted field should return error")
 		helper.AssertNil(result, "Deleted field should be nil")
 
 		// Test deleting nested field
@@ -106,7 +106,7 @@ func TestCoreJSONOperations(t *testing.T) {
 		helper.AssertNoError(err, "Delete nested should work")
 
 		result, err = Get(newJSON, "profile.location")
-		helper.AssertNoError(err, "Get deleted nested field should not error")
+		helper.AssertError(err, "Get deleted nested field should return error")
 		helper.AssertNil(result, "Deleted nested field should be nil")
 
 		// Test deleting array element

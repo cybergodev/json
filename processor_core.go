@@ -123,13 +123,6 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 		// Use legacy complex path handling for compatibility
 		result, err := p.navigateToPath(data, path)
 		if err != nil {
-			if err == ErrPathNotFound {
-				// Record successful operation with null result
-				if p.metrics != nil && p.metrics.collector != nil {
-					p.metrics.collector.RecordOperation(time.Since(startTime), true, 0)
-				}
-				return nil, nil
-			}
 			p.incrementErrorCount()
 			if p.metrics != nil && p.metrics.collector != nil {
 				p.metrics.collector.RecordOperation(time.Since(startTime), false, 0)
