@@ -3,6 +3,21 @@
 
 ==================================================
 
+
+## v1.0.3 - 2025-10-03
+
+### Added
+- Add the document [QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md)QUICK_REFERENCE.md
+
+### Changed
+- Updated document [README.md](README.md)
+- Enhance several levels of security
+
+### Fixed
+- Return value is returned when the repair path does not exist.
+
+---
+
 ## v1.0.2 - 2025-10-02
 
 ### 🔧 Fixed

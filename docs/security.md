@@ -1087,7 +1087,7 @@ If you discover a security vulnerability in this library, please report it respo
 ### Documentation
 - [Main README](../README.md) - Library overview and features
 - [Compatibility Guide](./compatibility.md) - Compatibility information
-- [Examples](../examples/) - Code examples for all features
+- [Examples](../examples) - Code examples for all features
 
 ### Security Tools
 - [Go Security Checker](https://github.com/securego/gosec) - Static analysis

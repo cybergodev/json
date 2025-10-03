@@ -7,6 +7,8 @@
 
 > A high-performance, feature-rich Go JSON processing library with 100% `encoding/json` compatibility, providing powerful path operations, type safety, performance optimization, and rich advanced features.
 
+#### **[📖 中文文档](README_zh-CN.md)** - User guide
+
 ---
 
 ## 📚 Table of Contents
@@ -52,6 +54,7 @@
 - **[📁 Examples](examples)** - Comprehensive code examples for all features
 - **[⚙️ Configuration Guide](examples/configuration)** - Advanced configuration and optimization
 - **[📖 Compatibility](docs/compatibility.md)** - Compatibility guide and migration information
+- **[⚡ Quick Reference](docs/QUICK_REFERENCE.md)** - Quick reference guide for common features
 
 ---
 
@@ -956,6 +959,10 @@ The repository includes comprehensive examples demonstrating various features an
 #### Configuration Examples
 - **[Configuration Management](examples/configuration)** - Processor configuration and optimization
 - **[Compatibility Examples](examples/compatibility)** - Drop-in replacement demonstrations
+
+#### Quick Reference
+- **[⚡ Quick Reference Guide](docs/QUICK_REFERENCE.md)** - Quick reference for common features and operations
+- **[⚡ 快速参考指南](docs/QUICK_REFERENCE_CN.md)** - 中文版快速参考指南
 
 ---
 
