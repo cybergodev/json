@@ -59,7 +59,7 @@ func main() {
 	fmt.Println("=============================")
 
 	// ✅ Correct Method 1: Save data object directly to file
-	err = json.SaveToFile("user_data_compact.json", userData, false)
+	err = json.SaveToFile("dev_test/user_data_compact.json", userData, false)
 	if err != nil {
 		log.Printf("SaveToFile failed: %v", err)
 	} else {
@@ -67,7 +67,7 @@ func main() {
 	}
 
 	// ✅ Correct Method 2: Save formatted data object to file
-	err = json.SaveToFile("user_data_pretty.json", userData, true)
+	err = json.SaveToFile("dev_test/user_data_pretty.json", userData, true)
 	if err != nil {
 		log.Printf("SaveToFile failed: %v", err)
 	} else {
@@ -121,7 +121,7 @@ func main() {
 
 	// ✅ Correct Method 3: Use os.WriteFile directly to save JSON string
 	fmt.Println("\n✅ Correct Method 3 - Save string directly to file:")
-	err = os.WriteFile("direct_save.json", []byte(jsonString), 0644)
+	err = os.WriteFile("dev_test/direct_save.json", []byte(jsonString), 0644)
 	if err != nil {
 		log.Printf("Write file failed: %v", err)
 	} else {
@@ -133,9 +133,9 @@ func main() {
 
 	// Verify that saved files are valid JSON
 	files := []string{
-		"user_data_compact.json",
-		"user_data_pretty.json",
-		"direct_save.json",
+		"dev_test/user_data_compact.json",
+		"dev_test/user_data_pretty.json",
+		"dev_test/direct_save.json",
 	}
 
 	for _, filename := range files {
