@@ -1,0 +1,2629 @@
+﻿package json
+
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/cybergodev/json/internal"
+	"reflect"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+)
+
+// =============================================================================
+// Source: parser.go
+// =============================================================================
+
+
+// =============================================================================
+// PROCESSOR PARSING METHODS
+// =============================================================================
+
+// Parse parses a JSON string into the provided target with improved error handling
+func (p *Processor) Parse(jsonStr string, target any, opts ...*ProcessorOptions) error {
+	if err := p.checkClosed(); err != nil {
+		return err
+	}
+
+	options, err := p.prepareOptions(opts...)
+	if err != nil {
+		return err
+	}
+
+	if err := p.validateInput(jsonStr); err != nil {
+		return err
+	}
+
+	if target == nil {
+		return &JsonsError{
+			Op:      "parse",
+			Message: "target cannot be nil, use Parse for any type result",
+			Err:     ErrOperationFailed,
+		}
+	}
+
+	// Parse with number preservation to maintain original format
+	if options.PreserveNumbers {
+		// Use NumberPreservingDecoder to keep json.Number as-is
+		decoder := NewNumberPreservingDecoder(true)
+		data, err := decoder.DecodeToAny(jsonStr)
+		if err != nil {
+			return &JsonsError{
+				Op:      "parse",
+				Message: fmt.Sprintf("invalid JSON for target type %T: %v", target, err),
+				Err:     ErrInvalidJSON,
+			}
+		}
+
+		// For *any type, directly assign the result
+		if anyPtr, ok := target.(*any); ok {
+			*anyPtr = data
+			return nil
+		}
+
+		// For other types, use custom encoder/decoder to preserve numbers
+		config := NewPrettyConfig()
+		config.PreserveNumbers = true
+
+		encoder := NewCustomEncoder(config)
+		defer encoder.Close()
+
+		encodedJson, err := encoder.Encode(data)
+		if err != nil {
+			return &JsonsError{
+				Op:      "parse",
+				Message: fmt.Sprintf("failed to encode data for target type %T: %v", target, err),
+				Err:     ErrOperationFailed,
+			}
+		}
+
+		// Use number-preserving unmarshal for final conversion
+		if err := PreservingUnmarshal([]byte(encodedJson), target, true); err != nil {
+			return &JsonsError{
+				Op:      "parse",
+				Message: fmt.Sprintf("invalid JSON for target type %T: %v", target, err),
+				Err:     ErrInvalidJSON,
+			}
+		}
+	} else {
+		// Standard parsing without number preservation
+		if err := PreservingUnmarshal([]byte(jsonStr), target, false); err != nil {
+			return &JsonsError{
+				Op:      "parse",
+				Message: fmt.Sprintf("invalid JSON for target type %T: %v", target, err),
+				Err:     ErrInvalidJSON,
+			}
+		}
+	}
+
+	return nil
+}
+
+// Valid validates JSON format without parsing the entire structure
+func (p *Processor) Valid(jsonStr string, opts ...*ProcessorOptions) (bool, error) {
+	if err := p.checkClosed(); err != nil {
+		return false, err
+	}
+
+	if err := p.validateInput(jsonStr); err != nil {
+		return false, err
+	}
+
+	// Prepare options
+	options, err := p.prepareOptions(opts...)
+	if err != nil {
+		return false, err
+	}
+
+	// Check cache first
+	cacheKey := p.createCacheKey("validate", jsonStr, "", options)
+	if cached, ok := p.getCachedResult(cacheKey); ok {
+		return cached.(bool), nil
+	}
+
+	// Valid JSON by attempting to parse
+	decoder := NewNumberPreservingDecoder(options.PreserveNumbers)
+	_, err = decoder.DecodeToAny(jsonStr)
+
+	if err != nil {
+		// Return error for invalid JSON
+		return false, &JsonsError{
+			Op:      "validate",
+			Message: fmt.Sprintf("invalid JSON: %v", err),
+			Err:     ErrInvalidJSON,
+		}
+	}
+
+	// Cache result if enabled
+	p.setCachedResult(cacheKey, true, options)
+
+	return true, nil
+}
+
+// FormatPretty formats JSON string with indentation
+func (p *Processor) FormatPretty(jsonStr string, opts ...*ProcessorOptions) (string, error) {
+	if err := p.checkClosed(); err != nil {
+		return "", err
+	}
+
+	options, err := p.prepareOptions(opts...)
+	if err != nil {
+		return "", err
+	}
+
+	if err := p.validateInput(jsonStr); err != nil {
+		return "", err
+	}
+
+	// Check cache first
+	cacheKey := p.createCacheKey("pretty", jsonStr, "", options)
+	if cached, ok := p.getCachedResult(cacheKey); ok {
+		return cached.(string), nil
+	}
+
+	// Parse with number preservation to maintain original number types
+	decoder := NewNumberPreservingDecoder(options.PreserveNumbers)
+	data, err := decoder.DecodeToAny(jsonStr)
+	if err != nil {
+		return "", &JsonsError{
+			Op:      "pretty",
+			Message: fmt.Sprintf("failed to parse JSON: %v", err),
+			Err:     ErrInvalidJSON,
+		}
+	}
+
+	// Use custom encoder with pretty formatting to preserve number types
+	config := NewPrettyConfig()
+	config.PreserveNumbers = options.PreserveNumbers
+
+	encoder := NewCustomEncoder(config)
+	defer encoder.Close()
+
+	result, err := encoder.Encode(data)
+	if err != nil {
+		return "", &JsonsError{
+			Op:      "pretty",
+			Message: fmt.Sprintf("failed to format JSON: %v", err),
+			Err:     ErrOperationFailed,
+		}
+	}
+
+	// Cache result if enabled
+	p.setCachedResult(cacheKey, result, options)
+
+	return result, nil
+}
+
+// Compact removes whitespace from JSON string
+func (p *Processor) Compact(jsonStr string, opts ...*ProcessorOptions) (string, error) {
+	if err := p.checkClosed(); err != nil {
+		return "", err
+	}
+
+	options, err := p.prepareOptions(opts...)
+	if err != nil {
+		return "", err
+	}
+
+	if err := p.validateInput(jsonStr); err != nil {
+		return "", err
+	}
+
+	// Check cache first
+	cacheKey := p.createCacheKey("compact", jsonStr, "", options)
+	if cached, ok := p.getCachedResult(cacheKey); ok {
+		return cached.(string), nil
+	}
+
+	// Parse with number preservation to maintain original number types
+	decoder := NewNumberPreservingDecoder(options.PreserveNumbers)
+	data, err := decoder.DecodeToAny(jsonStr)
+	if err != nil {
+		return "", &JsonsError{
+			Op:      "compact",
+			Message: fmt.Sprintf("failed to parse JSON: %v", err),
+			Err:     ErrInvalidJSON,
+		}
+	}
+
+	// Use custom encoder with compact formatting to preserve number types
+	config := NewCompactConfig()
+	config.PreserveNumbers = options.PreserveNumbers
+
+	encoder := NewCustomEncoder(config)
+	defer encoder.Close()
+
+	result, err := encoder.Encode(data)
+	if err != nil {
+		return "", &JsonsError{
+			Op:      "compact",
+			Message: fmt.Sprintf("failed to compact JSON: %v", err),
+			Err:     ErrOperationFailed,
+		}
+	}
+
+	// Cache result if enabled
+	p.setCachedResult(cacheKey, result, options)
+
+	return result, nil
+}
+
+
+// =============================================================================
+// PATH PARSER (merged from path_parser.go)
+// =============================================================================
+
+// pathParser implements the PathParser interface
+type pathParser struct {
+	// Compiled regex patterns for performance
+	simplePropertyPattern *regexp.Regexp
+	arrayIndexPattern     *regexp.Regexp
+	slicePattern          *regexp.Regexp
+	extractPattern        *regexp.Regexp
+
+	// String builder pool for efficient string operations
+	stringBuilderPool *stringBuilderPool
+}
+
+// NewPathParser creates a new path parser instance
+func NewPathParser() PathParser {
+	return &pathParser{
+		simplePropertyPattern: regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
+		arrayIndexPattern:     regexp.MustCompile(`^\[(-?\d+)\]$`),
+		slicePattern:          regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?\]$`),
+		extractPattern:        regexp.MustCompile(`^\{([^}]+)\}$`),
+		stringBuilderPool:     newStringBuilderPool(),
+	}
+}
+
+// ParsePath parses a path string into segments
+func (pp *pathParser) ParsePath(path string) ([]PathSegmentInfo, error) {
+	if path == "" {
+		return []PathSegmentInfo{}, nil
+	}
+
+	// Handle different path formats
+	if strings.HasPrefix(path, "/") {
+		return pp.parseJSONPointer(path)
+	}
+
+	return pp.parseDotNotation(path)
+}
+
+// ValidatePath validates a path string for correctness
+func (pp *pathParser) ValidatePath(path string) error {
+	if path == "" {
+		return nil // Empty path is valid (root access)
+	}
+
+	// Check for unmatched brackets and braces
+	if err := pp.validateBrackets(path); err != nil {
+		return err
+	}
+
+	// Check for invalid characters or patterns
+	if err := pp.validatePathSyntax(path); err != nil {
+		return err
+	}
+
+	// Try to parse the path to ensure it's valid
+	_, err := pp.ParsePath(path)
+	return err
+}
+
+// SplitPathIntoSegments splits a path into segments
+func (pp *pathParser) SplitPathIntoSegments(path string) []PathSegmentInfo {
+	segments, err := pp.ParsePath(path)
+	if err != nil {
+		// Return empty slice on error
+		return []PathSegmentInfo{}
+	}
+	return segments
+}
+
+// PreprocessPath preprocesses a path string for parsing
+func (pp *pathParser) PreprocessPath(path string) string {
+	if path == "" || strings.HasPrefix(path, "/") {
+		return path
+	}
+
+	sb := pp.stringBuilderPool.Get()
+	defer pp.stringBuilderPool.Put(sb)
+
+	sb.Reset()
+	sb.Grow(len(path) + 10) // Pre-allocate with some extra space
+
+	for i, char := range path {
+		// Check if we need to add a dot before [ or {
+		if (char == '[' || char == '{') && i > 0 {
+			prevChar := rune(path[i-1])
+			if prevChar != '.' && pp.needsDotBefore(prevChar) {
+				// Don't add dot for simple property+array access like "hobbies[0]"
+				// Only add dot for complex cases like "a.b[0]" -> "a.b.[0]"
+				if char == '[' && pp.isSimplePropertyArrayAccess(path, i) {
+					// Skip adding dot for simple cases
+				} else {
+					sb.WriteRune('.')
+				}
+			}
+		}
+		sb.WriteRune(char)
+	}
+
+	return sb.String()
+}
+
+// NeedsLegacyHandling determines if a path needs legacy complex handling
+func (pp *pathParser) NeedsLegacyHandling(path string) bool {
+	// Only use legacy handling for very specific complex patterns
+	legacyPatterns := []string{
+		// Add patterns that require legacy handling
+	}
+
+	for _, pattern := range legacyPatterns {
+		if strings.Contains(path, pattern) {
+			return true
+		}
+	}
+
+	// Check for multiple consecutive extractions (very complex patterns)
+	extractCount := strings.Count(path, "{")
+	if extractCount > 4 {
+		return true
+	}
+
+	// Check for step-based slicing (e.g., [::2], [1:5:2])
+	if strings.Contains(path, "::") || (strings.Count(path, ":") > 2) {
+		return true
+	}
+
+	return false
+}
+
+// parseDotNotation parses dot notation paths like "user.name" or "users[0].name"
+func (pp *pathParser) parseDotNotation(path string) ([]PathSegmentInfo, error) {
+	var segments []PathSegmentInfo
+
+	// Preprocess the path
+	preprocessedPath := pp.PreprocessPath(path)
+
+	// Smart split that respects extraction and array operation boundaries
+	parts := pp.smartSplitPath(preprocessedPath)
+
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+
+		segmentInfo, err := pp.parsePathSegment(part)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse segment '%s': %w", part, err)
+		}
+
+		segments = append(segments, segmentInfo...)
+	}
+
+	return segments, nil
+}
+
+// parseJSONPointer parses JSON Pointer format paths
+func (pp *pathParser) parseJSONPointer(path string) ([]PathSegmentInfo, error) {
+	if path == "/" {
+		return []PathSegmentInfo{}, nil
+	}
+
+	// Remove leading slash and split
+	path = strings.TrimPrefix(path, "/")
+	parts := strings.Split(path, "/")
+
+	var segments []PathSegmentInfo
+	for _, part := range parts {
+		// Unescape JSON Pointer special characters
+		part = strings.ReplaceAll(part, "~1", "/")
+		part = strings.ReplaceAll(part, "~0", "~")
+
+		// Check if it's a numeric index
+		if pp.isNumericIndex(part) {
+			index, err := strconv.Atoi(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric index '%s': %w", part, err)
+			}
+			segments = append(segments, PathSegmentInfo{
+				Type:  "array",
+				Value: fmt.Sprintf("[%d]", index),
+				Index: index,
+			})
+		} else {
+			// Property access
+			segments = append(segments, PathSegmentInfo{
+				Type:  "property",
+				Value: part,
+				Key:   part,
+			})
+		}
+	}
+
+	return segments, nil
+}
+
+// smartSplitPath splits path by dots while respecting extraction and array operation boundaries
+func (pp *pathParser) smartSplitPath(path string) []string {
+	var parts []string
+	var current strings.Builder
+	var braceDepth int
+	var bracketDepth int
+
+	for _, char := range path {
+		switch char {
+		case '{':
+			braceDepth++
+			current.WriteRune(char)
+		case '}':
+			braceDepth--
+			current.WriteRune(char)
+		case '[':
+			bracketDepth++
+			current.WriteRune(char)
+		case ']':
+			bracketDepth--
+			current.WriteRune(char)
+		case '.':
+			// Only split on dots when we're not inside braces or brackets
+			if braceDepth == 0 && bracketDepth == 0 {
+				if current.Len() > 0 {
+					parts = append(parts, current.String())
+					current.Reset()
+				}
+			} else {
+				current.WriteRune(char)
+			}
+		default:
+			current.WriteRune(char)
+		}
+	}
+
+	// Add the last part
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+
+	return parts
+}
+
+// parsePathSegment parses a single path segment
+func (pp *pathParser) parsePathSegment(part string) ([]PathSegmentInfo, error) {
+	if part == "" {
+		return []PathSegmentInfo{}, nil
+	}
+
+	// Check for complex segments that may contain mixed syntax
+	if pp.isComplexSegment(part) {
+		return pp.parseComplexSegment(part)
+	}
+
+	// Simple segment parsing
+	segment, err := pp.parseSimpleSegment(part)
+	if err != nil {
+		return nil, err
+	}
+
+	return []PathSegmentInfo{segment}, nil
+}
+
+// parseSimpleSegment parses a simple path segment
+func (pp *pathParser) parseSimpleSegment(part string) (PathSegmentInfo, error) {
+	// Check for extraction syntax first
+	if matches := pp.extractPattern.FindStringSubmatch(part); matches != nil {
+		return PathSegmentInfo{
+			Type:    "extract",
+			Value:   part,
+			Extract: matches[1],
+		}, nil
+	}
+
+	// Check for array slice syntax
+	if matches := pp.slicePattern.FindStringSubmatch(part); matches != nil {
+		segment := PathSegmentInfo{
+			Type:  "slice",
+			Value: part,
+		}
+
+		// Parse start
+		if matches[1] != "" {
+			start, err := strconv.Atoi(matches[1])
+			if err != nil {
+				return PathSegmentInfo{}, fmt.Errorf("invalid slice start: %s", matches[1])
+			}
+			segment.Start = &start
+		}
+
+		// Parse end
+		if matches[2] != "" {
+			end, err := strconv.Atoi(matches[2])
+			if err != nil {
+				return PathSegmentInfo{}, fmt.Errorf("invalid slice end: %s", matches[2])
+			}
+			segment.End = &end
+		}
+
+		// Parse step
+		if matches[3] != "" {
+			step, err := strconv.Atoi(matches[3])
+			if err != nil {
+				return PathSegmentInfo{}, fmt.Errorf("invalid slice step: %s", matches[3])
+			}
+			// Step cannot be zero
+			if step == 0 {
+				return PathSegmentInfo{}, fmt.Errorf("slice step cannot be zero")
+			}
+			segment.Step = &step
+		}
+
+		return segment, nil
+	}
+
+	// Check for array index syntax
+	if matches := pp.arrayIndexPattern.FindStringSubmatch(part); matches != nil {
+		index, err := strconv.Atoi(matches[1])
+		if err != nil {
+			return PathSegmentInfo{}, fmt.Errorf("invalid array index: %s", matches[1])
+		}
+
+		return PathSegmentInfo{
+			Type:  "array",
+			Value: part,
+			Index: index,
+		}, nil
+	}
+
+	// Check for property with array/slice access (e.g., "users[0]" or "items[1:3]")
+	if bracketStart := strings.IndexByte(part, '['); bracketStart >= 0 {
+		if bracketEnd := strings.IndexByte(part[bracketStart:], ']'); bracketEnd >= 0 {
+			property := part[:bracketStart]
+			bracketContent := part[bracketStart+1 : bracketStart+bracketEnd]
+
+			// Check if it's slice syntax (contains colon)
+			if strings.Contains(bracketContent, ":") {
+				// Parse as slice
+				segment := PathSegmentInfo{
+					Type:  "slice",
+					Value: part,
+					Key:   property,
+				}
+
+				// Use regex to parse slice parameters
+				if matches := pp.slicePattern.FindStringSubmatch(part[bracketStart:]); matches != nil {
+					// Parse start
+					if matches[1] != "" {
+						start, err := strconv.Atoi(matches[1])
+						if err != nil {
+							return PathSegmentInfo{}, fmt.Errorf("invalid slice start: %s", matches[1])
+						}
+						segment.Start = &start
+					}
+
+					// Parse end
+					if matches[2] != "" {
+						end, err := strconv.Atoi(matches[2])
+						if err != nil {
+							return PathSegmentInfo{}, fmt.Errorf("invalid slice end: %s", matches[2])
+						}
+						segment.End = &end
+					}
+
+					// Parse step
+					if matches[3] != "" {
+						step, err := strconv.Atoi(matches[3])
+						if err != nil {
+							return PathSegmentInfo{}, fmt.Errorf("invalid slice step: %s", matches[3])
+						}
+						// Step cannot be zero
+						if step == 0 {
+							return PathSegmentInfo{}, fmt.Errorf("slice step cannot be zero")
+						}
+						segment.Step = &step
+					}
+
+					return segment, nil
+				} else {
+					return PathSegmentInfo{}, fmt.Errorf("invalid slice syntax in '%s'", part)
+				}
+			} else {
+				// Parse as simple array index
+				index, err := strconv.Atoi(bracketContent)
+				if err != nil {
+					return PathSegmentInfo{}, fmt.Errorf("invalid array index in '%s': %s", part, bracketContent)
+				}
+
+				return PathSegmentInfo{
+					Type:  "array",
+					Value: part,
+					Key:   property,
+					Index: index,
+				}, nil
+			}
+		}
+	}
+
+	// Simple property access
+	return PathSegmentInfo{
+		Type:  "property",
+		Value: part,
+		Key:   part,
+	}, nil
+}
+
+// parseComplexSegment parses complex segments that may contain mixed syntax
+func (pp *pathParser) parseComplexSegment(part string) ([]PathSegmentInfo, error) {
+	// For now, delegate to the internal parser for complex segments
+	parser := internal.NewPathParser()
+	internalSegments, err := parser.ParseComplexSegment(part)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert internal segments to PathSegmentInfo
+	var segments []PathSegmentInfo
+	for _, seg := range internalSegments {
+		segmentInfo := PathSegmentInfo{
+			Type:    seg.TypeString(),
+			Value:   seg.Value,
+			Key:     seg.Key,
+			Index:   seg.Index,
+			Extract: seg.Extract,
+			IsFlat:  seg.IsFlat,
+		}
+
+		// Handle slice parameters
+		if seg.Start != nil {
+			segmentInfo.Start = seg.Start
+		}
+		if seg.End != nil {
+			segmentInfo.End = seg.End
+		}
+		if seg.Step != nil {
+			segmentInfo.Step = seg.Step
+		}
+
+		segments = append(segments, segmentInfo)
+	}
+
+	return segments, nil
+}
+
+// isComplexSegment checks if a segment contains complex syntax
+func (pp *pathParser) isComplexSegment(part string) bool {
+	// Check for extraction followed by array operations
+	if strings.Contains(part, "{") && (strings.Contains(part, "[") || strings.Contains(part, ":")) {
+		return true
+	}
+
+	// Check for multiple operations in one segment
+	braceCount := strings.Count(part, "{")
+	bracketCount := strings.Count(part, "[")
+
+	return braceCount > 1 || bracketCount > 1 || (braceCount > 0 && bracketCount > 0)
+}
+
+// validateBrackets validates that brackets and braces are properly matched
+func (pp *pathParser) validateBrackets(path string) error {
+	var braceDepth, bracketDepth int
+
+	for i, char := range path {
+		switch char {
+		case '{':
+			braceDepth++
+		case '}':
+			braceDepth--
+			if braceDepth < 0 {
+				return fmt.Errorf("unmatched closing brace at position %d", i)
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			bracketDepth--
+			if bracketDepth < 0 {
+				return fmt.Errorf("unmatched closing bracket at position %d", i)
+			}
+		}
+	}
+
+	if braceDepth > 0 {
+		return fmt.Errorf("unmatched opening brace")
+	}
+	if bracketDepth > 0 {
+		return fmt.Errorf("unmatched opening bracket")
+	}
+
+	return nil
+}
+
+// validatePathSyntax validates path syntax for common errors
+func (pp *pathParser) validatePathSyntax(path string) error {
+	// Check for empty extraction
+	if strings.Contains(path, "{}") {
+		return fmt.Errorf("empty extraction syntax not allowed")
+	}
+
+	// Check for empty array access
+	if strings.Contains(path, "[]") {
+		return fmt.Errorf("empty array access not allowed")
+	}
+
+	// Check for invalid characters in property names
+	// This is a basic check - more sophisticated validation could be added
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("consecutive dots not allowed")
+	}
+
+	return nil
+}
+
+// needsDotBefore checks if a dot should be added before a character
+func (pp *pathParser) needsDotBefore(prevChar rune) bool {
+	// Add dot before [ or { if the previous character is alphanumeric or underscore
+	return (prevChar >= 'a' && prevChar <= 'z') ||
+		(prevChar >= 'A' && prevChar <= 'Z') ||
+		(prevChar >= '0' && prevChar <= '9') ||
+		prevChar == '_' || prevChar == ']' || prevChar == '}'
+}
+
+// isSimplePropertyArrayAccess checks if this is a simple property+array access pattern
+func (pp *pathParser) isSimplePropertyArrayAccess(path string, bracketIndex int) bool {
+	// Check if this looks like "property[index]" without any dots before
+	if bracketIndex == 0 {
+		return false
+	}
+
+	// Find the start of the current property name
+	start := 0
+	for i := bracketIndex - 1; i >= 0; i-- {
+		if path[i] == '.' {
+			start = i + 1
+			break
+		}
+	}
+
+	// Extract the property name
+	propertyName := path[start:bracketIndex]
+
+	// Check if it's a simple property name (no dots, no complex syntax)
+	if strings.Contains(propertyName, ".") || strings.Contains(propertyName, "{") || strings.Contains(propertyName, "[") {
+		return false
+	}
+
+	// Check if the property name is a valid identifier
+	if len(propertyName) == 0 {
+		return false
+	}
+
+	// Simple heuristic: if there's no dot immediately before the property name,
+	// and the property name is a simple identifier, treat it as simple access
+	return start == 0 || (start > 0 && path[start-1] == '.')
+}
+
+// isNumericIndex checks if a string represents a numeric index
+func (pp *pathParser) isNumericIndex(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	// Handle negative indices
+	start := 0
+	if s[0] == '-' {
+		if len(s) == 1 {
+			return false
+		}
+		start = 1
+	}
+
+	for i := start; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+
+	return true
+}
+
+
+// =============================================================================
+// NUMBER PARSER (merged from number_parser.go)
+// =============================================================================
+
+// NumberPreservingDecoder provides JSON decoding with optimized number format preservation
+type NumberPreservingDecoder struct {
+	preserveNumbers bool
+
+	// Reusable decoder for performance
+	decoder *json.Decoder
+
+	// Buffer pool for string operations
+	bufferPool *sync.Pool
+}
+
+// NewNumberPreservingDecoder creates a new decoder with performance and number preservation
+func NewNumberPreservingDecoder(preserveNumbers bool) *NumberPreservingDecoder {
+	return &NumberPreservingDecoder{
+		preserveNumbers: preserveNumbers,
+		bufferPool: &sync.Pool{
+			New: func() interface{} {
+				return make([]byte, 0, 1024) // Pre-allocate 1KB buffer
+			},
+		},
+	}
+}
+
+// DecodeToAny decodes JSON string to any type with performance and number preservation
+func (d *NumberPreservingDecoder) DecodeToAny(jsonStr string) (any, error) {
+	if !d.preserveNumbers {
+		// Fast path: use standard JSON decoding without number preservation
+		var result any
+		if err := json.Unmarshal(stringToBytes(jsonStr), &result); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+
+	// Path: use reusable decoder with number preservation
+	if d.decoder == nil {
+		d.decoder = json.NewDecoder(strings.NewReader(jsonStr))
+		d.decoder.UseNumber()
+	} else {
+		// Reset decoder with new input
+		d.decoder = json.NewDecoder(strings.NewReader(jsonStr))
+		d.decoder.UseNumber()
+	}
+
+	var result any
+	if err := d.decoder.Decode(&result); err != nil {
+		return nil, err
+	}
+
+	// Convert json.Number to our Number type for compatibility
+	result = d.convertStdJSONNumbers(result)
+	return result, nil
+}
+
+// convertStdJSONNumbers converts standard library json.Number to our Number type
+func (d *NumberPreservingDecoder) convertStdJSONNumbers(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		// Convert standard library json.Number to our Number type
+		return Number(string(v))
+	case map[string]any:
+		result := make(map[string]any, len(v))
+		for key, val := range v {
+			result[key] = d.convertStdJSONNumbers(val)
+		}
+		return result
+	case []any:
+		result := make([]any, len(v))
+		for i, val := range v {
+			result[i] = d.convertStdJSONNumbers(val)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
+// stringToBytes converts string to []byte efficiently
+// In modern Go versions, the compiler optimizes this conversion
+func stringToBytes(s string) []byte {
+	return []byte(s)
+}
+
+// convertNumbers recursively converts json.Number
+func (d *NumberPreservingDecoder) convertNumbers(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		return d.convertJSONNumber(v)
+	case map[string]any:
+		// Pre-allocate map with known size for better performance
+		result := make(map[string]any, len(v))
+		for key, val := range v {
+			result[key] = d.convertNumbers(val)
+		}
+		return result
+	case []any:
+		// Pre-allocate slice with known size
+		result := make([]any, len(v))
+		for i, val := range v {
+			result[i] = d.convertNumbers(val)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
+// convertJSONNumber converts json.Number with precision handling
+func (d *NumberPreservingDecoder) convertJSONNumber(num json.Number) any {
+	numStr := string(num)
+	numLen := len(numStr)
+
+	// Ultra-fast path for single digits
+	if numLen == 1 {
+		if numStr[0] >= '0' && numStr[0] <= '9' {
+			return int(numStr[0] - '0')
+		}
+	}
+
+	// Fast path for small integers without decimal or scientific notation
+	if numLen <= 10 && !containsAnyByte(numStr, ".eE") {
+		if i, err := strconv.Atoi(numStr); err == nil {
+			return i
+		}
+	}
+
+	// Check for integer format (no decimal point and no scientific notation)
+	hasDecimal := strings.Contains(numStr, ".")
+	hasScientific := containsAnyByte(numStr, "eE")
+
+	if !hasDecimal && !hasScientific {
+		// Integer parsing with optimized range checking
+		if i, err := strconv.ParseInt(numStr, 10, 64); err == nil {
+			// Use bit operations for faster range checking
+			if i >= -2147483648 && i <= 2147483647 { // int32 range
+				return int(i)
+			}
+			return i
+		}
+
+		// Try uint64 for large positive numbers
+		if u, err := strconv.ParseUint(numStr, 10, 64); err == nil {
+			return u
+		}
+
+		// Number too large for standard types, preserve as string
+		return numStr
+	}
+
+	// Handle "clean" floats (ending with .0)
+	if hasDecimal && strings.HasSuffix(numStr, ".0") {
+		intStr := numStr[:numLen-2]
+		if i, err := strconv.ParseInt(intStr, 10, 64); err == nil {
+			if i >= -2147483648 && i <= 2147483647 {
+				return int(i)
+			}
+			return i
+		}
+		// If integer conversion fails, try to parse as float
+		if f, err := strconv.ParseFloat(numStr, 64); err == nil {
+			return f
+		}
+		// Last resort: return as string
+		return numStr
+	}
+
+	// Handle decimal numbers with precision checking
+	if hasDecimal && !hasScientific {
+		if f, err := strconv.ParseFloat(numStr, 64); err == nil {
+			// Always return the float64 value to maintain numeric type consistency
+			// Precision checking is less important than type consistency
+			return f
+		}
+		// If parsing fails, return as string
+		return numStr
+	}
+
+	// Handle scientific notation
+	if hasScientific {
+		if f, err := strconv.ParseFloat(numStr, 64); err == nil {
+			return f
+		}
+	}
+
+	// Fallback: return as string
+	return numStr
+}
+
+// containsAnyByte checks if string contains any of the specified bytes (faster than strings.ContainsAny)
+func containsAnyByte(s, chars string) bool {
+	for i := 0; i < len(s); i++ {
+		for j := 0; j < len(chars); j++ {
+			if s[i] == chars[j] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkFloatPrecision quickly checks if float64 preserves the original string representation
+func (d *NumberPreservingDecoder) checkFloatPrecision(f float64, original string) bool {
+	// Use buffer from pool for efficient string formatting
+	buf := d.bufferPool.Get().([]byte)
+	defer d.bufferPool.Put(buf[:0])
+
+	formatted := strconv.AppendFloat(buf, f, 'f', -1, 64)
+	return string(formatted) == original
+}
+
+// PreservingUnmarshal unmarshals JSON with number preservation
+func PreservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
+	if !preserveNumbers {
+		return json.Unmarshal(data, v)
+	}
+
+	// Use json.Number for preservation
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+
+	// First decode to any to handle json.Number conversion
+	var temp any
+	if err := decoder.Decode(&temp); err != nil {
+		return err
+	}
+
+	// Convert numbers and then marshal/unmarshal to target type
+	converted := NewNumberPreservingDecoder(true).convertNumbers(temp)
+
+	// Marshal the converted data and unmarshal to target
+	convertedBytes, err := json.Marshal(converted)
+	if err != nil {
+		return err
+	}
+
+	return json.Unmarshal(convertedBytes, v)
+}
+
+// NumberPreservingValue wraps a value with its original string representation
+type NumberPreservingValue struct {
+	Value    any    `json:"value"`
+	Original string `json:"original,omitempty"`
+}
+
+// String returns the string representation, preferring original if available
+func (npv NumberPreservingValue) String() string {
+	if npv.Original != "" {
+		return npv.Original
+	}
+	return fmt.Sprintf("%v", npv.Value)
+}
+
+// IsNumber checks if the value represents a number
+func (npv NumberPreservingValue) IsNumber() bool {
+	switch npv.Value.(type) {
+	case int, int8, int16, int32, int64:
+		return true
+	case uint, uint8, uint16, uint32, uint64:
+		return true
+	case float32, float64:
+		return true
+	case json.Number:
+		return true
+	default:
+		return false
+	}
+}
+
+// ToInt converts the value to int if possible
+func (npv NumberPreservingValue) ToInt() (int, error) {
+	switch v := npv.Value.(type) {
+	case int:
+		return v, nil
+	case int64:
+		return int(v), nil
+	case float64:
+		return int(v), nil
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return int(i), nil
+		}
+		if f, err := v.Float64(); err == nil {
+			return int(f), nil
+		}
+		return 0, fmt.Errorf("cannot convert %s to int", string(v))
+	default:
+		return 0, fmt.Errorf("value is not a number: %T", v)
+	}
+}
+
+// ToFloat64 converts the value to float64 if possible
+func (npv NumberPreservingValue) ToFloat64() (float64, error) {
+	switch v := npv.Value.(type) {
+	case int:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case float64:
+		return v, nil
+	case json.Number:
+		return v.Float64()
+	default:
+		return 0, fmt.Errorf("value is not a number: %T", v)
+	}
+}
+
+// SmartNumberConversion provides intelligent number type conversion
+func SmartNumberConversion(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		decoder := NewNumberPreservingDecoder(true)
+		return decoder.convertJSONNumber(v)
+	case string:
+		// Try to parse string as number
+		if num := json.Number(v); num.String() == v {
+			decoder := NewNumberPreservingDecoder(true)
+			return decoder.convertJSONNumber(num)
+		}
+		return v
+	default:
+		return v
+	}
+}
+
+// FormatNumber formats a number without scientific notation when possible
+func FormatNumber(value any) string {
+	switch v := value.(type) {
+	case int, int8, int16, int32, int64:
+		return fmt.Sprintf("%d", v)
+	case uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%d", v)
+	case float32:
+		// Use fixed-point notation for reasonable range
+		if v >= -1e6 && v <= 1e6 {
+			return strconv.FormatFloat(float64(v), 'f', -1, 32)
+		}
+		return strconv.FormatFloat(float64(v), 'g', -1, 32)
+	case float64:
+		// Use fixed-point notation for reasonable range
+		if v >= -1e15 && v <= 1e15 {
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		}
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	case json.Number:
+		return string(v)
+	case string:
+		// If it's a string that represents a number, return as-is
+		return v
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+// SafeConvertToInt64 safely converts a value to int64, handling large numbers
+func SafeConvertToInt64(value any) (int64, error) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case int64:
+		return v, nil
+	case uint:
+		if v <= uint(^uint64(0)>>1) {
+			return int64(v), nil
+		}
+		return 0, fmt.Errorf("value %d exceeds int64 range", v)
+	case uint32:
+		return int64(v), nil
+	case uint64:
+		if v <= uint64(^uint64(0)>>1) {
+			return int64(v), nil
+		}
+		return 0, fmt.Errorf("value %d exceeds int64 range", v)
+	case float64:
+		if v >= float64(^uint64(0)>>1)*-1 && v <= float64(^uint64(0)>>1) && v == float64(int64(v)) {
+			return int64(v), nil
+		}
+		return 0, fmt.Errorf("value %g cannot be safely converted to int64", v)
+	case string:
+		// Try to parse string as int64
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return i, nil
+		}
+		return 0, fmt.Errorf("string %q cannot be converted to int64", v)
+	case json.Number:
+		return SafeConvertToInt64(string(v))
+	default:
+		return 0, fmt.Errorf("cannot convert %T to int64", v)
+	}
+}
+
+// SafeConvertToUint64 safely converts a value to uint64, handling large numbers
+func SafeConvertToUint64(value any) (uint64, error) {
+	switch v := value.(type) {
+	case int:
+		if v >= 0 {
+			return uint64(v), nil
+		}
+		return 0, fmt.Errorf("negative value %d cannot be converted to uint64", v)
+	case int32:
+		if v >= 0 {
+			return uint64(v), nil
+		}
+		return 0, fmt.Errorf("negative value %d cannot be converted to uint64", v)
+	case int64:
+		if v >= 0 {
+			return uint64(v), nil
+		}
+		return 0, fmt.Errorf("negative value %d cannot be converted to uint64", v)
+	case uint:
+		return uint64(v), nil
+	case uint32:
+		return uint64(v), nil
+	case uint64:
+		return v, nil
+	case float64:
+		if v >= 0 && v <= float64(^uint64(0)) && v == float64(uint64(v)) {
+			return uint64(v), nil
+		}
+		return 0, fmt.Errorf("value %g cannot be safely converted to uint64", v)
+	case string:
+		// Try to parse string as uint64
+		if u, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return u, nil
+		}
+		return 0, fmt.Errorf("string %q cannot be converted to uint64", v)
+	case json.Number:
+		return SafeConvertToUint64(string(v))
+	default:
+		return 0, fmt.Errorf("cannot convert %T to uint64", v)
+	}
+}
+
+// IsLargeNumber checks if a string represents a number that's too large for standard numeric types
+func IsLargeNumber(numStr string) bool {
+	// Remove leading/trailing whitespace
+	numStr = strings.TrimSpace(numStr)
+
+	// Check if it's a valid number format
+	if !isValidNumberString(numStr) {
+		return false
+	}
+
+	// If it's an integer (no decimal point)
+	if !strings.Contains(numStr, ".") && !strings.ContainsAny(numStr, "eE") {
+		// Try parsing as int64 and uint64
+		_, errInt := strconv.ParseInt(numStr, 10, 64)
+		_, errUint := strconv.ParseUint(numStr, 10, 64)
+		// If both fail, it's too large
+		return errInt != nil && errUint != nil
+	}
+
+	return false
+}
+
+// isValidNumberString checks if a string represents a valid number
+func isValidNumberString(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	// Use json.Number to validate
+	num := json.Number(s)
+	_, err := num.Float64()
+	return err == nil
+}
+
+// IsScientificNotation checks if a string represents a number in scientific notation
+func IsScientificNotation(s string) bool {
+	return strings.ContainsAny(s, "eE")
+}
+
+// ConvertFromScientific converts a scientific notation string to regular number format
+func ConvertFromScientific(s string) (string, error) {
+	if !IsScientificNotation(s) {
+		return s, nil
+	}
+
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s, err
+	}
+
+	// Format without scientific notation
+	return FormatNumber(f), nil
+}
+
+// =============================================================================
+// Source: navigation.go
+// =============================================================================
+
+
+// =============================================================================
+// NAVIGATOR INTERFACE IMPLEMENTATION
+// =============================================================================
+
+// navigator implements the Navigator interface
+type navigator struct {
+	pathParser PathParser
+	utils      ProcessorUtils
+}
+
+// NewNavigator creates a new navigator instance
+func NewNavigator(pathParser PathParser, utils ProcessorUtils) Navigator {
+	return &navigator{
+		pathParser: pathParser,
+		utils:      utils,
+	}
+}
+
+// NavigateToPath navigates to a specific path in the data
+func (n *navigator) NavigateToPath(data any, segments []PathSegmentInfo) (any, error) {
+	if len(segments) == 0 {
+		return data, nil
+	}
+
+	current := data
+	for i, segment := range segments {
+		result, err := n.NavigateToSegment(current, segment)
+		if err != nil {
+			return nil, fmt.Errorf("failed to navigate segment %d (%s): %w", i, segment.Value, err)
+		}
+
+		if !result.Exists {
+			// Path not found - return error as documented
+			return nil, ErrPathNotFoundNew
+		}
+
+		current = result.Value
+	}
+
+	return current, nil
+}
+
+// NavigateToSegment navigates to a single segment
+func (n *navigator) NavigateToSegment(data any, segment PathSegmentInfo) (NavigationResult, error) {
+	switch segment.Type {
+	case "property":
+		return n.HandlePropertyAccess(data, segment.Key), nil
+	case "array":
+		return n.handleArrayAccess(data, segment)
+	case "slice":
+		return n.handleArraySlice(data, segment)
+	case "extract":
+		return n.handleExtraction(data, segment)
+	default:
+		return NavigationResult{}, fmt.Errorf("unsupported segment type: %s", segment.Type)
+	}
+}
+
+// HandlePropertyAccess handles property access on objects
+func (n *navigator) HandlePropertyAccess(data any, property string) NavigationResult {
+	switch v := data.(type) {
+	case map[string]any:
+		value, exists := v[property]
+		if !exists {
+			// Check if it's a numeric property for array-like access
+			if arr, ok := n.tryConvertToArray(v); ok {
+				if index := n.parseArrayIndex(property); index != -2 {
+					// Handle negative indices
+					if index < 0 {
+						index = len(arr) + index
+					}
+					// Check bounds after negative index conversion
+					if index >= 0 && index < len(arr) {
+						return NavigationResult{Value: arr[index], Exists: true}
+					}
+				}
+			}
+		}
+		return NavigationResult{Value: value, Exists: exists}
+
+	case map[any]any:
+		value, exists := v[property]
+		return NavigationResult{Value: value, Exists: exists}
+
+	case []any:
+		// Handle numeric property access on arrays (like array.5)
+		if index := n.parseArrayIndex(property); index != -2 {
+			// Handle negative indices
+			if index < 0 {
+				index = len(v) + index
+			}
+			// Check bounds after negative index conversion
+			if index >= 0 && index < len(v) {
+				return NavigationResult{Value: v[index], Exists: true}
+			}
+		}
+		return NavigationResult{Value: nil, Exists: false}
+
+	case nil:
+		// Accessing property on nil - boundary case
+		return NavigationResult{Value: nil, Exists: false}
+
+	default:
+		// Cannot access property on this type
+		return NavigationResult{Value: nil, Exists: false}
+	}
+}
+
+// handleArrayAccess handles array index access
+func (n *navigator) handleArrayAccess(data any, segment PathSegmentInfo) (NavigationResult, error) {
+	// Handle property.array[index] syntax
+	if segment.Key != "" {
+		// First access the property
+		propResult := n.HandlePropertyAccess(data, segment.Key)
+		if !propResult.Exists {
+			return NavigationResult{Value: nil, Exists: false}, nil
+		}
+		data = propResult.Value
+	}
+
+	// Now handle array access
+	arr, ok := data.([]any)
+	if !ok {
+		return NavigationResult{Value: nil, Exists: false}, nil
+	}
+
+	index := segment.Index
+
+	// Handle negative indices
+	if index < 0 {
+		index = len(arr) + index
+	}
+
+	// Check bounds
+	if index < 0 || index >= len(arr) {
+		return NavigationResult{Value: nil, Exists: false}, nil
+	}
+
+	return NavigationResult{Value: arr[index], Exists: true}, nil
+}
+
+// handleArraySlice handles array slice operations
+func (n *navigator) handleArraySlice(data any, segment PathSegmentInfo) (NavigationResult, error) {
+	// Handle property.array[start:end:step] syntax
+	if segment.Key != "" {
+		// First access the property
+		propResult := n.HandlePropertyAccess(data, segment.Key)
+		if !propResult.Exists {
+			return NavigationResult{Value: nil, Exists: false}, nil
+		}
+		data = propResult.Value
+	}
+
+	// Now handle array slice
+	arr, ok := data.([]any)
+	if !ok {
+		return NavigationResult{Value: nil, Exists: false}, nil
+	}
+
+	// Parse slice parameters
+	start, end, step := n.parseSliceParameters(segment, len(arr))
+
+	// Perform the slice operation
+	slicedArray := n.performArraySlice(arr, start, end, step)
+	return NavigationResult{Value: slicedArray, Exists: true}, nil
+}
+
+// handleExtraction handles extraction operations ({key} syntax)
+func (n *navigator) handleExtraction(data any, segment PathSegmentInfo) (NavigationResult, error) {
+	extractKey := segment.Extract
+	if extractKey == "" {
+		return NavigationResult{Value: nil, Exists: false}, nil
+	}
+
+	switch v := data.(type) {
+	case []any:
+		// Extract the specified key from all objects in the array
+		var results []any
+		for _, item := range v {
+			if obj, ok := item.(map[string]any); ok {
+				if value, exists := obj[extractKey]; exists {
+					results = append(results, value)
+				} else {
+					results = append(results, nil)
+				}
+			} else {
+				results = append(results, nil)
+			}
+		}
+		return NavigationResult{Value: results, Exists: true}, nil
+
+	case map[string]any:
+		// Extract the key from the object
+		value, exists := v[extractKey]
+		return NavigationResult{Value: value, Exists: exists}, nil
+
+	default:
+		return NavigationResult{Value: nil, Exists: false}, nil
+	}
+}
+
+// parseSliceParameters parses slice parameters from a segment
+func (n *navigator) parseSliceParameters(segment PathSegmentInfo, arrayLength int) (start, end, step int) {
+	// Default values
+	start = 0
+	end = arrayLength
+	step = 1
+
+	// Parse start
+	if segment.Start != nil {
+		start = *segment.Start
+		if start < 0 {
+			start = arrayLength + start
+		}
+	}
+
+	// Parse end
+	if segment.End != nil {
+		end = *segment.End
+		if end < 0 {
+			end = arrayLength + end
+		}
+	}
+
+	// Parse step
+	if segment.Step != nil {
+		step = *segment.Step
+		if step == 0 {
+			step = 1 // Avoid division by zero
+		}
+	}
+
+	// Normalize bounds
+	if start < 0 {
+		start = 0
+	}
+	if end > arrayLength {
+		end = arrayLength
+	}
+	if start > end {
+		start = end
+	}
+
+	return start, end, step
+}
+
+// performArraySlice performs the actual array slicing
+func (n *navigator) performArraySlice(arr []any, start, end, step int) []any {
+	if step == 1 {
+		// Simple slice without step
+		return arr[start:end]
+	}
+
+	// Slice with step
+	var result []any
+	for i := start; i < end; i += step {
+		if i < len(arr) {
+			result = append(result, arr[i])
+		}
+	}
+	return result
+}
+
+// parseArrayIndex parses an array index from a string
+func (n *navigator) parseArrayIndex(indexStr string) int {
+	// Remove brackets if present
+	if strings.HasPrefix(indexStr, "[") && strings.HasSuffix(indexStr, "]") {
+		indexStr = indexStr[1 : len(indexStr)-1]
+	}
+
+	// Try to parse as integer
+	if index, err := strconv.Atoi(indexStr); err == nil {
+		return index
+	}
+
+	return -2 // Invalid index marker
+}
+
+// tryConvertToArray tries to convert a map to an array if it has numeric keys
+func (n *navigator) tryConvertToArray(m map[string]any) ([]any, bool) {
+	// This is a simplified implementation
+	// In a real scenario, you might want more sophisticated logic
+	return nil, false
+}
+
+// isBoundaryCase determines if a navigation failure is a boundary case
+func (n *navigator) isBoundaryCase(data any, segment PathSegmentInfo) bool {
+	switch segment.Type {
+	case "property":
+		return n.isPropertyBoundaryCase(data, segment.Key)
+	case "array":
+		return n.isArrayBoundaryCase(data, segment)
+	default:
+		return false
+	}
+}
+
+// isPropertyBoundaryCase checks if property access failure is a boundary case
+func (n *navigator) isPropertyBoundaryCase(data any, property string) bool {
+	// Check if data is a valid object type that could have properties
+	switch data.(type) {
+	case map[string]any, map[any]any:
+		return true // Property doesn't exist on valid object - boundary case
+	case nil:
+		return true // Accessing property on nil - boundary case
+	case []any:
+		// Check if this is a numeric property access on array
+		if n.isNumericProperty(property) {
+			return true // Numeric property on array - boundary case
+		}
+		return true // Non-numeric property on array - boundary case
+	case string, float64, int, bool:
+		return true // Accessing property on primitive types - boundary case
+	default:
+		return false // Unknown type - structural error
+	}
+}
+
+// isArrayBoundaryCase checks if array access failure is a boundary case
+func (n *navigator) isArrayBoundaryCase(data any, segment PathSegmentInfo) bool {
+	// Get the target array
+	var arrayData any = data
+	if segment.Key != "" {
+		result := n.HandlePropertyAccess(data, segment.Key)
+		if !result.Exists {
+			return true // Property doesn't exist - boundary case
+		}
+		arrayData = result.Value
+	}
+
+	// Check if target is actually an array
+	arr, ok := arrayData.([]any)
+	if !ok {
+		return false // Not an array - structural error
+	}
+
+	// Check if index is out of bounds
+	index := segment.Index
+	if index < 0 {
+		index = len(arr) + index
+	}
+
+	return index < 0 || index >= len(arr) // Out of bounds is boundary case
+}
+
+// isNumericProperty checks if a property name is numeric
+func (n *navigator) isNumericProperty(property string) bool {
+	for _, char := range property {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return len(property) > 0
+}
+
+
+// =============================================================================
+// NAVIGATION CORE (merged from navigation_core.go)
+// =============================================================================
+
+// navigateToPath navigates to a specific path
+func (p *Processor) navigateToPath(data any, path string) (any, error) {
+	// Fast path for root access
+	if path == "" || path == "." || path == "/" {
+		return data, nil
+	}
+
+	// Determine path format and use optimized navigation
+	if strings.HasPrefix(path, "/") {
+		return p.navigateJSONPointer(data, path)
+	}
+
+	// Use dot notation navigation
+	return p.navigateDotNotation(data, path)
+}
+
+// navigateDotNotation handles dot notation paths
+func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
+	current := data
+
+	// Use path segment pool for memory efficiency
+	segments := p.getPathSegments()
+	defer p.putPathSegments(segments)
+
+	// Parse path into segments
+	segments = p.splitPath(path, segments)
+
+	// Check for deep extraction patterns and preprocess if needed
+	if p.isDeepExtractionPath(segments) {
+		segments = p.preprocessPathForDeepExtraction(segments)
+	}
+
+	// Navigate through each segment
+	for i, segment := range segments {
+		// Check for distributed operations
+		if p.isDistributedOperationSegment(segment) {
+			// Handle distributed operations
+			return p.handleDistributedOperation(current, segments[i:])
+		}
+
+		// Handle different segment types
+		switch segment.TypeString() {
+		case "property":
+			result := p.handlePropertyAccess(current, segment.Value)
+			if !result.Exists {
+				return nil, ErrPathNotFound
+			}
+			current = result.Value
+
+		case "array":
+			result := p.handleArrayAccess(current, segment)
+			if !result.Exists {
+				return nil, ErrPathNotFound
+			}
+			current = result.Value
+
+		case "slice":
+			result := p.handleArraySlice(current, segment)
+			if !result.Exists {
+				return nil, ErrPathNotFound
+			}
+			current = result.Value
+
+		case "extract":
+			// Handle extraction operations
+			extractResult, err := p.handleExtraction(current, segment)
+			if err != nil {
+				return nil, err
+			}
+			current = extractResult
+
+			// Check if this is followed by array operations
+			if i+1 < len(segments) {
+				nextSegment := segments[i+1]
+				if nextSegment.TypeString() == "array" || nextSegment.TypeString() == "slice" {
+					// Check if the current extraction was flat
+					// If it was flat, the result is a flattened array, not an array of arrays
+					if segment.IsFlat {
+						// For flat extraction results, apply array operations directly
+						if nextSegment.TypeString() == "slice" {
+							result := p.handleArraySlice(current, nextSegment)
+							if result.Exists {
+								current = result.Value
+							}
+						} else {
+							result := p.handleArrayAccess(current, nextSegment)
+							if result.Exists {
+								current = result.Value
+							}
+						}
+					} else {
+						// For non-flat extraction, use post-extraction handling
+						current = p.handlePostExtractionArrayAccess(current, nextSegment)
+					}
+					i++ // Skip the next segment as we've processed it
+				}
+			}
+
+		default:
+			return nil, fmt.Errorf("unsupported segment type: %v", segment.TypeString())
+		}
+	}
+
+	return current, nil
+}
+
+// navigateJSONPointer handles JSON Pointer format paths
+func (p *Processor) navigateJSONPointer(data any, path string) (any, error) {
+	if path == "/" {
+		return data, nil
+	}
+
+	// Remove leading slash and split with pre-allocated capacity
+	pathWithoutSlash := path[1:]
+	segmentCount := strings.Count(pathWithoutSlash, "/") + 1
+	segments := make([]string, 0, segmentCount)
+	segments = strings.Split(pathWithoutSlash, "/")
+
+	current := data
+
+	for _, segment := range segments {
+		if segment == "" {
+			continue
+		}
+
+		// Optimized unescape for JSON Pointer special characters
+		if strings.Contains(segment, "~") {
+			segment = p.unescapeJSONPointer(segment)
+		}
+
+		result := p.handlePropertyAccess(current, segment)
+		if !result.Exists {
+			return nil, ErrPathNotFound
+		}
+		current = result.Value
+	}
+
+	return current, nil
+}
+
+// unescapeJSONPointer unescapes JSON Pointer special characters
+func (p *Processor) unescapeJSONPointer(segment string) string {
+	// JSON Pointer escaping: ~1 -> /, ~0 -> ~
+	segment = strings.ReplaceAll(segment, "~1", "/")
+	segment = strings.ReplaceAll(segment, "~0", "~")
+	return segment
+}
+
+// handlePropertyAccess handles property access with optimized type checking
+func (p *Processor) handlePropertyAccess(data any, property string) PropertyAccessResult {
+	switch v := data.(type) {
+	case map[string]any:
+		if val, exists := v[property]; exists {
+			return PropertyAccessResult{Value: val, Exists: true}
+		}
+		return PropertyAccessResult{Exists: false}
+
+	case map[any]any:
+		if val, exists := v[property]; exists {
+			return PropertyAccessResult{Value: val, Exists: true}
+		}
+		return PropertyAccessResult{Exists: false}
+
+	case []any:
+		// Try to parse property as array index
+		if index := p.parseArrayIndex(property); index >= 0 && index < len(v) {
+			return PropertyAccessResult{Value: v[index], Exists: true}
+		}
+		return PropertyAccessResult{Exists: false}
+
+	default:
+		// Try struct field access
+		if structValue := p.handleStructAccess(data, property); structValue != nil {
+			return PropertyAccessResult{Value: structValue, Exists: true}
+		}
+		return PropertyAccessResult{Exists: false}
+	}
+}
+
+// handlePropertyAccessValue returns the value directly (for backward compatibility)
+func (p *Processor) handlePropertyAccessValue(data any, property string) any {
+	result := p.handlePropertyAccess(data, property)
+	if result.Exists {
+		return result.Value
+	}
+	return nil
+}
+
+// parseArrayIndex parses a string as an array index, returns -1 if invalid
+func (p *Processor) parseArrayIndex(property string) int {
+	if index, err := strconv.Atoi(property); err == nil && index >= 0 {
+		return index
+	}
+	return -1
+}
+
+// splitPath splits a path into segments with memory pooling
+func (p *Processor) splitPath(path string, segments []PathSegment) []PathSegment {
+	// Clear existing segments
+	segments = segments[:0]
+
+	// Preprocess path to handle special cases
+	sb := p.getStringBuilder()
+	defer p.putStringBuilder(sb)
+
+	processedPath := p.preprocessPath(path, sb)
+
+	// Split into segments
+	return p.splitPathIntoSegments(processedPath, segments)
+}
+
+// preprocessPath preprocesses the path to handle special syntax
+func (p *Processor) preprocessPath(path string, sb *strings.Builder) string {
+	sb.Reset()
+
+	runes := []rune(path)
+	for i, r := range runes {
+		switch r {
+		case '[':
+			// Add dot before [ if needed
+			if i > 0 && p.needsDotBefore(runes[i-1]) {
+				sb.WriteRune('.')
+			}
+			sb.WriteRune(r)
+		case '{':
+			// Add dot before { if needed
+			if i > 0 && p.needsDotBefore(runes[i-1]) {
+				sb.WriteRune('.')
+			}
+			sb.WriteRune(r)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+
+	return sb.String()
+}
+
+// needsDotBefore checks if a dot is needed before the current character
+func (p *Processor) needsDotBefore(prevChar rune) bool {
+	return prevChar != '.' && prevChar != '[' && prevChar != '{'
+}
+
+// splitPathIntoSegments splits a preprocessed path into segments
+func (p *Processor) splitPathIntoSegments(path string, segments []PathSegment) []PathSegment {
+	parts := strings.Split(path, ".")
+
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		segments = p.parsePathSegment(part, segments)
+	}
+
+	return segments
+}
+
+// parsePathSegment parses a single path segment
+func (p *Processor) parsePathSegment(part string, segments []PathSegment) []PathSegment {
+	// Handle different segment types
+	if strings.Contains(part, "[") {
+		// Array or slice segment
+		return p.parseArraySegment(part, segments)
+	} else if strings.Contains(part, "{") {
+		// Extraction segment
+		return p.parseExtractionSegment(part, segments)
+	} else {
+		// Check if this is a numeric index (dot notation like "0", "1", etc.)
+		if index, err := strconv.Atoi(part); err == nil {
+			// This is a numeric index, treat as array access
+			segments = append(segments, PathSegment{
+				Value: part,
+				Type:  internal.ArrayIndexSegment,
+				Index: index,
+			})
+			return segments
+		}
+
+		// Simple property segment
+		segments = append(segments, PathSegment{
+			Value: part,
+			Type:  internal.PropertySegment,
+		})
+		return segments
+	}
+}
+
+// isComplexPath determines if a path requires complex processing
+func (p *Processor) isComplexPath(path string) bool {
+	// Check for complex patterns
+	complexPatterns := []string{
+		"{", "}", // Extraction syntax
+		"[", "]", // Array access
+		":", // Slice syntax
+	}
+
+	for _, pattern := range complexPatterns {
+		if strings.Contains(path, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// hasComplexSegments checks if segments contain complex operations
+func (p *Processor) hasComplexSegments(segments []PathSegment) bool {
+	for _, segment := range segments {
+		switch segment.TypeString() {
+		case "slice", "extract":
+			return true
+		}
+	}
+	return false
+}
+
+// parsePath parses a path string into segments (legacy method)
+func (p *Processor) parsePath(path string) ([]string, error) {
+	if path == "" {
+		return []string{}, nil
+	}
+
+	// Simple split for basic paths
+	if !p.isComplexPath(path) {
+		return strings.Split(path, "."), nil
+	}
+
+	// For complex paths, use the full parser
+	segments := p.getPathSegments()
+	defer p.putPathSegments(segments)
+
+	segments = p.splitPath(path, segments)
+
+	// Convert to string array
+	result := make([]string, len(segments))
+	for i, segment := range segments {
+		result[i] = segment.Value
+	}
+
+	return result, nil
+}
+
+// isDistributedOperationPath checks if a path requires distributed operation handling
+func (p *Processor) isDistributedOperationPath(path string) bool {
+	// Check for patterns that indicate distributed operations
+	distributedPatterns := []string{
+		"}[", // Extraction followed by array access
+		"}:", // Extraction followed by slice
+		"}{", // Consecutive extractions
+	}
+
+	for _, pattern := range distributedPatterns {
+		if strings.Contains(path, pattern) {
+			return true
+		}
+	}
+
+	// Check for flat extraction patterns
+	if strings.Contains(path, "{flat:") {
+		return true
+	}
+
+	return false
+}
+
+// isDistributedOperationSegment checks if a segment requires distributed handling
+func (p *Processor) isDistributedOperationSegment(segment PathSegment) bool {
+	// Check segment properties for distributed operation indicators
+	return segment.IsDistributed || segment.Extract != ""
+}
+
+// handleDistributedOperation handles distributed operations
+func (p *Processor) handleDistributedOperation(data any, segments []PathSegment) (any, error) {
+	// This is a placeholder - the actual implementation would be in extraction_handler.go
+	return p.getValueWithDistributedOperation(data, p.reconstructPath(segments))
+}
+
+// reconstructPath reconstructs a path string from segments
+func (p *Processor) reconstructPath(segments []PathSegment) string {
+	if len(segments) == 0 {
+		return ""
+	}
+
+	sb := p.getStringBuilder()
+	defer p.putStringBuilder(sb)
+
+	for i, segment := range segments {
+		if i > 0 {
+			sb.WriteRune('.')
+		}
+		sb.WriteString(segment.Value)
+	}
+
+	return sb.String()
+}
+
+// isDeepExtractionPath checks if segments contain deep extraction patterns
+
+// parseArraySegment parses array access segments like [0], [1:3], etc.
+func (p *Processor) parseArraySegment(part string, segments []PathSegment) []PathSegment {
+	// Find the bracket positions
+	openBracket := strings.Index(part, "[")
+	closeBracket := strings.LastIndex(part, "]")
+
+	if openBracket == -1 || closeBracket == -1 || closeBracket <= openBracket {
+		// Invalid bracket syntax, treat as property
+		segments = append(segments, PathSegment{
+			Value: part,
+			Type:  internal.PropertySegment,
+		})
+		return segments
+	}
+
+	// Extract property name before bracket (if any)
+	if openBracket > 0 {
+		propertyName := part[:openBracket]
+		segments = append(segments, PathSegment{
+			Value: propertyName,
+			Type:  internal.PropertySegment,
+		})
+	}
+
+	// Extract bracket content
+	bracketContent := part[openBracket+1 : closeBracket]
+
+	// Determine if this is a slice or array index
+	if strings.Contains(bracketContent, ":") {
+		// Slice syntax - parse slice parameters
+		segment := PathSegment{
+			Value: bracketContent,
+			Type:  internal.ArraySliceSegment,
+		}
+
+		// Parse slice parameters
+		parts := strings.Split(bracketContent, ":")
+		if len(parts) >= 2 {
+			// Parse start
+			if parts[0] != "" {
+				if start, err := strconv.Atoi(parts[0]); err == nil {
+					segment.Start = &start
+				}
+			}
+
+			// Parse end
+			if parts[1] != "" {
+				if end, err := strconv.Atoi(parts[1]); err == nil {
+					segment.End = &end
+				}
+			}
+
+			// Parse step (if provided)
+			if len(parts) == 3 && parts[2] != "" {
+				if step, err := strconv.Atoi(parts[2]); err == nil {
+					segment.Step = &step
+				}
+			}
+		}
+
+		segments = append(segments, segment)
+	} else {
+		// Array index
+		segment := PathSegment{
+			Value: bracketContent,
+			Type:  internal.ArrayIndexSegment,
+		}
+
+		// Parse index
+		if index, err := strconv.Atoi(bracketContent); err == nil {
+			segment.Index = index
+		}
+
+		segments = append(segments, segment)
+	}
+
+	// Handle any remaining part after the bracket
+	if closeBracket+1 < len(part) {
+		remaining := part[closeBracket+1:]
+		if remaining != "" {
+			segments = p.parsePathSegment(remaining, segments)
+		}
+	}
+
+	return segments
+}
+
+// parseExtractionSegment parses extraction segments like {key}, {flat:key}, etc.
+func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) []PathSegment {
+	// Find the brace positions
+	openBrace := strings.Index(part, "{")
+	closeBrace := strings.LastIndex(part, "}")
+
+	if openBrace == -1 || closeBrace == -1 || closeBrace <= openBrace {
+		// Invalid brace syntax, treat as property
+		segments = append(segments, PathSegment{
+			Value: part,
+			Type:  internal.PropertySegment,
+		})
+		return segments
+	}
+
+	// Extract property name before brace (if any)
+	if openBrace > 0 {
+		propertyName := part[:openBrace]
+		segments = append(segments, PathSegment{
+			Value: propertyName,
+			Type:  internal.PropertySegment,
+		})
+	}
+
+	// Extract brace content
+	braceContent := part[openBrace+1 : closeBrace]
+
+	// Create extraction segment
+	extractSegment := PathSegment{
+		Value: braceContent,
+		Type:  internal.ExtractSegment,
+	}
+
+	// Check for flat extraction
+	if strings.HasPrefix(braceContent, "flat:") {
+		extractSegment.Extract = braceContent[5:] // Remove "flat:" prefix
+		extractSegment.IsFlat = true
+	} else {
+		extractSegment.Extract = braceContent
+	}
+
+	segments = append(segments, extractSegment)
+
+	// Handle any remaining part after the brace
+	if closeBrace+1 < len(part) {
+		remaining := part[closeBrace+1:]
+		if remaining != "" {
+			segments = p.parsePathSegment(remaining, segments)
+		}
+	}
+
+	return segments
+}
+
+
+// =============================================================================
+// NAVIGATION UTILITIES (merged from navigation_utils.go)
+// =============================================================================
+
+// Type checking utilities
+
+// isArrayType checks if a value is an array type
+func (p *Processor) isArrayType(data any) bool {
+	switch data.(type) {
+	case []any:
+		return true
+	default:
+		return false
+	}
+}
+
+// isObjectType checks if a value is an object type
+func (p *Processor) isObjectType(data any) bool {
+	switch data.(type) {
+	case map[string]any, map[any]any:
+		return true
+	default:
+		return false
+	}
+}
+
+// isMapType checks if a value is a map type
+func (p *Processor) isMapType(data any) bool {
+	switch data.(type) {
+	case map[string]any, map[any]any:
+		return true
+	default:
+		return false
+	}
+}
+
+// isSliceType checks if a value is a slice type
+func (p *Processor) isSliceType(data any) bool {
+	if data == nil {
+		return false
+	}
+
+	v := reflect.ValueOf(data)
+	return v.Kind() == reflect.Slice
+}
+
+// isPrimitiveType checks if a value is a primitive type
+func (p *Processor) isPrimitiveType(data any) bool {
+	switch data.(type) {
+	case string, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool:
+		return true
+	default:
+		return false
+	}
+}
+
+// isNilOrEmpty checks if a value is nil or empty
+func (p *Processor) isNilOrEmpty(data any) bool {
+	if data == nil {
+		return true
+	}
+
+	switch v := data.(type) {
+	case string:
+		return v == ""
+	case []any:
+		return len(v) == 0
+	case map[string]any:
+		return len(v) == 0
+	case map[any]any:
+		return len(v) == 0
+	default:
+		return false
+	}
+}
+
+// Data conversion utilities
+
+// convertToStringMap converts a map[any]any to map[string]any
+func (p *Processor) convertToStringMap(data map[any]any) map[string]any {
+	result := make(map[string]any)
+	for key, value := range data {
+		if strKey, ok := key.(string); ok {
+			result[strKey] = value
+		} else {
+			result[fmt.Sprintf("%v", key)] = value
+		}
+	}
+	return result
+}
+
+// convertToAnyMap converts a map[string]any to map[any]any
+func (p *Processor) convertToAnyMap(data map[string]any) map[any]any {
+	result := make(map[any]any)
+	for key, value := range data {
+		result[key] = value
+	}
+	return result
+}
+
+// ensureStringMap ensures data is a map[string]any
+func (p *Processor) ensureStringMap(data any) (map[string]any, bool) {
+	switch v := data.(type) {
+	case map[string]any:
+		return v, true
+	case map[any]any:
+		return p.convertToStringMap(v), true
+	default:
+		return nil, false
+	}
+}
+
+// ensureArray ensures data is a []any
+func (p *Processor) ensureArray(data any) ([]any, bool) {
+	switch v := data.(type) {
+	case []any:
+		return v, true
+	default:
+		// Try to convert using reflection
+		rv := reflect.ValueOf(data)
+		if rv.Kind() == reflect.Slice {
+			result := make([]any, rv.Len())
+			for i := 0; i < rv.Len(); i++ {
+				result[i] = rv.Index(i).Interface()
+			}
+			return result, true
+		}
+		return nil, false
+	}
+}
+
+// Deep copy utilities
+
+// deepCopyData creates a deep copy of data
+func (p *Processor) deepCopyData(data any) any {
+	switch v := data.(type) {
+	case map[string]any:
+		return p.deepCopyStringMap(v)
+	case map[any]any:
+		return p.deepCopyAnyMap(v)
+	case []any:
+		return p.deepCopyArray(v)
+	case string, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool:
+		return v // Primitives are copied by value
+	default:
+		// For other types, try to use reflection
+		return p.deepCopyReflection(data)
+	}
+}
+
+// deepCopyStringMap creates a deep copy of a string map
+func (p *Processor) deepCopyStringMap(data map[string]any) map[string]any {
+	result := make(map[string]any)
+	for key, value := range data {
+		result[key] = p.deepCopyData(value)
+	}
+	return result
+}
+
+// deepCopyAnyMap creates a deep copy of an any map
+func (p *Processor) deepCopyAnyMap(data map[any]any) map[any]any {
+	result := make(map[any]any)
+	for key, value := range data {
+		result[key] = p.deepCopyData(value)
+	}
+	return result
+}
+
+// deepCopyArray creates a deep copy of an array
+func (p *Processor) deepCopyArray(data []any) []any {
+	result := make([]any, len(data))
+	for i, value := range data {
+		result[i] = p.deepCopyData(value)
+	}
+	return result
+}
+
+// deepCopyReflection creates a deep copy using reflection
+func (p *Processor) deepCopyReflection(data any) any {
+	if data == nil {
+		return nil
+	}
+
+	v := reflect.ValueOf(data)
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			return nil
+		}
+		// Create new pointer and copy the value
+		newPtr := reflect.New(v.Elem().Type())
+		newPtr.Elem().Set(reflect.ValueOf(p.deepCopyReflection(v.Elem().Interface())))
+		return newPtr.Interface()
+	case reflect.Struct:
+		// Create new struct and copy fields
+		newStruct := reflect.New(v.Type()).Elem()
+		for i := 0; i < v.NumField(); i++ {
+			if v.Field(i).CanInterface() {
+				newStruct.Field(i).Set(reflect.ValueOf(p.deepCopyReflection(v.Field(i).Interface())))
+			}
+		}
+		return newStruct.Interface()
+	default:
+		// For other types, return as-is
+		return data
+	}
+}
+
+// Path utilities
+
+// unescapeJSONPointer unescapes JSON Pointer characters
+
+// escapeJSONPointer escapes JSON Pointer characters
+func (p *Processor) escapeJSONPointer(segment string) string {
+	// JSON Pointer escaping: ~ becomes ~0, / becomes ~1
+	segment = strings.ReplaceAll(segment, "~", "~0")
+	segment = strings.ReplaceAll(segment, "/", "~1")
+	return segment
+}
+
+// normalizePathSeparators normalizes path separators
+func (p *Processor) normalizePathSeparators(path string) string {
+	// Replace multiple dots with single dots
+	for strings.Contains(path, "..") {
+		path = strings.ReplaceAll(path, "..", ".")
+	}
+
+	// Remove leading and trailing dots
+	path = strings.Trim(path, ".")
+
+	return path
+}
+
+// splitPathSegments splits a path into segments
+func (p *Processor) splitPathSegments(path string) []string {
+	if path == "" {
+		return []string{}
+	}
+
+	// Handle JSON Pointer format
+	if strings.HasPrefix(path, "/") {
+		pathWithoutSlash := path[1:]
+		if pathWithoutSlash == "" {
+			return []string{}
+		}
+		return strings.Split(pathWithoutSlash, "/")
+	}
+
+	// Handle dot notation
+	return strings.Split(path, ".")
+}
+
+// joinPathSegments joins segments into a path
+func (p *Processor) joinPathSegments(segments []string, useJSONPointer bool) string {
+	if len(segments) == 0 {
+		return ""
+	}
+
+	if useJSONPointer {
+		return "/" + strings.Join(segments, "/")
+	}
+
+	return strings.Join(segments, ".")
+}
+
+// Validation utilities
+
+// isValidPropertyName checks if a property name is valid
+func (p *Processor) isValidPropertyName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, ".[]{}()")
+}
+
+// isValidArrayIndex checks if an array index is valid
+func (p *Processor) isValidArrayIndex(index string) bool {
+	if index == "" {
+		return false
+	}
+
+	// Check for negative indices
+	if strings.HasPrefix(index, "-") {
+		index = index[1:]
+	}
+
+	// Check if it's a valid number
+	_, err := strconv.Atoi(index)
+	return err == nil
+}
+
+// isValidSliceRange checks if a slice range is valid
+func (p *Processor) isValidSliceRange(rangeStr string) bool {
+	parts := strings.Split(rangeStr, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return false
+	}
+
+	// Check each part
+	for _, part := range parts {
+		if part != "" {
+			if _, err := strconv.Atoi(part); err != nil {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+// needsLegacyComplexHandling determines if a path needs legacy complex handling
+func (p *Processor) needsLegacyComplexHandling(path string) bool {
+	// Check if this is a distributed operation - if so, don't use legacy handling
+	if p.isDistributedOperationPath(path) {
+		return false
+	}
+
+	// Only use legacy handling for very specific complex patterns that the unified processor can't handle yet
+	var legacyPatterns []string
+
+	for _, pattern := range legacyPatterns {
+		if strings.Contains(path, pattern) {
+			return true
+		}
+	}
+
+	// Check for multiple consecutive extractions (very complex patterns)
+	// Note: Modern distributed operations can handle multiple extractions, so we're more lenient
+	extractCount := strings.Count(path, "{")
+	if extractCount > 4 { // Increased threshold since distributed operations can handle more complexity
+		return true
+	}
+
+	// Check for step-based slicing (e.g., [::2], [1:5:2])
+	if strings.Contains(path, "::") || (strings.Count(path, ":") > 2) {
+		return true
+	}
+
+	return false
+}
+
+// Error utilities
+
+// wrapError wraps an error with additional context
+func (p *Processor) wrapError(err error, context string) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", context, err)
+}
+
+// createPathError creates a path-specific error
+func (p *Processor) createPathError(path string, operation string, err error) error {
+	return fmt.Errorf("failed to %s at path '%s': %w", operation, path, err)
+}
+
+// Memory management utilities
+
+// getStringBuilder gets a string builder from the pool with enhanced safety and monitoring
+func (p *Processor) getStringBuilder() *strings.Builder {
+	if p.resources.stringBuilderPool != nil && !p.isClosing() {
+		if builder := p.resources.stringBuilderPool.Get(); builder != nil {
+			if sb, ok := builder.(*strings.Builder); ok {
+				sb.Reset()
+				if p.resourceMonitor != nil {
+					p.resourceMonitor.RecordPoolHit()
+				}
+				return sb
+			}
+		}
+	}
+
+	// Record pool miss
+	if p.resourceMonitor != nil {
+		p.resourceMonitor.RecordPoolMiss()
+		p.resourceMonitor.RecordAllocation(512) // Estimated initial capacity
+	}
+
+	// Fallback: create new builder with optimized capacity
+	sb := &strings.Builder{}
+	sb.Grow(512)
+	return sb
+}
+
+// putStringBuilder returns a string builder to the pool with optimized size limits and monitoring
+func (p *Processor) putStringBuilder(builder *strings.Builder) {
+	if p.resources.stringBuilderPool != nil && builder != nil && !p.isClosing() {
+		// Optimized size limits for better memory efficiency
+		capacity := builder.Cap()
+		if capacity <= 4096 && capacity >= 128 { // Reduced upper limit for better memory usage
+			builder.Reset() // Clear content but keep capacity
+			p.resources.stringBuilderPool.Put(builder)
+		} else {
+			// Record eviction for oversized or undersized builders
+			if p.resourceMonitor != nil {
+				p.resourceMonitor.RecordPoolEviction()
+				p.resourceMonitor.RecordDeallocation(int64(capacity))
+			}
+		}
+	}
+}
