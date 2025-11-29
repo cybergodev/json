@@ -13,7 +13,7 @@ import (
 )
 
 // ComprehensiveValidationExample demonstrates all major features of the JSON library
-func main() {
+func runComprehensiveValidation() {
 	fmt.Println("🚀 JSON Library Comprehensive Validation Example")
 	fmt.Println(strings.Repeat("=", 60))
 

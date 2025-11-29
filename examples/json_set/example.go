@@ -95,27 +95,6 @@ const emptyJsonStr = `{}`
 
 func main() {
 
-	// j := map[string]any{
-	// 	"user": []any{
-	// 		map[string]any{"id": 1, "name": "John", "friend": []any{
-	// 			map[string]any{"name": "Alice"},
-	// 			map[string]any{"name": "Bob"},
-	// 		}},
-	// 		map[string]any{"id": 1, "name": "David", "friend": []any{
-	// 			map[string]any{"name": "Susan"},
-	// 			map[string]any{"name": "Carol"},
-	// 		}},
-	// 	},
-	// }
-	//
-	// en, err := json.Encode(j)
-	// if err != nil {
-	// 	return
-	// }
-	//
-	// fmt.Println(en)
-	// return
-
 	// Basic Set examples
 	printLines("=== Basic Set Examples ===")
 	basicSetOperations()

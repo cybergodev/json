@@ -43,12 +43,12 @@ type cacheShard struct {
 
 // cacheEntry represents a cache entry with memory tracking and access patterns
 type cacheEntry struct {
-	data         any   // The cached data
-	timestamp    int64 // Creation timestamp (Unix nanoseconds, atomic)
-	lastAccess   int64 // Last access timestamp (Unix nanoseconds, atomic)
-	hits         int64 // Access count (atomic)
-	size         int32 // Estimated size in bytes
-	frequency    int32 // Access frequency for LFU (atomic)
+	data       any   // The cached data
+	timestamp  int64 // Creation timestamp (Unix nanoseconds, atomic)
+	lastAccess int64 // Last access timestamp (Unix nanoseconds, atomic)
+	hits       int64 // Access count (atomic)
+	size       int32 // Estimated size in bytes
+	frequency  int32 // Access frequency for LFU (atomic)
 }
 
 // NewCacheManager creates a new cache manager with sharding
@@ -318,30 +318,40 @@ func estimateSize(value any) int {
 	case bool:
 		return 1
 	case []any:
-		// Optimized: avoid recursive calls for large slices
+		// Optimized: use sampling for large slices to avoid performance issues
 		size := 24 // slice header
-		if len(v) > 100 {
-			// For large slices, use sampling to avoid performance issues
-			sampleSize := 10
+		length := len(v)
+		if length == 0 {
+			return size
+		}
+		if length > 100 {
+			// Sample-based estimation for large slices
+			sampleSize := min(10, length)
 			totalSample := 0
-			for i := 0; i < sampleSize && i < len(v); i++ {
-				totalSample += estimateSize(v[i])
+			step := length / sampleSize
+			for i := 0; i < sampleSize; i++ {
+				totalSample += estimateSize(v[i*step])
 			}
 			avgItemSize := totalSample / sampleSize
-			return size + (len(v) * avgItemSize)
+			return size + (length * avgItemSize)
 		}
+		// Full calculation for small slices
 		for _, item := range v {
 			size += estimateSize(item)
 		}
 		return size
 	case map[string]any:
-		// Optimized: avoid recursive calls for large maps
+		// Optimized: use sampling for large maps
 		size := 48 // map header estimate
-		if len(v) > 50 {
-			// For large maps, use sampling
-			sampleSize := 10
-			count := 0
+		length := len(v)
+		if length == 0 {
+			return size
+		}
+		if length > 50 {
+			// Sample-based estimation for large maps
+			sampleSize := min(10, length)
 			totalSample := 0
+			count := 0
 			for k, val := range v {
 				if count >= sampleSize {
 					break
@@ -350,16 +360,25 @@ func estimateSize(value any) int {
 				count++
 			}
 			avgItemSize := totalSample / sampleSize
-			return size + (len(v) * avgItemSize)
+			return size + (length * avgItemSize)
 		}
+		// Full calculation for small maps
 		for k, val := range v {
 			size += len(k) + 16 + estimateSize(val)
 		}
 		return size
 	default:
-		// Use reflection for complex types - cache the result
+		// Use reflection for complex types
 		return int(reflect.TypeOf(value).Size())
 	}
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // CacheStats represents cache statistics

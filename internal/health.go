@@ -225,7 +225,7 @@ func (hc *HealthChecker) checkConcurrency() CheckResult {
 
 	return CheckResult{
 		Healthy: true,
-		Message: fmt.Sprintf("Concurrency healthy: %d active, %d maxInt", active, maxInt),
+		Message: fmt.Sprintf("Concurrency healthy: %d active, %d max", active, maxInt),
 	}
 }
 
