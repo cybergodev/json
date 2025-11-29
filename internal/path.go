@@ -248,8 +248,6 @@ func (pp *PathParser) parseDotNotation(path string) ([]PathSegment, error) {
 	// Smart split that respects extraction and array operation boundaries
 	parts := pp.smartSplitPath(path)
 
-	// fmt.Printf("DEBUG: Path '%s' split into parts: %v\n", path, parts)
-
 	for _, part := range parts {
 		if part == "" {
 			continue

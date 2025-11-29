@@ -1,20 +1,20 @@
-﻿package json
+package json
 
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/cybergodev/json/internal"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/cybergodev/json/internal"
 )
 
 // =============================================================================
 // Source: parser.go
 // =============================================================================
-
 
 // =============================================================================
 // PROCESSOR PARSING METHODS
@@ -249,7 +249,6 @@ func (p *Processor) Compact(jsonStr string, opts ...*ProcessorOptions) (string, 
 	return result, nil
 }
 
-
 // =============================================================================
 // PATH PARSER (merged from path_parser.go)
 // =============================================================================
@@ -449,8 +448,13 @@ func (pp *pathParser) parseJSONPointer(path string) ([]PathSegmentInfo, error) {
 
 // smartSplitPath splits path by dots while respecting extraction and array operation boundaries
 func (pp *pathParser) smartSplitPath(path string) []string {
-	var parts []string
+	// Pre-allocate with estimated capacity to reduce allocations
+	estimatedParts := strings.Count(path, ".") + 1
+	parts := make([]string, 0, estimatedParts)
+
 	var current strings.Builder
+	current.Grow(len(path) / estimatedParts) // Pre-allocate based on average part size
+
 	var braceDepth int
 	var bracketDepth int
 
@@ -827,7 +831,6 @@ func (pp *pathParser) isNumericIndex(s string) bool {
 	return true
 }
 
-
 // =============================================================================
 // NUMBER PARSER (merged from number_parser.go)
 // =============================================================================
@@ -1156,115 +1159,7 @@ func SmartNumberConversion(value any) any {
 	}
 }
 
-// FormatNumber formats a number without scientific notation when possible
-func FormatNumber(value any) string {
-	switch v := value.(type) {
-	case int, int8, int16, int32, int64:
-		return fmt.Sprintf("%d", v)
-	case uint, uint8, uint16, uint32, uint64:
-		return fmt.Sprintf("%d", v)
-	case float32:
-		// Use fixed-point notation for reasonable range
-		if v >= -1e6 && v <= 1e6 {
-			return strconv.FormatFloat(float64(v), 'f', -1, 32)
-		}
-		return strconv.FormatFloat(float64(v), 'g', -1, 32)
-	case float64:
-		// Use fixed-point notation for reasonable range
-		if v >= -1e15 && v <= 1e15 {
-			return strconv.FormatFloat(v, 'f', -1, 64)
-		}
-		return strconv.FormatFloat(v, 'g', -1, 64)
-	case json.Number:
-		return string(v)
-	case string:
-		// If it's a string that represents a number, return as-is
-		return v
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
-
-// SafeConvertToInt64 safely converts a value to int64, handling large numbers
-func SafeConvertToInt64(value any) (int64, error) {
-	switch v := value.(type) {
-	case int:
-		return int64(v), nil
-	case int32:
-		return int64(v), nil
-	case int64:
-		return v, nil
-	case uint:
-		if v <= uint(^uint64(0)>>1) {
-			return int64(v), nil
-		}
-		return 0, fmt.Errorf("value %d exceeds int64 range", v)
-	case uint32:
-		return int64(v), nil
-	case uint64:
-		if v <= uint64(^uint64(0)>>1) {
-			return int64(v), nil
-		}
-		return 0, fmt.Errorf("value %d exceeds int64 range", v)
-	case float64:
-		if v >= float64(^uint64(0)>>1)*-1 && v <= float64(^uint64(0)>>1) && v == float64(int64(v)) {
-			return int64(v), nil
-		}
-		return 0, fmt.Errorf("value %g cannot be safely converted to int64", v)
-	case string:
-		// Try to parse string as int64
-		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
-			return i, nil
-		}
-		return 0, fmt.Errorf("string %q cannot be converted to int64", v)
-	case json.Number:
-		return SafeConvertToInt64(string(v))
-	default:
-		return 0, fmt.Errorf("cannot convert %T to int64", v)
-	}
-}
-
-// SafeConvertToUint64 safely converts a value to uint64, handling large numbers
-func SafeConvertToUint64(value any) (uint64, error) {
-	switch v := value.(type) {
-	case int:
-		if v >= 0 {
-			return uint64(v), nil
-		}
-		return 0, fmt.Errorf("negative value %d cannot be converted to uint64", v)
-	case int32:
-		if v >= 0 {
-			return uint64(v), nil
-		}
-		return 0, fmt.Errorf("negative value %d cannot be converted to uint64", v)
-	case int64:
-		if v >= 0 {
-			return uint64(v), nil
-		}
-		return 0, fmt.Errorf("negative value %d cannot be converted to uint64", v)
-	case uint:
-		return uint64(v), nil
-	case uint32:
-		return uint64(v), nil
-	case uint64:
-		return v, nil
-	case float64:
-		if v >= 0 && v <= float64(^uint64(0)) && v == float64(uint64(v)) {
-			return uint64(v), nil
-		}
-		return 0, fmt.Errorf("value %g cannot be safely converted to uint64", v)
-	case string:
-		// Try to parse string as uint64
-		if u, err := strconv.ParseUint(v, 10, 64); err == nil {
-			return u, nil
-		}
-		return 0, fmt.Errorf("string %q cannot be converted to uint64", v)
-	case json.Number:
-		return SafeConvertToUint64(string(v))
-	default:
-		return 0, fmt.Errorf("cannot convert %T to uint64", v)
-	}
-}
+// Note: FormatNumber, SafeConvertToInt64, and SafeConvertToUint64 are now in type_conversion.go
 
 // IsLargeNumber checks if a string represents a number that's too large for standard numeric types
 func IsLargeNumber(numStr string) bool {
@@ -1323,7 +1218,6 @@ func ConvertFromScientific(s string) (string, error) {
 // =============================================================================
 // Source: navigation.go
 // =============================================================================
-
 
 // =============================================================================
 // NAVIGATOR INTERFACE IMPLEMENTATION
@@ -1679,7 +1573,6 @@ func (n *navigator) isNumericProperty(property string) bool {
 	}
 	return len(property) > 0
 }
-
 
 // =============================================================================
 // NAVIGATION CORE (merged from navigation_core.go)
@@ -2223,7 +2116,6 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 
 	return segments
 }
-
 
 // =============================================================================
 // NAVIGATION UTILITIES (merged from navigation_utils.go)

@@ -36,69 +36,37 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
-	"sync/atomic"
 )
 
-// Global processor instance for convenience functions with enhanced thread safety
+// Global processor instance for convenience functions with improved thread safety
 var (
-	defaultProcessor     atomic.Pointer[Processor]
-	defaultProcessorOnce sync.Once
-	processorGeneration  int64        // Generation counter for processor updates (atomic)
-	shutdownSignal       int32        // Shutdown signal for graceful termination (atomic)
-	globalMutex          sync.RWMutex // Protects global operations when needed
+	defaultProcessor   *Processor
+	defaultProcessorMu sync.RWMutex
 )
 
-// getDefaultProcessor returns the global default processor instance
-// This is optimized for production use with enhanced thread safety and error handling
+// getDefaultProcessor returns the global default processor instance with proper recreation logic
 func getDefaultProcessor() *Processor {
-	// Check shutdown signal first
-	if atomic.LoadInt32(&shutdownSignal) != 0 {
-		// Return a minimal processor during shutdown
-		return newDefault()
+	// Fast path with read lock
+	defaultProcessorMu.RLock()
+	p := defaultProcessor
+	defaultProcessorMu.RUnlock()
+
+	// Check if processor is valid
+	if p != nil && !p.IsClosed() {
+		return p
 	}
 
-	// Fast path: check if already initialized without lock
-	if processor := defaultProcessor.Load(); processor != nil {
-		// Verify processor is still healthy
-		if !processor.IsClosed() {
-			return processor
-		}
-		// Processor is closed, need to reinitialize
-		atomic.AddInt64(&processorGeneration, 1)
+	// Slow path: create or recreate processor
+	defaultProcessorMu.Lock()
+	defer defaultProcessorMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if defaultProcessor == nil || defaultProcessor.IsClosed() {
+		defaultProcessor = New()
 	}
 
-	// Slow path: initialize with sync.Once or reinitialize if needed
-	defaultProcessorOnce.Do(func() {
-		processor := New() // Use internal default constructor
-		if processor != nil {
-			defaultProcessor.Store(processor)
-			atomic.AddInt64(&processorGeneration, 1)
-		}
-	})
-
-	processor := defaultProcessor.Load()
-	if processor == nil || processor.IsClosed() {
-		// Fallback: create a new processor if initialization failed or processor is closed
-		globalMutex.Lock()
-		// Double-check after acquiring lock
-		if processor = defaultProcessor.Load(); processor == nil || processor.IsClosed() {
-			processor = newDefault()
-			if processor != nil {
-				defaultProcessor.Store(processor)
-				atomic.AddInt64(&processorGeneration, 1)
-			}
-		}
-		globalMutex.Unlock()
-	}
-
-	return processor
-}
-
-// newDefault creates a new processor with default configuration (internal use only)
-func newDefault() *Processor {
-	return New()
+	return defaultProcessor
 }
 
 // SetGlobalProcessor allows setting a custom global processor (thread-safe)
@@ -107,28 +75,25 @@ func SetGlobalProcessor(processor *Processor) {
 		return
 	}
 
-	globalMutex.Lock()
-	defer globalMutex.Unlock()
+	defaultProcessorMu.Lock()
+	defer defaultProcessorMu.Unlock()
 
 	// Close old processor if it exists
-	if oldProcessor := defaultProcessor.Load(); oldProcessor != nil {
-		oldProcessor.Close()
+	if defaultProcessor != nil {
+		defaultProcessor.Close()
 	}
 
-	defaultProcessor.Store(processor)
-	atomic.AddInt64(&processorGeneration, 1)
+	defaultProcessor = processor
 }
 
 // ShutdownGlobalProcessor gracefully shuts down the global processor
 func ShutdownGlobalProcessor() {
-	atomic.StoreInt32(&shutdownSignal, 1)
+	defaultProcessorMu.Lock()
+	defer defaultProcessorMu.Unlock()
 
-	globalMutex.Lock()
-	defer globalMutex.Unlock()
-
-	if processor := defaultProcessor.Load(); processor != nil {
-		processor.Close()
-		defaultProcessor.Store(nil)
+	if defaultProcessor != nil {
+		defaultProcessor.Close()
+		defaultProcessor = nil
 	}
 }
 
@@ -547,99 +512,4 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 func getTypedWithProcessor[T any](processor *Processor, jsonStr, path string, opts ...*ProcessorOptions) (T, error) {
 	// Use the enhanced GetTypedWithProcessor function from utils.go
 	return GetTypedWithProcessor[T](processor, jsonStr, path, opts...)
-}
-
-// convertToType attempts to convert a value to the target type
-func convertToType[T any](value any) (T, error) {
-	var zero T
-	if value == nil {
-		return zero, fmt.Errorf("cannot convert nil to %T", zero)
-	}
-
-	// Direct type assertion first
-	if typed, ok := value.(T); ok {
-		return typed, nil
-	}
-
-	// Enhanced type conversion logic for common cases
-	switch any(&zero).(type) {
-	case *int:
-		switch v := value.(type) {
-		case int:
-			return any(v).(T), nil
-		case int64:
-			return any(int(v)).(T), nil
-		case float64:
-			// Convert float64 to int if it's a whole number
-			// Handle large numbers that may be in scientific notation
-			if v >= -9223372036854775808 && v <= 9223372036854775807 {
-				intVal := int64(v)
-				if float64(intVal) == v {
-					return any(int(intVal)).(T), nil
-				}
-			}
-			return zero, fmt.Errorf("cannot convert float64 %v to int (not a whole number)", v)
-		case string:
-			if i, err := strconv.Atoi(v); err == nil {
-				return any(i).(T), nil
-			}
-		}
-	case *int64:
-		switch v := value.(type) {
-		case int:
-			return any(int64(v)).(T), nil
-		case int64:
-			return any(v).(T), nil
-		case float64:
-			// Handle large numbers that may be in scientific notation
-			if v >= -9223372036854775808 && v <= 9223372036854775807 {
-				intVal := int64(v)
-				if float64(intVal) == v {
-					return any(intVal).(T), nil
-				}
-			}
-			return zero, fmt.Errorf("cannot convert float64 %v to int64 (not a whole number)", v)
-		case string:
-			if i, err := strconv.ParseInt(v, 10, 64); err == nil {
-				return any(i).(T), nil
-			}
-		}
-	case *float64:
-		switch v := value.(type) {
-		case int:
-			return any(float64(v)).(T), nil
-		case int64:
-			return any(float64(v)).(T), nil
-		case float64:
-			return any(v).(T), nil
-		case string:
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				return any(f).(T), nil
-			}
-		}
-	case *string:
-		switch v := value.(type) {
-		case string:
-			return any(v).(T), nil
-		case int:
-			return any(strconv.Itoa(v)).(T), nil
-		case int64:
-			return any(strconv.FormatInt(v, 10)).(T), nil
-		case float64:
-			return any(strconv.FormatFloat(v, 'g', -1, 64)).(T), nil
-		case bool:
-			return any(strconv.FormatBool(v)).(T), nil
-		}
-	case *bool:
-		switch v := value.(type) {
-		case bool:
-			return any(v).(T), nil
-		case string:
-			if b, err := strconv.ParseBool(v); err == nil {
-				return any(b).(T), nil
-			}
-		}
-	}
-
-	return zero, fmt.Errorf("cannot convert %T to %T", value, zero)
 }

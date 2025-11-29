@@ -1,22 +1,22 @@
-﻿package json
+package json
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/cybergodev/json/internal"
 	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/cybergodev/json/internal"
 )
 
 // =============================================================================
 // Source: types.go
 // =============================================================================
-
 
 // Error definitions - using sentinel errors for better performance and type safety
 var (
@@ -418,8 +418,6 @@ func (opts *ProcessorOptions) Clone() *ProcessorOptions {
 	}
 }
 
-
-
 // Stats provides processor performance statistics
 type Stats struct {
 	CacheSize        int64         `json:"cache_size"`        // Current cache size
@@ -601,8 +599,19 @@ func (r TypeSafeResult[T]) Ok() bool {
 	return r.Error == nil && r.Exists
 }
 
-// Unwrap returns the value or panics if there's an error
+// Unwrap returns the value or zero value if there's an error
+// For panic behavior, use UnwrapOrPanic instead
 func (r TypeSafeResult[T]) Unwrap() T {
+	if r.Error != nil {
+		var zero T
+		return zero
+	}
+	return r.Value
+}
+
+// UnwrapOrPanic returns the value or panics if there's an error
+// Use this only when you're certain the operation succeeded
+func (r TypeSafeResult[T]) UnwrapOrPanic() T {
 	if r.Error != nil {
 		panic(fmt.Sprintf("unwrap called on result with error: %v", r.Error))
 	}
@@ -748,7 +757,6 @@ func (c *Config) GetPoolCleanupInterval() time.Duration { return c.PoolCleanupIn
 // =============================================================================
 // Source: interfaces.go
 // =============================================================================
-
 
 // Operation represents the type of operation being performed
 type Operation int
@@ -1020,27 +1028,26 @@ var (
 // Source: config.go
 // =============================================================================
 
-
 // DefaultConfig returns a default configuration for the JSON processor
 func DefaultConfig() *Config {
 	return &Config{
 		MaxCacheSize:      1000,
-		CacheTTL:          5 * time.Minute,
+		CacheTTL:          DefaultCacheTTL,
 		EnableCache:       true,
-		MaxJSONSize:       10 * 1024 * 1024, // 10MB
-		MaxPathDepth:      100,
-		MaxBatchSize:      1000,
-		MaxConcurrency:    50,
-		ParallelThreshold: 10,
+		MaxJSONSize:       DefaultMaxJSONSize,
+		MaxPathDepth:      DefaultMaxPathDepth,
+		MaxBatchSize:      DefaultMaxBatchSize,
+		MaxConcurrency:    DefaultMaxConcurrency,
+		ParallelThreshold: DefaultParallelThreshold,
 		EnableValidation:  true,
 		StrictMode:        false,
-		CreatePaths:       false, // Conservative default - don't auto-create paths
+		CreatePaths:       false,
 
-		// Security configuration with safe defaults
-		MaxNestingDepthSecurity:   50,                // Maximum nesting depth for security validation
-		MaxSecurityValidationSize: 100 * 1024 * 1024, // 100MB for security validation
-		MaxObjectKeys:             10000,             // Maximum keys per object
-		MaxArrayElements:          10000,             // Maximum array elements
+		// Security configuration with safe defaults (reduced from 100MB to 10MB)
+		MaxNestingDepthSecurity:   DefaultMaxNestingDepth,
+		MaxSecurityValidationSize: MaxSecurityValidationSize,
+		MaxObjectKeys:             DefaultMaxObjectKeys,
+		MaxArrayElements:          DefaultMaxArrayElements,
 	}
 }
 
@@ -1457,30 +1464,29 @@ func NewCleanConfig() *EncodeConfig {
 // Source: resource_monitor.go
 // =============================================================================
 
-
 // ResourceMonitor provides enhanced resource monitoring and leak detection
 type ResourceMonitor struct {
 	// Memory statistics
-	allocatedBytes   int64 // Total allocated bytes
-	freedBytes       int64 // Total freed bytes
-	peakMemoryUsage  int64 // Peak memory usage
-	
+	allocatedBytes  int64 // Total allocated bytes
+	freedBytes      int64 // Total freed bytes
+	peakMemoryUsage int64 // Peak memory usage
+
 	// Pool statistics
-	poolHits         int64 // Pool cache hits
-	poolMisses       int64 // Pool cache misses
-	poolEvictions    int64 // Pool evictions
-	
+	poolHits      int64 // Pool cache hits
+	poolMisses    int64 // Pool cache misses
+	poolEvictions int64 // Pool evictions
+
 	// Goroutine tracking
-	maxGoroutines    int64 // Maximum goroutines seen
+	maxGoroutines     int64 // Maximum goroutines seen
 	currentGoroutines int64 // Current goroutine count
-	
+
 	// Leak detection
-	lastLeakCheck    int64 // Last leak detection check
+	lastLeakCheck     int64 // Last leak detection check
 	leakCheckInterval int64 // Interval between leak checks (seconds)
-	
+
 	// Performance metrics
-	avgResponseTime  int64 // Average response time in nanoseconds
-	totalOperations  int64 // Total operations processed
+	avgResponseTime int64 // Average response time in nanoseconds
+	totalOperations int64 // Total operations processed
 }
 
 // NewResourceMonitor creates a new resource monitor
@@ -1494,7 +1500,7 @@ func NewResourceMonitor() *ResourceMonitor {
 // RecordAllocation records memory allocation
 func (rm *ResourceMonitor) RecordAllocation(bytes int64) {
 	atomic.AddInt64(&rm.allocatedBytes, bytes)
-	
+
 	// Update peak memory usage
 	current := atomic.LoadInt64(&rm.allocatedBytes) - atomic.LoadInt64(&rm.freedBytes)
 	for {
@@ -1528,7 +1534,7 @@ func (rm *ResourceMonitor) RecordPoolEviction() {
 // RecordOperation records an operation with timing
 func (rm *ResourceMonitor) RecordOperation(duration time.Duration) {
 	atomic.AddInt64(&rm.totalOperations, 1)
-	
+
 	// Update average response time using exponential moving average
 	newTime := duration.Nanoseconds()
 	for {
@@ -1545,47 +1551,47 @@ func (rm *ResourceMonitor) RecordOperation(duration time.Duration) {
 func (rm *ResourceMonitor) CheckForLeaks() []string {
 	now := time.Now().Unix()
 	lastCheck := atomic.LoadInt64(&rm.lastLeakCheck)
-	
+
 	if now-lastCheck < rm.leakCheckInterval {
 		return nil // Too soon for another check
 	}
-	
+
 	if !atomic.CompareAndSwapInt64(&rm.lastLeakCheck, lastCheck, now) {
 		return nil // Another goroutine is checking
 	}
-	
+
 	var issues []string
-	
+
 	// Check memory growth
 	allocated := atomic.LoadInt64(&rm.allocatedBytes)
 	freed := atomic.LoadInt64(&rm.freedBytes)
 	netMemory := allocated - freed
-	
+
 	if netMemory > 100*1024*1024 { // 100MB threshold
 		issues = append(issues, "High memory usage detected")
 	}
-	
+
 	// Check goroutine count
 	currentGoroutines := int64(runtime.NumGoroutine())
 	atomic.StoreInt64(&rm.currentGoroutines, currentGoroutines)
-	
+
 	maxGoroutines := atomic.LoadInt64(&rm.maxGoroutines)
 	if currentGoroutines > maxGoroutines {
 		atomic.StoreInt64(&rm.maxGoroutines, currentGoroutines)
 	}
-	
+
 	if currentGoroutines > 1000 { // High goroutine count
 		issues = append(issues, "High goroutine count detected")
 	}
-	
+
 	// Check pool efficiency
 	hits := atomic.LoadInt64(&rm.poolHits)
 	misses := atomic.LoadInt64(&rm.poolMisses)
-	
+
 	if hits+misses > 1000 && hits < misses { // Poor pool hit rate
 		issues = append(issues, "Poor pool cache efficiency")
 	}
-	
+
 	return issues
 }
 
@@ -1638,11 +1644,11 @@ func (rm *ResourceMonitor) Reset() {
 func (rm *ResourceMonitor) GetMemoryEfficiency() float64 {
 	allocated := atomic.LoadInt64(&rm.allocatedBytes)
 	freed := atomic.LoadInt64(&rm.freedBytes)
-	
+
 	if allocated == 0 {
 		return 100.0
 	}
-	
+
 	return float64(freed) / float64(allocated) * 100.0
 }
 
@@ -1651,10 +1657,10 @@ func (rm *ResourceMonitor) GetPoolEfficiency() float64 {
 	hits := atomic.LoadInt64(&rm.poolHits)
 	misses := atomic.LoadInt64(&rm.poolMisses)
 	total := hits + misses
-	
+
 	if total == 0 {
 		return 100.0
 	}
-	
+
 	return float64(hits) / float64(total) * 100.0
 }

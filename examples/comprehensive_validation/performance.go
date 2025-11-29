@@ -3,12 +3,19 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/cybergodev/json"
 )
 
 func main() {
+	// Run comprehensive validation examples
+	runComprehensiveValidation()
+	
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	
+	// Run performance tests
 	runPerformanceTest()
 }
 

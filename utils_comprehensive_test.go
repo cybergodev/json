@@ -221,9 +221,10 @@ func TestUtilsComprehensive(t *testing.T) {
 		helper.AssertFalse(ok, "Should fail to assert int type")
 		helper.AssertEqual(0, intValue, "Should return zero value for wrong type")
 
-		// Test must type assert (should not panic for correct type)
-		mustStr := MustTypeAssert[string](value, "test context")
-		helper.AssertEqual("test string", mustStr, "Should assert correct type")
+		// Test safe type assert (should not panic for correct type)
+		safeStr, ok := SafeTypeAssert[string](value)
+		helper.AssertTrue(ok, "Should successfully assert correct type")
+		helper.AssertEqual("test string", safeStr, "Should assert correct type")
 
 		// Test basic type conversion (just check the value is not nil)
 		helper.AssertNotNil(value, "Value should not be nil")

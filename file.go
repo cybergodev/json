@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -201,76 +202,75 @@ func (p *Processor) validateFilePath(filePath string) error {
 		}
 	}
 
-	// Check for suspicious patterns
-	suspiciousPatterns := []string{
-		"/dev/", "/proc/", "/sys/", "/etc/passwd", "/etc/shadow",
-		"\\\\",
-	}
-
-	// Windows reserved device names - check as complete filename components only
-	windowsReservedNames := []string{
-		"CON", "PRN", "AUX", "NUL",
-		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-	}
-
+	// Check for suspicious patterns - only absolute paths to system directories
 	lowerPath := strings.ToLower(filePath)
 
-	// Check general suspicious patterns
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(lowerPath, strings.ToLower(pattern)) {
-			return &JsonsError{
-				Op:      "validate_file_path",
-				Message: fmt.Sprintf("suspicious pattern detected in file path: %s", pattern),
-				Err:     ErrOperationFailed,
-			}
-		}
-	}
-
-	// Check Windows reserved names more carefully - only as complete filename components
-	// Extract filename from path
-	filename := filePath
-	if lastSlash := strings.LastIndex(filePath, "/"); lastSlash != -1 {
-		filename = filePath[lastSlash+1:]
-	}
-	if lastBackslash := strings.LastIndex(filename, "\\"); lastBackslash != -1 {
-		filename = filename[lastBackslash+1:]
-	}
-
-	// Remove extension for reserved name check
-	filenameWithoutExt := filename
-	if dotIndex := strings.LastIndex(filename, "."); dotIndex != -1 {
-		filenameWithoutExt = filename[:dotIndex]
-	}
-
-	upperFilename := strings.ToUpper(filenameWithoutExt) // Use ToUpper for case-insensitive comparison
-	for _, reserved := range windowsReservedNames {
-		if upperFilename == reserved {
-			return &JsonsError{
-				Op:      "validate_file_path",
-				Message: fmt.Sprintf("Windows reserved device name detected in filename: %s", reserved),
-				Err:     ErrOperationFailed,
-			}
-		}
-	}
-
-	// Additional security checks
-	// Check for path traversal more thoroughly
-	if strings.Contains(filePath, "../") || strings.Contains(filePath, "..\\") {
-		return &JsonsError{
-			Op:      "validate_file_path",
-			Message: "path traversal detected in file path",
-			Err:     ErrOperationFailed,
-		}
-	}
-
-	// Check for absolute paths to sensitive system directories
-	if strings.HasPrefix(lowerPath, "/etc/") || strings.HasPrefix(lowerPath, "/proc/") ||
-	   strings.HasPrefix(lowerPath, "/sys/") || strings.HasPrefix(lowerPath, "/dev/") {
+	// Only check for absolute paths to sensitive system directories
+	// This allows relative paths like "dev_test/file.json" or "config/production.json"
+	if strings.HasPrefix(lowerPath, "/dev/") || strings.HasPrefix(lowerPath, "/proc/") ||
+		strings.HasPrefix(lowerPath, "/sys/") {
 		return &JsonsError{
 			Op:      "validate_file_path",
 			Message: "access to system directories not allowed",
-			Err:     ErrOperationFailed,
+			Err:     ErrSecurityViolation,
+		}
+	}
+
+	// Check for specific sensitive files
+	if strings.Contains(lowerPath, "/etc/passwd") || strings.Contains(lowerPath, "/etc/shadow") {
+		return &JsonsError{
+			Op:      "validate_file_path",
+			Message: "access to sensitive system files not allowed",
+			Err:     ErrSecurityViolation,
+		}
+	}
+
+	// Check for UNC paths on Windows (\\server\share)
+	if strings.HasPrefix(filePath, "\\\\") {
+		return &JsonsError{
+			Op:      "validate_file_path",
+			Message: "UNC paths not allowed",
+			Err:     ErrSecurityViolation,
+		}
+	}
+
+	// Windows reserved device names - only check on Windows platform
+	// Only flag exact matches (case-insensitive) as the complete filename without extension
+	if runtime.GOOS == "windows" {
+		filename := filepath.Base(filePath)
+		// Extract filename without extension
+		filenameWithoutExt := filename
+		if dotIndex := strings.LastIndex(filename, "."); dotIndex > 0 {
+			filenameWithoutExt = filename[:dotIndex]
+		}
+
+		upperFilename := strings.ToUpper(filenameWithoutExt)
+
+		// Check for exact reserved device names only
+		// Pattern: CON, PRN, AUX, NUL, COM1-9, LPT1-9
+		isReserved := false
+		switch upperFilename {
+		case "CON", "PRN", "AUX", "NUL":
+			isReserved = true
+		default:
+			// Check COM1-9 and LPT1-9
+			if len(upperFilename) == 4 {
+				prefix := upperFilename[:3]
+				digit := upperFilename[3]
+				if (prefix == "COM" || prefix == "LPT") && digit >= '1' && digit <= '9' {
+					isReserved = true
+				}
+			}
+		}
+
+		// Only reject if it's an exact match to a reserved name
+		// This correctly allows "mycon.json", "console.txt", "config.json" but rejects "CON", "CON.txt"
+		if isReserved {
+			return &JsonsError{
+				Op:      "validate_file_path",
+				Message: fmt.Sprintf("Windows reserved device name detected: %s", upperFilename),
+				Err:     ErrSecurityViolation,
+			}
 		}
 	}
 

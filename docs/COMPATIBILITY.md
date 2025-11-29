@@ -18,65 +18,65 @@ import "github.com/cybergodev/json"
 
 ## ✅ Fully Compatible Functions
 
-| Function | Status | Notes |
-|----------|--------|-------|
-| `Marshal(v any) ([]byte, error)` | ✅ | Identical behavior and output |
-| `Unmarshal(data []byte, v any) error` | ✅ | Identical behavior and error handling |
-| `MarshalIndent(v any, prefix, indent string) ([]byte, error)` | ✅ | Same formatting rules |
-| `Valid(data []byte) bool` | ✅ | Same validation logic |
-| `Compact(dst *bytes.Buffer, src []byte) error` | ✅ | Identical whitespace removal |
-| `Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error` | ✅ | Same indentation behavior |
-| `HTMLEscape(dst *bytes.Buffer, src []byte)` | ✅ | Same HTML escaping rules |
+| Function                                                             | Status | Notes                                 |
+|----------------------------------------------------------------------|--------|---------------------------------------|
+| `Marshal(v any) ([]byte, error)`                                     | ✅      | Identical behavior and output         |
+| `Unmarshal(data []byte, v any) error`                                | ✅      | Identical behavior and error handling |
+| `MarshalIndent(v any, prefix, indent string) ([]byte, error)`        | ✅      | Same formatting rules                 |
+| `Valid(data []byte) bool`                                            | ✅      | Same validation logic                 |
+| `Compact(dst *bytes.Buffer, src []byte) error`                       | ✅      | Identical whitespace removal          |
+| `Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error` | ✅      | Same indentation behavior             |
+| `HTMLEscape(dst *bytes.Buffer, src []byte)`                          | ✅      | Same HTML escaping rules              |
 
 ## ✅ Fully Compatible Types
 
 ### Streaming Types
-| Type/Method | Status | Notes |
-|-------------|--------|-------|
-| `Encoder` | ✅ | Complete implementation |
-| `Decoder` | ✅ | Complete implementation |
-| `NewEncoder(w io.Writer) *Encoder` | ✅ | Identical constructor |
-| `NewDecoder(r io.Reader) *Decoder` | ✅ | Identical constructor |
-| `(*Encoder).Encode(v any) error` | ✅ | Same encoding behavior |
-| `(*Encoder).SetEscapeHTML(on bool)` | ✅ | Same HTML escaping control |
-| `(*Encoder).SetIndent(prefix, indent string)` | ✅ | Same indentation control |
-| `(*Decoder).Decode(v any) error` | ✅ | Same decoding behavior |
-| `(*Decoder).UseNumber()` | ✅ | Same number handling |
-| `(*Decoder).DisallowUnknownFields()` | ✅ | Same strict field matching |
-| `(*Decoder).More() bool` | ✅ | Same stream state checking |
-| `(*Decoder).Token() (Token, error)` | ✅ | Same token parsing |
-| `(*Decoder).Buffered() io.Reader` | ✅ | Same buffer access |
-| `(*Decoder).InputOffset() int64` | ✅ | Same offset tracking |
+| Type/Method                                   | Status | Notes                      |
+|-----------------------------------------------|--------|----------------------------|
+| `Encoder`                                     | ✅      | Complete implementation    |
+| `Decoder`                                     | ✅      | Complete implementation    |
+| `NewEncoder(w io.Writer) *Encoder`            | ✅      | Identical constructor      |
+| `NewDecoder(r io.Reader) *Decoder`            | ✅      | Identical constructor      |
+| `(*Encoder).Encode(v any) error`              | ✅      | Same encoding behavior     |
+| `(*Encoder).SetEscapeHTML(on bool)`           | ✅      | Same HTML escaping control |
+| `(*Encoder).SetIndent(prefix, indent string)` | ✅      | Same indentation control   |
+| `(*Decoder).Decode(v any) error`              | ✅      | Same decoding behavior     |
+| `(*Decoder).UseNumber()`                      | ✅      | Same number handling       |
+| `(*Decoder).DisallowUnknownFields()`          | ✅      | Same strict field matching |
+| `(*Decoder).More() bool`                      | ✅      | Same stream state checking |
+| `(*Decoder).Token() (Token, error)`           | ✅      | Same token parsing         |
+| `(*Decoder).Buffered() io.Reader`             | ✅      | Same buffer access         |
+| `(*Decoder).InputOffset() int64`              | ✅      | Same offset tracking       |
 
 ### Token Types
-| Type | Status | Notes |
-|------|--------|-------|
-| `Token` | ✅ | Same interface |
-| `Delim` | ✅ | Same delimiter handling |
-| `Number` | ✅ | Same number representation |
-| `Number.String() string` | ✅ | Same string conversion |
-| `Number.Float64() (float64, error)` | ✅ | Same float conversion |
-| `Number.Int64() (int64, error)` | ✅ | Same int conversion |
+| Type                                | Status | Notes                      |
+|-------------------------------------|--------|----------------------------|
+| `Token`                             | ✅      | Same interface             |
+| `Delim`                             | ✅      | Same delimiter handling    |
+| `Number`                            | ✅      | Same number representation |
+| `Number.String() string`            | ✅      | Same string conversion     |
+| `Number.Float64() (float64, error)` | ✅      | Same float conversion      |
+| `Number.Int64() (int64, error)`     | ✅      | Same int conversion        |
 
 ## ✅ Fully Compatible Error Types
 
-| Error Type | Status | Notes |
-|------------|--------|-------|
-| `SyntaxError` | ✅ | Same error messages and offset tracking |
-| `UnmarshalTypeError` | ✅ | Same type mismatch reporting |
-| `InvalidUnmarshalError` | ✅ | Same invalid target detection |
-| `UnsupportedTypeError` | ✅ | Same unsupported type handling |
-| `UnsupportedValueError` | ✅ | Same unsupported value handling |
-| `MarshalerError` | ✅ | Same marshaler error wrapping |
+| Error Type              | Status | Notes                                   |
+|-------------------------|--------|-----------------------------------------|
+| `SyntaxError`           | ✅      | Same error messages and offset tracking |
+| `UnmarshalTypeError`    | ✅      | Same type mismatch reporting            |
+| `InvalidUnmarshalError` | ✅      | Same invalid target detection           |
+| `UnsupportedTypeError`  | ✅      | Same unsupported type handling          |
+| `UnsupportedValueError` | ✅      | Same unsupported value handling         |
+| `MarshalerError`        | ✅      | Same marshaler error wrapping           |
 
 ## ✅ Fully Compatible Interfaces
 
-| Interface | Status | Notes |
-|-----------|--------|-------|
-| `Marshaler` | ✅ | Same `MarshalJSON() ([]byte, error)` |
-| `Unmarshaler` | ✅ | Same `UnmarshalJSON([]byte) error` |
-| `TextMarshaler` | ✅ | Same `MarshalText() ([]byte, error)` |
-| `TextUnmarshaler` | ✅ | Same `UnmarshalText([]byte) error` |
+| Interface         | Status | Notes                                |
+|-------------------|--------|--------------------------------------|
+| `Marshaler`       | ✅      | Same `MarshalJSON() ([]byte, error)` |
+| `Unmarshaler`     | ✅      | Same `UnmarshalJSON([]byte) error`   |
+| `TextMarshaler`   | ✅      | Same `MarshalText() ([]byte, error)` |
+| `TextUnmarshaler` | ✅      | Same `UnmarshalText([]byte) error`   |
 
 ## 🧪 Compatibility Testing
 
@@ -212,11 +212,5 @@ If you suspect compatibility issues:
 3. **Performance Testing**: Measure performance differences in your specific use case
 
 ## 💡️ Support
-
-If you encounter any compatibility issues:
-
-1. Check our [compatibility tests](../compatibility_test.go)
-2. Run the [compatibility example](../examples/compatibility/example.go)
-3. Open an issue with a minimal reproduction case
 
 We are committed to maintaining 100% **semantic** compatibility with `encoding/json`.

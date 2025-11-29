@@ -1,17 +1,17 @@
-﻿package json
+package json
 
 import (
 	"fmt"
-	"github.com/cybergodev/json/internal"
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/cybergodev/json/internal"
 )
 
 // =============================================================================
 // Source: operations_array.go
 // =============================================================================
-
 
 // =============================================================================
 // Processor Array Methods
@@ -45,7 +45,7 @@ func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAcc
 
 	// Handle array indexing with optimized parsing (supporting negative indices)
 	if arr, ok := arrayResult.Value.([]any); ok {
-		if index := p.parseArrayIndexFromSegment(indexStr); index != -999999 { // -999999 means invalid index
+		if index := p.parseArrayIndexFromSegment(indexStr); index != InvalidArrayIndex {
 			// Handle negative indices
 			if index < 0 {
 				index = len(arr) + index
@@ -87,7 +87,7 @@ func (p *Processor) parseArrayIndexFromSegment(segmentValue string) int {
 		return index
 	}
 
-	return -999999 // Invalid index marker
+	return InvalidArrayIndex
 }
 
 // handleArraySlice handles array slicing operations
@@ -647,7 +647,7 @@ func (ao *arrayOperations) ParseArrayIndex(indexStr string) int {
 		return index
 	}
 
-	return -999999 // Invalid index marker (using same convention as original code)
+	return InvalidArrayIndex
 }
 
 // HandleNegativeIndex converts negative indices to positive indices
@@ -783,7 +783,7 @@ func (ao *arrayOperations) HandleComplexArrayAccess(data any, segmentValue strin
 
 	// Parse and handle array access
 	index := ao.ParseArrayIndex(indexStr)
-	if index == -999999 {
+	if index == InvalidArrayIndex {
 		return NavigationResult{Value: nil, Exists: false}
 	}
 
@@ -920,7 +920,6 @@ func (ao *arrayOperations) SetArrayElement(arr []any, index int, value any) erro
 // =============================================================================
 // Source: operations_delete.go
 // =============================================================================
-
 
 // =============================================================================
 // DELETE OPERATIONS - PROCESSOR METHODS
@@ -2026,7 +2025,6 @@ func getArrayLength(data any) int {
 	return -1
 }
 
-
 // =============================================================================
 // DELETE OPERATIONS - HANDLERS
 // =============================================================================
@@ -2749,7 +2747,6 @@ func (p *Processor) cleanupDeletedMarkers(data any) any {
 	}
 }
 
-
 // =============================================================================
 // DELETE OPERATIONS - INTERFACE IMPLEMENTATION
 // =============================================================================
@@ -3339,7 +3336,6 @@ func (do *deleteOperations) parseSliceParameters(segment PathSegmentInfo) (start
 // Source: operations_extract.go
 // =============================================================================
 
-
 // =============================================================================
 // EXTRACTION OPERATIONS - PROCESSOR METHODS
 // =============================================================================
@@ -3809,7 +3805,6 @@ type ExtractionContext struct {
 	OperationType      string // Type of operation: "get", "set", "delete"
 }
 
-
 // =============================================================================
 // EXTRACTION OPERATIONS - INTERFACE IMPLEMENTATION
 // =============================================================================
@@ -4202,7 +4197,6 @@ func (eo *extractionOperations) FilterExtractionResults(data any, predicate func
 // =============================================================================
 // Source: operations_set.go
 // =============================================================================
-
 
 // =============================================================================
 // SET OPERATIONS - PROCESSOR METHODS
@@ -5473,7 +5467,6 @@ func (p *Processor) replaceArrayInJSONPointerParent(parent any, oldArray, newArr
 	// Cannot extend in place
 	return newContainer, nil
 }
-
 
 // =============================================================================
 // SET OPERATIONS - INTERFACE IMPLEMENTATION

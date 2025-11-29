@@ -1,4 +1,4 @@
-﻿package json
+package json
 
 import (
 	"bufio"
@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"reflect"
 	"regexp"
 	"sort"
@@ -21,7 +20,6 @@ import (
 // =============================================================================
 // Source: encoder.go
 // =============================================================================
-
 
 // =============================================================================
 // PROCESSOR ENCODING METHODS
@@ -343,7 +341,6 @@ func (p *Processor) EncodeWithTags(value any, pretty bool, opts ...*ProcessorOpt
 	return p.EncodeWithConfig(value, config, opts...)
 }
 
-
 // =============================================================================
 // CUSTOM ENCODER (merged from custom_encoder.go)
 // =============================================================================
@@ -366,7 +363,8 @@ func getEncoderBuffer() *bytes.Buffer {
 
 // putEncoderBuffer returns a bytes.Buffer to the encoder pool
 func putEncoderBuffer(buf *bytes.Buffer) {
-	if buf != nil && buf.Cap() <= 8192 { // Prevent memory bloat
+	const maxPoolBufferSize = 64 * 1024 // 64KB - more reasonable for real workloads
+	if buf != nil && buf.Cap() <= maxPoolBufferSize {
 		encoderBufferPool.Put(buf)
 	}
 }
@@ -963,8 +961,6 @@ func (e *CustomEncoder) isEmpty(v reflect.Value) bool {
 		return v.Float() == 0
 	case reflect.Interface, reflect.Ptr:
 		return v.IsNil()
-	default:
-		log.Println("Unmatched type:", v.Kind())
 	}
 	return false
 }
@@ -972,7 +968,6 @@ func (e *CustomEncoder) isEmpty(v reflect.Value) bool {
 // =============================================================================
 // Source: stream.go
 // =============================================================================
-
 
 // =============================================================================
 // BUFFER POOLS FOR MEMORY OPTIMIZATION
@@ -1032,7 +1027,9 @@ func getBytesBuffer() *bytes.Buffer {
 
 // putBytesBuffer returns a bytes.Buffer to the pool with optimized size limits
 func putBytesBuffer(buf *bytes.Buffer) {
-	if buf != nil && buf.Cap() <= 16384 && buf.Cap() >= 512 { // Optimized limits
+	const maxPoolBufferSize = 64 * 1024 // 64KB
+	const minPoolBufferSize = 512
+	if buf != nil && buf.Cap() <= maxPoolBufferSize && buf.Cap() >= minPoolBufferSize {
 		buf.Reset() // Ensure buffer is clean before returning to pool
 		bytesBufferPool.Put(buf)
 	}
@@ -1685,7 +1682,6 @@ func isCompleteValue(s string) bool {
 // =============================================================================
 // Source: validation.go
 // =============================================================================
-
 
 // ValidateSchema validates JSON data against a schema
 func (p *Processor) ValidateSchema(jsonStr string, schema *Schema, opts ...*ProcessorOptions) ([]ValidationError, error) {

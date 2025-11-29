@@ -1,10 +1,9 @@
-﻿package json
+package json
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/cybergodev/json/internal"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -12,12 +11,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cybergodev/json/internal"
 )
 
 // =============================================================================
 // Source: utils.go
 // =============================================================================
-
 
 // Modern Go 1.24+ type constraints with enhanced generic support
 type (
@@ -85,7 +85,49 @@ func GetTypedWithProcessor[T any](processor *Processor, jsonStr, path string, op
 		return converted, nil
 	}
 
-	// Last resort: JSON marshaling/unmarshaling for type conversion with number preservation
+	// Try using type_conversion.go functions for better performance
+	targetType := fmt.Sprintf("%T", zero)
+
+	switch targetType {
+	case "int":
+		if intVal, ok := ConvertToInt(value); ok {
+			if result, ok := any(intVal).(T); ok {
+				return result, nil
+			}
+		}
+	case "int64":
+		if int64Val, ok := ConvertToInt64(value); ok {
+			if result, ok := any(int64Val).(T); ok {
+				return result, nil
+			}
+		}
+	case "uint64":
+		if uint64Val, ok := ConvertToUint64(value); ok {
+			if result, ok := any(uint64Val).(T); ok {
+				return result, nil
+			}
+		}
+	case "float64":
+		if float64Val, ok := ConvertToFloat64(value); ok {
+			if result, ok := any(float64Val).(T); ok {
+				return result, nil
+			}
+		}
+	case "string":
+		if strVal, ok := ConvertToString(value); ok {
+			if result, ok := any(strVal).(T); ok {
+				return result, nil
+			}
+		}
+	case "bool":
+		if boolVal, ok := ConvertToBool(value); ok {
+			if result, ok := any(boolVal).(T); ok {
+				return result, nil
+			}
+		}
+	}
+
+	// Last resort: JSON marshaling/unmarshaling for complex types only
 	// Use custom encoder to preserve number formats
 	config := NewPrettyConfig()
 	config.PreserveNumbers = true
@@ -561,15 +603,6 @@ func SafeTypeAssert[T any](value any) (T, bool) {
 	return zero, false
 }
 
-// MustTypeAssert performs a type assertion that panics on failure (for internal use only)
-func MustTypeAssert[T any](value any, context string) T {
-	if result, ok := value.(T); ok {
-		return result
-	}
-	var zero T
-	panic(fmt.Sprintf("type assertion failed in %s: expected %T, got %T", context, zero, value))
-}
-
 // TypeSafeConvert attempts to convert a value to the target type safely
 func TypeSafeConvert[T any](value any) (T, error) {
 	var zero T
@@ -811,9 +844,9 @@ type ConcurrencyManager struct {
 	lastCleanupTime   int64 // Last cleanup timestamp for timeout map
 
 	// Performance tracking
-	totalOperations   int64
-	totalWaitTime     int64
-	averageWaitTime   int64
+	totalOperations int64
+	totalWaitTime   int64
+	averageWaitTime int64
 }
 
 // NewConcurrencyManager creates a new concurrency manager
@@ -833,59 +866,55 @@ func (cm *ConcurrencyManager) ExecuteWithConcurrencyControl(
 	operation func() error,
 	timeout time.Duration,
 ) error {
-	// Check circuit breaker
 	if atomic.LoadInt32(&cm.circuitOpen) == 1 {
-		// Check if we should try to close the circuit
 		lastFailure := atomic.LoadInt64(&cm.lastFailureTime)
-		if time.Now().Unix()-lastFailure > 60 { // 1 minute cooldown
+		if time.Now().Unix()-lastFailure > 60 {
 			atomic.StoreInt32(&cm.circuitOpen, 0)
 			atomic.StoreInt64(&cm.failureCount, 0)
 		} else {
 			return &JsonsError{
 				Op:      "concurrency_control",
 				Message: "circuit breaker is open",
-				Err:     ErrOperationFailed,
+				Err:     ErrCircuitOpen,
 			}
 		}
 	}
-	
+
 	// Rate limiting check
 	if err := cm.checkRateLimit(); err != nil {
 		return err
 	}
-	
+
 	// Acquire concurrency slot
 	start := time.Now()
 	if err := cm.acquireSlot(ctx, timeout); err != nil {
 		return err
 	}
 	defer cm.releaseSlot()
-	
-	// Record wait time
+
 	waitTime := time.Since(start).Nanoseconds()
 	atomic.AddInt64(&cm.totalWaitTime, waitTime)
 	atomic.AddInt64(&cm.totalOperations, 1)
-	
-	// Update average wait time using exponential moving average
+
 	for {
 		oldAvg := atomic.LoadInt64(&cm.averageWaitTime)
-		newAvg := oldAvg + (waitTime-oldAvg)/10 // Alpha = 0.1
+		newAvg := oldAvg + (waitTime-oldAvg)/10
 		if atomic.CompareAndSwapInt64(&cm.averageWaitTime, oldAvg, newAvg) {
 			break
 		}
 	}
-	
+
 	// Register operation for deadlock detection
 	gid := getGoroutineIDForConcurrency()
 	if gid != 0 {
 		cm.timeoutMutex.Lock()
 		cm.operationTimeouts[gid] = time.Now().UnixNano()
 
-		// Periodic cleanup to prevent memory leak
 		now := time.Now().Unix()
-		if now-atomic.LoadInt64(&cm.lastCleanupTime) > 300 { // Cleanup every 5 minutes
-			if atomic.CompareAndSwapInt64(&cm.lastCleanupTime, atomic.LoadInt64(&cm.lastCleanupTime), now) {
-				cm.cleanupStaleTimeouts()
+		lastCleanup := atomic.LoadInt64(&cm.lastCleanupTime)
+		if now-lastCleanup > 30 {
+			if atomic.CompareAndSwapInt64(&cm.lastCleanupTime, lastCleanup, now) {
+				go cm.cleanupStaleTimeouts()
 			}
 		}
 		cm.timeoutMutex.Unlock()
@@ -896,7 +925,7 @@ func (cm *ConcurrencyManager) ExecuteWithConcurrencyControl(
 			cm.timeoutMutex.Unlock()
 		}()
 	}
-	
+
 	// Execute operation with timeout
 	done := make(chan error, 1)
 	go func() {
@@ -911,7 +940,7 @@ func (cm *ConcurrencyManager) ExecuteWithConcurrencyControl(
 		}()
 		done <- operation()
 	}()
-	
+
 	select {
 	case err := <-done:
 		if err != nil {
@@ -935,17 +964,17 @@ func (cm *ConcurrencyManager) checkRateLimit() error {
 	if cm.operationsPerSecond <= 0 {
 		return nil // No rate limiting
 	}
-	
+
 	now := time.Now().Unix()
 	lastReset := atomic.LoadInt64(&cm.lastResetTime)
-	
+
 	// Reset counter if we're in a new second
 	if now > lastReset {
 		if atomic.CompareAndSwapInt64(&cm.lastResetTime, lastReset, now) {
 			atomic.StoreInt64(&cm.currentSecondOps, 0)
 		}
 	}
-	
+
 	// Check if we're within limits
 	current := atomic.AddInt64(&cm.currentSecondOps, 1)
 	if current > cm.operationsPerSecond {
@@ -956,14 +985,14 @@ func (cm *ConcurrencyManager) checkRateLimit() error {
 			Err:     ErrRateLimitExceeded,
 		}
 	}
-	
+
 	return nil
 }
 
 // acquireSlot acquires a concurrency slot
 func (cm *ConcurrencyManager) acquireSlot(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	
+
 	for {
 		current := atomic.LoadInt64(&cm.currentOperations)
 		if current >= int64(atomic.LoadInt32(&cm.maxConcurrency)) {
@@ -982,7 +1011,7 @@ func (cm *ConcurrencyManager) acquireSlot(ctx context.Context, timeout time.Dura
 				continue
 			}
 		}
-		
+
 		// Try to increment
 		if atomic.CompareAndSwapInt64(&cm.currentOperations, current, current+1) {
 			return nil
@@ -999,7 +1028,7 @@ func (cm *ConcurrencyManager) releaseSlot() {
 func (cm *ConcurrencyManager) recordFailure() {
 	failures := atomic.AddInt64(&cm.failureCount, 1)
 	atomic.StoreInt64(&cm.lastFailureTime, time.Now().Unix())
-	
+
 	// Open circuit if too many failures
 	if failures >= 10 { // Threshold: 10 failures
 		atomic.StoreInt32(&cm.circuitOpen, 1)
@@ -1053,21 +1082,38 @@ func (cm *ConcurrencyManager) DetectDeadlocks() []DeadlockInfo {
 }
 
 // cleanupStaleTimeouts removes stale entries from operationTimeouts map
-// Must be called with timeoutMutex held
 func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
-	now := time.Now().UnixNano()
-	threshold := int64(60 * time.Second) // Remove entries older than 60 seconds
+	cm.timeoutMutex.Lock()
+	defer cm.timeoutMutex.Unlock()
 
+	now := time.Now().UnixNano()
+	threshold := int64(60 * time.Second)
+	const maxMapSize = 10000
+	const targetSize = 5000
+
+	currentSize := len(cm.operationTimeouts)
+
+	// If map is small, just delete stale entries
+	if currentSize < targetSize {
+		for gid, startTime := range cm.operationTimeouts {
+			if now-startTime > threshold {
+				delete(cm.operationTimeouts, gid)
+			}
+		}
+		return
+	}
+
+	// If map is large, recreate with only fresh entries
+	newMap := make(map[uint64]int64, targetSize)
 	for gid, startTime := range cm.operationTimeouts {
-		if now-startTime > threshold {
-			delete(cm.operationTimeouts, gid)
+		if now-startTime <= threshold {
+			newMap[gid] = startTime
+			if len(newMap) >= targetSize {
+				break
+			}
 		}
 	}
-
-	// If map is still too large, clear it entirely
-	if len(cm.operationTimeouts) > 10000 {
-		cm.operationTimeouts = make(map[uint64]int64)
-	}
+	cm.operationTimeouts = newMap
 }
 
 // DeadlockInfo represents information about a potential deadlock
@@ -1117,7 +1163,6 @@ func getGoroutineIDForConcurrency() uint64 {
 // =============================================================================
 // Source: iterator.go
 // =============================================================================
-
 
 // IteratorControl represents control flags for iteration
 type IteratorControl int
@@ -1426,12 +1471,12 @@ func (it *Iterator) Delete(path string) error {
 	return err
 }
 
-// Continue skips the current iteration elegantly without requiring return
+// Continue skips the current iteration
 func (it *Iterator) Continue() {
 	panic(IteratorControlSignal{Type: IteratorContinue})
 }
 
-// Break stops the entire iteration elegantly without requiring return
+// Break stops the entire iteration
 func (it *Iterator) Break() {
 	panic(IteratorControlSignal{Type: IteratorBreak})
 }
@@ -2174,146 +2219,54 @@ func convertToTypeForIterator[T any](value any, path string) (T, error) {
 	return finalResult, nil
 }
 
-// Helper functions for type conversion
+// Helper functions for type conversion - use centralized implementations from type_conversion.go
 func convertToInt(value any) (int, error) {
-	switch v := value.(type) {
-	case int:
-		return v, nil
-	case int64:
-		return int(v), nil
-	case float64:
-		return int(v), nil
-	case json.Number:
-		// Handle json.Number to preserve original format
-		if i, err := v.Int64(); err == nil {
-			return int(i), nil
-		}
-		// Try as float if integer conversion fails
-		if f, err := v.Float64(); err == nil {
-			return int(f), nil
-		}
-		return 0, fmt.Errorf("cannot convert json.Number '%s' to int", string(v))
-	case string:
-		if i, err := strconv.Atoi(v); err == nil {
-			return i, nil
-		}
-		return 0, fmt.Errorf("cannot convert string '%s' to int", v)
-	default:
-		return 0, fmt.Errorf("cannot convert %T to int", v)
+	if result, ok := ConvertToInt(value); ok {
+		return result, nil
 	}
+	return 0, fmt.Errorf("cannot convert %T to int", value)
 }
 
 func convertToInt64(value any) (int64, error) {
-	switch v := value.(type) {
-	case int64:
-		return v, nil
-	case int:
-		return int64(v), nil
-	case float64:
-		return int64(v), nil
-	case json.Number:
-		// Handle json.Number to preserve original format
-		if i, err := v.Int64(); err == nil {
-			return i, nil
-		}
-		// Try as float if integer conversion fails
-		if f, err := v.Float64(); err == nil {
-			return int64(f), nil
-		}
-		return 0, fmt.Errorf("cannot convert json.Number '%s' to int64", string(v))
-	case string:
-		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
-			return i, nil
-		}
-		return 0, fmt.Errorf("cannot convert string '%s' to int64", v)
-	default:
-		return 0, fmt.Errorf("cannot convert %T to int64", v)
-	}
+	return SafeConvertToInt64(value)
 }
 
 func convertToFloat64(value any) (float64, error) {
-	switch v := value.(type) {
-	case float64:
-		return v, nil
-	case int:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case json.Number:
-		// Handle json.Number to preserve original format
-		if f, err := v.Float64(); err == nil {
-			return f, nil
-		}
-		return 0, fmt.Errorf("cannot convert json.Number '%s' to float64", string(v))
-	case string:
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			return f, nil
-		}
-		return 0, fmt.Errorf("cannot convert string '%s' to float64", v)
-	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", v)
+	if result, ok := ConvertToFloat64(value); ok {
+		return result, nil
 	}
+	return 0, fmt.Errorf("cannot convert %T to float64", value)
 }
 
 func convertToString(value any) string {
-	// Handle nil values specially - return empty string instead of "<nil>"
 	if value == nil {
 		return ""
 	}
-
-	switch v := value.(type) {
-	case string:
-		return v
-	case json.Number:
-		// Handle json.Number to preserve original format
-		return string(v)
-	case int, int64, float64, bool:
-		return fmt.Sprintf("%v", v)
-	default:
-		return fmt.Sprintf("%v", v)
+	if result, ok := ConvertToString(value); ok {
+		return result
 	}
+	return fmt.Sprintf("%v", value)
 }
 
 func convertToBool(value any) (bool, error) {
-	switch v := value.(type) {
-	case bool:
-		return v, nil
-	case json.Number:
-		// Handle json.Number to preserve original format
-		if f, err := v.Float64(); err == nil {
-			return f != 0, nil
-		}
-		return false, fmt.Errorf("cannot convert json.Number '%s' to bool", string(v))
-	case string:
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b, nil
-		}
-		return false, fmt.Errorf("cannot convert string '%s' to bool", v)
-	case int, int64:
-		return fmt.Sprintf("%v", v) != "0", nil
-	case float64:
-		return v != 0, nil
-	default:
-		return false, fmt.Errorf("cannot convert %T to bool", v)
+	if result, ok := ConvertToBool(value); ok {
+		return result, nil
 	}
+	return false, fmt.Errorf("cannot convert %T to bool", value)
 }
 
 func convertToArray(value any) ([]any, error) {
-	switch v := value.(type) {
-	case []any:
-		return v, nil
-	default:
-		return nil, fmt.Errorf("cannot convert %T to []any", v)
+	if arr, ok := value.([]any); ok {
+		return arr, nil
 	}
+	return nil, fmt.Errorf("cannot convert %T to []any", value)
 }
 
 func convertToObject(value any) (map[string]any, error) {
-	switch v := value.(type) {
-	case map[string]any:
-		return v, nil
-	default:
-		return nil, fmt.Errorf("cannot convert %T to map[string]any", v)
+	if obj, ok := value.(map[string]any); ok {
+		return obj, nil
 	}
+	return nil, fmt.Errorf("cannot convert %T to map[string]any", value)
 }
 
 // Set sets a value using path notation
@@ -3287,7 +3240,6 @@ func (p *Processor) buildPath(basePath, segment string) string {
 // =============================================================================
 // Source: deep_extraction.go
 // =============================================================================
-
 
 // DeepExtractionResult represents the result of a deep extraction operation
 type DeepExtractionResult struct {
