@@ -29,43 +29,8 @@ func TestIteratorComprehensive(t *testing.T) {
 		helper.AssertNotNil(iteratorWithOptions, "Should create iterator with options")
 	})
 
-	t.Run("BasicGetOperations", func(t *testing.T) {
-		// Test basic get operations using IterableValue (which is the correct way)
-		jsonData := `{
-			"name": "John",
-			"age": 30,
-			"active": true,
-			"score": 95.5,
-			"tags": ["admin", "user"],
-			"profile": {
-				"email": "john@example.com",
-				"phone": "123-456-7890"
-			}
-		}`
-
-		// Parse JSON data first
-		var data interface{}
-		err := processor.Parse(jsonData, &data)
-		helper.AssertNoError(err, "Should parse JSON data")
-
-		iterator := NewIterator(processor, data, DefaultOptions())
-		iterableValue := NewIterableValueWithIterator(data, processor, iterator)
-
-		// Test Get method using IterableValue
-		name := iterableValue.Get("name")
-		helper.AssertEqual("John", name, "Should get correct name")
-
-		// Test nested get
-		email := iterableValue.Get("profile.email")
-		helper.AssertEqual("john@example.com", email, "Should get correct email")
-
-		// Test array access
-		firstTag := iterableValue.Get("tags[0]")
-		helper.AssertEqual("admin", firstTag, "Should get correct first tag")
-	})
-
-	t.Run("TypedGetOperations", func(t *testing.T) {
-		// Test typed get operations
+	t.Run("IterableValueTypedOperations", func(t *testing.T) {
+		// Test IterableValue typed get operations (iterator-specific)
 		jsonData := `{
 			"name": "Alice",
 			"age": 25,
@@ -75,44 +40,25 @@ func TestIteratorComprehensive(t *testing.T) {
 			"profile": {"level": "gold"}
 		}`
 
-		// Parse JSON data first
 		var data interface{}
 		err := processor.Parse(jsonData, &data)
-		helper.AssertNoError(err, "Should parse JSON data")
+		helper.AssertNoError(err)
 
 		iterator := NewIterator(processor, data, DefaultOptions())
-
-		// Create IterableValue for typed operations
 		iterableValue := NewIterableValueWithIterator(data, processor, iterator)
 
-		// Test GetString
-		name := iterableValue.GetString("name")
-		helper.AssertEqual("Alice", name, "Should get string value")
+		// Test typed getters
+		helper.AssertEqual("Alice", iterableValue.GetString("name"))
+		helper.AssertEqual(25, iterableValue.GetInt("age"))
+		helper.AssertEqual(int64(25), iterableValue.GetInt64("age"))
+		helper.AssertEqual(87.5, iterableValue.GetFloat64("score"))
+		helper.AssertEqual(true, iterableValue.GetBool("active"))
 
-		// Test GetInt
-		age := iterableValue.GetInt("age")
-		helper.AssertEqual(25, age, "Should get int value")
-
-		// Test GetInt64
-		ageInt64 := iterableValue.GetInt64("age")
-		helper.AssertEqual(int64(25), ageInt64, "Should get int64 value")
-
-		// Test GetFloat64
-		score := iterableValue.GetFloat64("score")
-		helper.AssertEqual(87.5, score, "Should get float64 value")
-
-		// Test GetBool
-		active := iterableValue.GetBool("active")
-		helper.AssertEqual(true, active, "Should get bool value")
-
-		// Test GetArray
 		tags := iterableValue.GetArray("tags")
-		helper.AssertNotNil(tags, "Should get array value")
-		helper.AssertEqual(2, len(tags), "Should get correct array length")
+		helper.AssertEqual(2, len(tags))
 
-		// Test GetObject
 		profile := iterableValue.GetObject("profile")
-		helper.AssertNotNil(profile, "Should get object value")
+		helper.AssertNotNil(profile)
 	})
 
 	t.Run("GetWithDefault", func(t *testing.T) {
@@ -158,37 +104,29 @@ func TestIteratorComprehensive(t *testing.T) {
 		helper.AssertNotNil(objectDefault["default"], "Should get object default")
 	})
 
-	t.Run("SetOperations", func(t *testing.T) {
-		// Test set operations
+	t.Run("IterableValueModification", func(t *testing.T) {
+		// Test IterableValue set/delete (iterator-specific in-place modification)
 		jsonData := `{"name": "original", "nested": {"value": 1}}`
 
-		// Parse JSON data first
 		var data interface{}
 		err := processor.Parse(jsonData, &data)
-		helper.AssertNoError(err, "Should parse JSON data")
+		helper.AssertNoError(err)
 
 		iterator := NewIterator(processor, data, DefaultOptions())
 		iterableValue := NewIterableValueWithIterator(data, processor, iterator)
 
-		// Test basic set - IterableValue.Set modifies the data in place
+		// Test in-place modification
 		err = iterableValue.Set("name", "updated")
-		helper.AssertNoError(err, "Should set value")
+		helper.AssertNoError(err)
+		helper.AssertEqual("updated", iterableValue.Get("name"))
 
-		// Verify the change by getting the value
-		updatedName := iterableValue.Get("name")
-		helper.AssertEqual("updated", updatedName, "Should have updated value")
-
-		// Test nested set
 		err = iterableValue.Set("nested.value", 42)
-		helper.AssertNoError(err, "Should set nested value")
-
-		// Verify nested change
-		nestedValue := iterableValue.Get("nested.value")
-		helper.AssertEqual(42, nestedValue, "Should have updated nested value")
+		helper.AssertNoError(err)
+		helper.AssertEqual(42, iterableValue.Get("nested.value"))
 	})
 
-	t.Run("DeleteOperations", func(t *testing.T) {
-		// Test delete operations
+	t.Run("IterableValueDeletion", func(t *testing.T) {
+		// Test IterableValue delete operations
 		jsonData := `{
 			"keep": "this",
 			"delete": "this",

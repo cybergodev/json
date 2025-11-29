@@ -4,7 +4,8 @@ import (
 	"testing"
 )
 
-// TestArrayOperations tests all array operations comprehensively
+// TestArrayOperations tests advanced array operations (slicing, extraction, nested arrays)
+// Basic array access is covered in operations_test.go
 func TestArrayOperations(t *testing.T) {
 	helper := NewTestHelper(t)
 
@@ -24,27 +25,6 @@ func TestArrayOperations(t *testing.T) {
 		"empty": [],
 		"mixed": [1, "string", true, null, {"key": "value"}]
 	}`
-
-	t.Run("BasicArrayAccess", func(t *testing.T) {
-		// Positive index
-		first, err := GetInt(testData, "numbers[0]")
-		helper.AssertNoError(err)
-		helper.AssertEqual(1, first)
-
-		// Negative index
-		last, err := GetInt(testData, "numbers[-1]")
-		helper.AssertNoError(err)
-		helper.AssertEqual(10, last)
-
-		// Out of bounds
-		outOfBounds, err := Get(testData, "numbers[100]")
-		helper.AssertNoError(err)
-		helper.AssertNil(outOfBounds)
-
-		negOutOfBounds, err := Get(testData, "numbers[-100]")
-		helper.AssertNoError(err)
-		helper.AssertNil(negOutOfBounds)
-	})
 
 	t.Run("NestedArrayAccess", func(t *testing.T) {
 		userName, err := GetString(testData, "users[1].name")

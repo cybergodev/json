@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// TestConcurrentSafety tests thread safety of JSON operations
-// Merged from: concurrency_test.go, thread_safety_test.go, performance_concurrency_test.go
-func TestConcurrentSafety(t *testing.T) {
+// TestConcurrency tests all concurrency and thread safety scenarios
+// Consolidated from: concurrency_test.go, thread_safety_test.go, performance_concurrency_test.go
+func TestConcurrency(t *testing.T) {
 	helper := NewTestHelper(t)
 	generator := NewTestDataGenerator()
 

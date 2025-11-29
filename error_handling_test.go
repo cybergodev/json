@@ -68,11 +68,11 @@ func TestErrorHandlingComprehensive(t *testing.T) {
 
 	t.Run("InvalidJSONHandling", func(t *testing.T) {
 		invalidJSONs := []string{
-			`{`,                    // Incomplete object
-			`{"key": }`,           // Missing value
-			`{key: "value"}`,      // Unquoted key
-			`{"key": "value",}`,   // Trailing comma
-			`[1, 2, 3,]`,         // Trailing comma in array
+			`{`,                         // Incomplete object
+			`{"key": }`,                 // Missing value
+			`{key: "value"}`,            // Unquoted key
+			`{"key": "value",}`,         // Trailing comma
+			`[1, 2, 3,]`,                // Trailing comma in array
 			`{"key": "unclosed string}`, // Unclosed string
 		}
 
@@ -92,12 +92,12 @@ func TestErrorHandlingComprehensive(t *testing.T) {
 		validJSON := `{"users": [{"name": "Alice"}, {"name": "Bob"}]}`
 
 		invalidPaths := []string{
-			"users[abc]",          // Non-numeric array index
-			"users[1.5]",          // Float array index
-			"users[]",             // Empty array index
-			"users[",              // Incomplete array access
-			"users.name.invalid",  // Path through non-object
-			"nonexistent.path",    // Non-existent path
+			"users[abc]",         // Non-numeric array index
+			"users[1.5]",         // Float array index
+			"users[]",            // Empty array index
+			"users[",             // Incomplete array access
+			"users.name.invalid", // Path through non-object
+			"nonexistent.path",   // Non-existent path
 		}
 
 		for i, invalidPath := range invalidPaths {
@@ -199,7 +199,7 @@ func TestErrorHandlingComprehensive(t *testing.T) {
 	t.Run("ValidationErrors", func(t *testing.T) {
 		// Test validation with invalid data
 		invalidData := `{"key": "value", "number": "not_a_number"}`
-		
+
 		// Create a validator (if available)
 		processor := New()
 		defer processor.Close()

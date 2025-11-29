@@ -5,8 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 )
 
 // LoadFromFile loads JSON data from a file
@@ -166,113 +164,7 @@ func (p *Processor) createDirectoryIfNotExists(filePath string) error {
 }
 
 // validateFilePath validates file paths for security
+// This is a wrapper for the enhanced security validation
 func (p *Processor) validateFilePath(filePath string) error {
-	if filePath == "" {
-		return &JsonsError{
-			Op:      "validate_file_path",
-			Message: "file path cannot be empty",
-			Err:     ErrOperationFailed,
-		}
-	}
-
-	// Check for path traversal attempts
-	if strings.Contains(filePath, "..") {
-		return &JsonsError{
-			Op:      "validate_file_path",
-			Message: "path traversal detected in file path",
-			Err:     ErrOperationFailed,
-		}
-	}
-
-	// Check for null bytes
-	if strings.Contains(filePath, "\x00") {
-		return &JsonsError{
-			Op:      "validate_file_path",
-			Message: "null byte detected in file path",
-			Err:     ErrOperationFailed,
-		}
-	}
-
-	// Check for excessively long paths
-	if len(filePath) > 4096 {
-		return &JsonsError{
-			Op:      "validate_file_path",
-			Message: "file path too long",
-			Err:     ErrOperationFailed,
-		}
-	}
-
-	// Check for suspicious patterns - only absolute paths to system directories
-	lowerPath := strings.ToLower(filePath)
-
-	// Only check for absolute paths to sensitive system directories
-	// This allows relative paths like "dev_test/file.json" or "config/production.json"
-	if strings.HasPrefix(lowerPath, "/dev/") || strings.HasPrefix(lowerPath, "/proc/") ||
-		strings.HasPrefix(lowerPath, "/sys/") {
-		return &JsonsError{
-			Op:      "validate_file_path",
-			Message: "access to system directories not allowed",
-			Err:     ErrSecurityViolation,
-		}
-	}
-
-	// Check for specific sensitive files
-	if strings.Contains(lowerPath, "/etc/passwd") || strings.Contains(lowerPath, "/etc/shadow") {
-		return &JsonsError{
-			Op:      "validate_file_path",
-			Message: "access to sensitive system files not allowed",
-			Err:     ErrSecurityViolation,
-		}
-	}
-
-	// Check for UNC paths on Windows (\\server\share)
-	if strings.HasPrefix(filePath, "\\\\") {
-		return &JsonsError{
-			Op:      "validate_file_path",
-			Message: "UNC paths not allowed",
-			Err:     ErrSecurityViolation,
-		}
-	}
-
-	// Windows reserved device names - only check on Windows platform
-	// Only flag exact matches (case-insensitive) as the complete filename without extension
-	if runtime.GOOS == "windows" {
-		filename := filepath.Base(filePath)
-		// Extract filename without extension
-		filenameWithoutExt := filename
-		if dotIndex := strings.LastIndex(filename, "."); dotIndex > 0 {
-			filenameWithoutExt = filename[:dotIndex]
-		}
-
-		upperFilename := strings.ToUpper(filenameWithoutExt)
-
-		// Check for exact reserved device names only
-		// Pattern: CON, PRN, AUX, NUL, COM1-9, LPT1-9
-		isReserved := false
-		switch upperFilename {
-		case "CON", "PRN", "AUX", "NUL":
-			isReserved = true
-		default:
-			// Check COM1-9 and LPT1-9
-			if len(upperFilename) == 4 {
-				prefix := upperFilename[:3]
-				digit := upperFilename[3]
-				if (prefix == "COM" || prefix == "LPT") && digit >= '1' && digit <= '9' {
-					isReserved = true
-				}
-			}
-		}
-
-		// Only reject if it's an exact match to a reserved name
-		// This correctly allows "mycon.json", "console.txt", "config.json" but rejects "CON", "CON.txt"
-		if isReserved {
-			return &JsonsError{
-				Op:      "validate_file_path",
-				Message: fmt.Sprintf("Windows reserved device name detected: %s", upperFilename),
-				Err:     ErrSecurityViolation,
-			}
-		}
-	}
-
-	return nil
+	return p.validateFilePathSecure(filePath)
 }

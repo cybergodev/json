@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,10 +13,6 @@ import (
 
 	"github.com/cybergodev/json/internal"
 )
-
-// =============================================================================
-// Source: utils.go
-// =============================================================================
 
 // Modern Go 1.24+ type constraints with enhanced generic support
 type (
@@ -80,51 +75,9 @@ func GetTypedWithProcessor[T any](processor *Processor, jsonStr, path string, op
 		return convResult.value, convResult.err
 	}
 
-	// Try more efficient type conversions before falling back to JSON marshaling
-	if converted, ok := tryDirectConversion[T](value); ok {
+	// Use unified type conversion from type_conversion.go
+	if converted, ok := UnifiedTypeConversion[T](value); ok {
 		return converted, nil
-	}
-
-	// Try using type_conversion.go functions for better performance
-	targetType := fmt.Sprintf("%T", zero)
-
-	switch targetType {
-	case "int":
-		if intVal, ok := ConvertToInt(value); ok {
-			if result, ok := any(intVal).(T); ok {
-				return result, nil
-			}
-		}
-	case "int64":
-		if int64Val, ok := ConvertToInt64(value); ok {
-			if result, ok := any(int64Val).(T); ok {
-				return result, nil
-			}
-		}
-	case "uint64":
-		if uint64Val, ok := ConvertToUint64(value); ok {
-			if result, ok := any(uint64Val).(T); ok {
-				return result, nil
-			}
-		}
-	case "float64":
-		if float64Val, ok := ConvertToFloat64(value); ok {
-			if result, ok := any(float64Val).(T); ok {
-				return result, nil
-			}
-		}
-	case "string":
-		if strVal, ok := ConvertToString(value); ok {
-			if result, ok := any(strVal).(T); ok {
-				return result, nil
-			}
-		}
-	case "bool":
-		if boolVal, ok := ConvertToBool(value); ok {
-			if result, ok := any(boolVal).(T); ok {
-				return result, nil
-			}
-		}
 	}
 
 	// Last resort: JSON marshaling/unmarshaling for complex types only
@@ -159,116 +112,7 @@ func GetTypedWithProcessor[T any](processor *Processor, jsonStr, path string, op
 	return finalResult, nil
 }
 
-// tryDirectConversion attempts direct type conversion without JSON marshaling
-func tryDirectConversion[T any](value any) (T, bool) {
-	var zero T
-
-	// Handle array/slice conversions first
-	if converted, ok := tryArrayConversion[T](value); ok {
-		return converted, true
-	}
-
-	// Try direct conversion for common types
-	switch any(&zero).(type) {
-	case *string:
-		if str, ok := value.(string); ok {
-			return any(str).(T), true
-		}
-		// Convert numbers to string
-		switch v := value.(type) {
-		case json.Number:
-			// Handle json.Number to preserve original format
-			return any(string(v)).(T), true
-		case int:
-			return any(fmt.Sprintf("%d", v)).(T), true
-		case int64:
-			return any(fmt.Sprintf("%d", v)).(T), true
-		case float64:
-			return any(fmt.Sprintf("%g", v)).(T), true
-		case bool:
-			return any(fmt.Sprintf("%t", v)).(T), true
-		}
-	case *int:
-		switch v := value.(type) {
-		case int:
-			return any(v).(T), true
-		case int64:
-			if v >= int64(^uint(0)>>1) && v <= int64(^uint(0)>>1) {
-				return any(int(v)).(T), true
-			}
-		case float64:
-			if v == float64(int(v)) {
-				return any(int(v)).(T), true
-			}
-		case json.Number:
-			// Handle json.Number to preserve original format
-			if i, err := v.Int64(); err == nil {
-				return any(int(i)).(T), true
-			}
-			// Try as float if integer conversion fails
-			if f, err := v.Float64(); err == nil && f == float64(int(f)) {
-				return any(int(f)).(T), true
-			}
-		case string:
-			if i, err := strconv.Atoi(v); err == nil {
-				return any(i).(T), true
-			}
-		}
-	case *int64:
-		switch v := value.(type) {
-		case int:
-			return any(int64(v)).(T), true
-		case int64:
-			return any(v).(T), true
-		case float64:
-			if v == float64(int64(v)) {
-				return any(int64(v)).(T), true
-			}
-		case json.Number:
-			// Handle json.Number to preserve original format
-			if i, err := v.Int64(); err == nil {
-				return any(i).(T), true
-			}
-			// Try as float if integer conversion fails
-			if f, err := v.Float64(); err == nil && f == float64(int64(f)) {
-				return any(int64(f)).(T), true
-			}
-		case string:
-			if i, err := strconv.ParseInt(v, 10, 64); err == nil {
-				return any(i).(T), true
-			}
-		}
-	case *float64:
-		switch v := value.(type) {
-		case float64:
-			return any(v).(T), true
-		case int:
-			return any(float64(v)).(T), true
-		case int64:
-			return any(float64(v)).(T), true
-		case json.Number:
-			// Handle json.Number to preserve original format
-			if f, err := v.Float64(); err == nil {
-				return any(f).(T), true
-			}
-		case string:
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				return any(f).(T), true
-			}
-		}
-	case *bool:
-		switch v := value.(type) {
-		case bool:
-			return any(v).(T), true
-		case string:
-			if b, err := strconv.ParseBool(v); err == nil {
-				return any(b).(T), true
-			}
-		}
-	}
-
-	return zero, false
-}
+// tryDirectConversion is now replaced by UnifiedTypeConversion in type_conversion_unified.go
 
 // handleNullValue handles null values for different target types
 func handleNullValue[T any](path string) (T, error) {
@@ -715,112 +559,7 @@ func estimateSize(data any) int64 {
 	}
 }
 
-// tryArrayConversion attempts to convert []interface{} to typed arrays/slices
-func tryArrayConversion[T any](value any) (T, bool) {
-	var zero T
-
-	// Check if the target type is a slice
-	targetType := reflect.TypeOf(zero)
-	if targetType.Kind() != reflect.Slice {
-		return zero, false
-	}
-
-	// Check if the source is []interface{}
-	sourceSlice, ok := value.([]interface{})
-	if !ok {
-		return zero, false
-	}
-
-	// Get the element type of the target slice
-	elemType := targetType.Elem()
-
-	// Create a new slice of the target type
-	resultSlice := reflect.MakeSlice(targetType, len(sourceSlice), len(sourceSlice))
-
-	// Convert each element
-	for i, elem := range sourceSlice {
-		// Convert the element to the target element type
-		convertedElem, err := convertElementToType(elem, elemType)
-		if err != nil {
-			return zero, false
-		}
-		resultSlice.Index(i).Set(reflect.ValueOf(convertedElem))
-	}
-
-	// Convert the result back to T
-	if result, ok := resultSlice.Interface().(T); ok {
-		return result, true
-	}
-
-	return zero, false
-}
-
-// convertElementToType converts a single element to the target type
-func convertElementToType(elem interface{}, targetType reflect.Type) (interface{}, error) {
-	if elem == nil {
-		return reflect.Zero(targetType).Interface(), nil
-	}
-
-	// If the element is already the correct type, return it
-	if reflect.TypeOf(elem) == targetType {
-		return elem, nil
-	}
-
-	// Handle common type conversions
-	switch targetType.Kind() {
-	case reflect.String:
-		return fmt.Sprintf("%v", elem), nil
-	case reflect.Int:
-		if f, ok := elem.(float64); ok {
-			return int(f), nil
-		}
-		if i, ok := elem.(int); ok {
-			return i, nil
-		}
-		if s, ok := elem.(string); ok {
-			if i, err := strconv.Atoi(s); err == nil {
-				return i, nil
-			}
-		}
-	case reflect.Int64:
-		if f, ok := elem.(float64); ok {
-			return int64(f), nil
-		}
-		if i, ok := elem.(int64); ok {
-			return i, nil
-		}
-		if i, ok := elem.(int); ok {
-			return int64(i), nil
-		}
-	case reflect.Float64:
-		if f, ok := elem.(float64); ok {
-			return f, nil
-		}
-		if i, ok := elem.(int); ok {
-			return float64(i), nil
-		}
-		if s, ok := elem.(string); ok {
-			if f, err := strconv.ParseFloat(s, 64); err == nil {
-				return f, nil
-			}
-		}
-	case reflect.Bool:
-		if b, ok := elem.(bool); ok {
-			return b, nil
-		}
-		if s, ok := elem.(string); ok {
-			if b, err := strconv.ParseBool(s); err == nil {
-				return b, nil
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("cannot convert %T to %v", elem, targetType)
-}
-
-// =============================================================================
-// Concurrency Management
-// =============================================================================
+// tryArrayConversion is now replaced by convertArray in type_conversion_unified.go
 
 // ConcurrencyManager manages concurrent operations with enhanced safety
 type ConcurrencyManager struct {
@@ -1082,6 +821,7 @@ func (cm *ConcurrencyManager) DetectDeadlocks() []DeadlockInfo {
 }
 
 // cleanupStaleTimeouts removes stale entries from operationTimeouts map
+// Enhanced version with better memory management
 func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 	cm.timeoutMutex.Lock()
 	defer cm.timeoutMutex.Unlock()
@@ -1092,6 +832,11 @@ func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 	const targetSize = 5000
 
 	currentSize := len(cm.operationTimeouts)
+
+	// If map is empty or nil, nothing to clean
+	if cm.operationTimeouts == nil || currentSize == 0 {
+		return
+	}
 
 	// If map is small, just delete stale entries
 	if currentSize < targetSize {
@@ -1104,16 +849,21 @@ func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 	}
 
 	// If map is large, recreate with only fresh entries
+	// Pre-allocate with target size for better performance
 	newMap := make(map[uint64]int64, targetSize)
+	count := 0
 	for gid, startTime := range cm.operationTimeouts {
-		if now-startTime <= threshold {
+		if now-startTime <= threshold && count < targetSize {
 			newMap[gid] = startTime
-			if len(newMap) >= targetSize {
-				break
-			}
+			count++
 		}
 	}
+
+	// Replace old map with new one
 	cm.operationTimeouts = newMap
+
+	// Explicitly set old map to nil to help GC
+	// (Go compiler should optimize this, but being explicit)
 }
 
 // DeadlockInfo represents information about a potential deadlock
@@ -1160,10 +910,6 @@ func getGoroutineIDForConcurrency() uint64 {
 	return id
 }
 
-// =============================================================================
-// Source: iterator.go
-// =============================================================================
-
 // IteratorControl represents control flags for iteration
 type IteratorControl int
 
@@ -1173,13 +919,13 @@ const (
 	IteratorBreak                           // Break entire iteration
 )
 
-// Nested call tracking to prevent state conflicts with enhanced memory leak prevention
+// Nested call tracking to prevent state conflicts with aggressive memory leak prevention
 var (
 	nestedCallTracker = make(map[uint64]int) // goroutine ID -> nesting level
 	nestedCallMutex   sync.RWMutex
-	lastCleanupTime   int64        // Unix timestamp of last cleanup
-	maxTrackerSize    = 5000       // Reduced maximum to prevent memory bloat
-	cleanupInterval   = int64(180) // Cleanup every 3 minutes (reduced from 5)
+	lastCleanupTime   int64       // Unix timestamp of last cleanup
+	maxTrackerSize    = 1000      // Aggressive limit to prevent memory bloat
+	cleanupInterval   = int64(60) // Cleanup every minute for better memory management
 )
 
 // getGoroutineID returns the current goroutine ID (optimized version)
@@ -1279,24 +1025,27 @@ func exitNestedCall() {
 
 // cleanupDeadGoroutines removes entries for goroutines that no longer exist with enhanced logic
 func cleanupDeadGoroutines() {
-	// Enhanced cleanup strategy to prevent memory leaks
+	// Ultra-aggressive cleanup strategy to prevent memory leaks
 	trackerSize := len(nestedCallTracker)
 
+	// If tracker exceeds limit, clear everything immediately
 	if trackerSize > maxTrackerSize {
-		// Aggressive cleanup: clear entire tracker
-		nestedCallTracker = make(map[uint64]int, maxTrackerSize/2)
-	} else if trackerSize > maxTrackerSize/2 {
-		// Moderate cleanup: remove entries with zero nesting level
+		nestedCallTracker = make(map[uint64]int, maxTrackerSize/4)
+		return
+	}
+
+	// If tracker is more than half full, remove zero-level entries
+	if trackerSize > maxTrackerSize/2 {
 		for gid, level := range nestedCallTracker {
 			if level <= 0 {
 				delete(nestedCallTracker, gid)
 			}
 		}
+	}
 
-		// If still too large, clear everything
-		if len(nestedCallTracker) > maxTrackerSize*3/4 {
-			nestedCallTracker = make(map[uint64]int, maxTrackerSize/2)
-		}
+	// Final check: if still too large after cleanup, clear everything
+	if len(nestedCallTracker) > maxTrackerSize*2/3 {
+		nestedCallTracker = make(map[uint64]int, maxTrackerSize/4)
 	}
 }
 
@@ -1472,13 +1221,17 @@ func (it *Iterator) Delete(path string) error {
 }
 
 // Continue skips the current iteration
-func (it *Iterator) Continue() {
-	panic(IteratorControlSignal{Type: IteratorContinue})
+// Returns an error that should be returned from the callback
+func (it *Iterator) Continue() error {
+	it.control = IteratorContinue
+	return ErrIteratorControl
 }
 
 // Break stops the entire iteration
-func (it *Iterator) Break() {
-	panic(IteratorControlSignal{Type: IteratorBreak})
+// Returns an error that should be returned from the callback
+func (it *Iterator) Break() error {
+	it.control = IteratorBreak
+	return ErrIteratorControl
 }
 
 // GetCurrentKey returns the current key (index for arrays, property name for objects)
@@ -1863,10 +1616,6 @@ func (iv *IterableValue) GetObject(path string) map[string]any {
 	return result
 }
 
-// =============================================================================
-// GET WITH DEFAULT VALUE METHODS FOR ITERABLEVALUE
-// =============================================================================
-
 // GetWithDefault retrieves a value with a default fallback
 func (iv *IterableValue) GetWithDefault(path string, defaultValue any) any {
 	if iv.processor == nil {
@@ -2012,10 +1761,6 @@ func (iv *IterableValue) GetObjectWithDefault(path string, defaultValue map[stri
 //
 // Example usage:
 //   result := GetIterableValueWithDefault[string](item, "path", "default")
-
-// =============================================================================
-// GLOBAL FUNCTIONS FOR TYPED DEFAULT VALUES WITH ITERABLEVALUE
-// =============================================================================
 
 // GetIterableValueWithDefault retrieves a typed value from IterableValue with a default fallback
 func GetIterableValueWithDefault[T any](iv *IterableValue, path string, defaultValue T) T {
@@ -3007,20 +2752,8 @@ func (p *Processor) iterateData(data any, basePath string, iterator *Iterator, c
 			iterator.currentPath = p.buildPath(basePath, strconv.Itoa(i))
 			iterator.control = IteratorNormal
 
-			// Call callback with panic/recover for elegant control
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						if signal, ok := r.(IteratorControlSignal); ok {
-							iterator.control = signal.Type
-						} else {
-							// Re-panic if it's not our control signal
-							panic(r)
-						}
-					}
-				}()
-				callback(i, item, iterator)
-			}()
+			// Call callback and check for control signals
+			callback(i, item, iterator)
 
 			// Check control flags
 			switch iterator.control {
@@ -3029,7 +2762,7 @@ func (p *Processor) iterateData(data any, basePath string, iterator *Iterator, c
 			case IteratorContinue:
 				continue
 			case IteratorNormal:
-				//  normal execution
+				// normal execution
 			}
 		}
 
@@ -3057,20 +2790,8 @@ func (p *Processor) iterateData(data any, basePath string, iterator *Iterator, c
 			iterator.currentPath = p.buildPath(basePath, key)
 			iterator.control = IteratorNormal
 
-			// Call callback with panic/recover for elegant control
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						if signal, ok := r.(IteratorControlSignal); ok {
-							iterator.control = signal.Type
-						} else {
-							// Re-panic if it's not our control signal
-							panic(r)
-						}
-					}
-				}()
-				callback(key, value, iterator)
-			}()
+			// Call callback and check for control signals
+			callback(key, value, iterator)
 
 			// Check control flags
 			switch iterator.control {
@@ -3079,7 +2800,7 @@ func (p *Processor) iterateData(data any, basePath string, iterator *Iterator, c
 			case IteratorContinue:
 				continue
 			case IteratorNormal:
-				//  normal execution
+				// normal execution
 			}
 		}
 
@@ -3107,20 +2828,8 @@ func (p *Processor) iterateData(data any, basePath string, iterator *Iterator, c
 			iterator.currentPath = p.buildPath(basePath, fmt.Sprintf("%v", key))
 			iterator.control = IteratorNormal
 
-			// Call callback with panic/recover for elegant control
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						if signal, ok := r.(IteratorControlSignal); ok {
-							iterator.control = signal.Type
-						} else {
-							// Re-panic if it's not our control signal
-							panic(r)
-						}
-					}
-				}()
-				callback(key, value, iterator)
-			}()
+			// Call callback and check for control signals
+			callback(key, value, iterator)
 
 			// Check control flags
 			switch iterator.control {
@@ -3129,7 +2838,7 @@ func (p *Processor) iterateData(data any, basePath string, iterator *Iterator, c
 			case IteratorContinue:
 				continue
 			case IteratorNormal:
-				//  normal execution
+				// normal execution
 			}
 		}
 
@@ -3236,10 +2945,6 @@ func (p *Processor) buildPath(basePath, segment string) string {
 }
 
 // cleanupDeletedMarkers removes deleted markers from the data structure
-
-// =============================================================================
-// Source: deep_extraction.go
-// =============================================================================
 
 // DeepExtractionResult represents the result of a deep extraction operation
 type DeepExtractionResult struct {

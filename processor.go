@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,10 +16,6 @@ import (
 
 	"github.com/cybergodev/json/internal"
 )
-
-// =============================================================================
-// PROCESSOR - MAIN IMPLEMENTATION
-// =============================================================================
 
 // Processor is the main JSON processing engine with thread safety and performance optimization
 type Processor struct {
@@ -37,34 +32,19 @@ type Processor struct {
 }
 
 // processorResources consolidates all resource management
+// Simplified: removed duplicate caching, now uses internal.CacheManager exclusively
 type processorResources struct {
 	stringBuilderPool *sync.Pool
 	pathSegmentPool   *sync.Pool
-	pathParseCache    map[string]*cacheEntry
-	pathCacheMutex    sync.RWMutex
-	pathCacheSize     int64
-	jsonParseCache    map[string]*cacheEntry
-	jsonCacheMutex    sync.RWMutex
-	jsonCacheSize     int64
-	maxCacheEntries   int
 	lastPoolReset     int64
 	lastMemoryCheck   int64
 	memoryPressure    int32
-}
-
-// cacheEntry represents a cache entry with access tracking for proper LRU
-type cacheEntry struct {
-	value      any
-	lastAccess int64 // Unix nanoseconds
 }
 
 // processorMetrics consolidates all metrics and performance tracking
 type processorMetrics struct {
 	operationCount       int64
 	errorCount           int64
-	concurrentOps        int64
-	maxConcurrentOps     int64
-	totalWaitTime        int64
 	lastOperationTime    int64
 	operationWindow      int64
 	concurrencySemaphore chan struct{}
@@ -101,20 +81,17 @@ func New(config ...*Config) *Processor {
 
 		resources: &processorResources{
 			stringBuilderPool: &sync.Pool{
-				New: func() interface{} {
+				New: func() any {
 					sb := &strings.Builder{}
 					sb.Grow(DefaultStringBuilderSize)
 					return sb
 				},
 			},
 			pathSegmentPool: &sync.Pool{
-				New: func() interface{} {
+				New: func() any {
 					return make([]PathSegment, 0, DefaultPathSegmentCap)
 				},
 			},
-			pathParseCache:  make(map[string]*cacheEntry, DefaultCacheSize),
-			jsonParseCache:  make(map[string]*cacheEntry, DefaultCacheSize/2),
-			maxCacheEntries: MaxCacheEntries,
 		},
 
 		metrics: &processorMetrics{
@@ -158,130 +135,12 @@ func (p *Processor) performMaintenance() {
 		p.cache.CleanExpiredCache()
 	}
 
-	// Clean parsing caches if they grow too large
-	p.cleanParsingCaches()
-
-	// Reset resource pools if they grow too large or under memory pressure
-	p.resetResourcePools()
-
-	// Check memory pressure
-	p.checkMemoryPressure()
-
 	// Perform leak detection
 	if p.resourceMonitor != nil {
 		if issues := p.resourceMonitor.CheckForLeaks(); len(issues) > 0 {
 			for _, issue := range issues {
 				p.logger.Warn("Resource issue detected", "issue", issue)
 			}
-		}
-	}
-}
-
-// cleanParsingCaches cleans parsing caches when they grow too large
-func (p *Processor) cleanParsingCaches() {
-	p.cleanSingleCache(&p.resources.pathCacheMutex, p.resources.pathParseCache, &p.resources.pathCacheSize)
-	p.cleanSingleCache(&p.resources.jsonCacheMutex, p.resources.jsonParseCache, &p.resources.jsonCacheSize)
-}
-
-// cleanSingleCache cleans a single cache using LRU eviction
-func (p *Processor) cleanSingleCache(mutex *sync.RWMutex, cache map[string]*cacheEntry, sizePtr *int64) {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	currentSize := len(cache)
-	if currentSize <= p.resources.maxCacheEntries {
-		return
-	}
-
-	targetSize := p.resources.maxCacheEntries / 2
-	toRemove := currentSize - targetSize
-
-	type entryWithKey struct {
-		key        string
-		lastAccess int64
-	}
-
-	entries := make([]entryWithKey, 0, currentSize)
-	for k, v := range cache {
-		entries = append(entries, entryWithKey{
-			key:        k,
-			lastAccess: atomic.LoadInt64(&v.lastAccess),
-		})
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].lastAccess < entries[j].lastAccess
-	})
-
-	for i := 0; i < toRemove && i < len(entries); i++ {
-		delete(cache, entries[i].key)
-	}
-
-	atomic.StoreInt64(sizePtr, int64(len(cache)))
-}
-
-// checkMemoryPressure monitors memory usage and adjusts behavior
-func (p *Processor) checkMemoryPressure() {
-	opCount := atomic.LoadInt64(&p.metrics.operationCount)
-	lastCheck := atomic.LoadInt64(&p.resources.lastMemoryCheck)
-
-	if opCount-lastCheck > MemoryPressureCheckInterval {
-		if atomic.CompareAndSwapInt64(&p.resources.lastMemoryCheck, lastCheck, opCount) {
-			pathCacheSize := atomic.LoadInt64(&p.resources.pathCacheSize)
-			jsonCacheSize := atomic.LoadInt64(&p.resources.jsonCacheSize)
-
-			if pathCacheSize+jsonCacheSize > int64(p.resources.maxCacheEntries) {
-				atomic.StoreInt32(&p.resources.memoryPressure, 1)
-				p.cleanParsingCaches()
-			} else {
-				atomic.StoreInt32(&p.resources.memoryPressure, 0)
-			}
-		}
-	}
-}
-
-// resetResourcePools resets resource pools to prevent memory bloat
-func (p *Processor) resetResourcePools() {
-	opCount := atomic.LoadInt64(&p.metrics.operationCount)
-	memoryPressure := atomic.LoadInt32(&p.resources.memoryPressure)
-
-	resetInterval := int64(PoolResetInterval)
-	if memoryPressure > 0 {
-		resetInterval = PoolResetIntervalPressure
-	}
-
-	if opCount > 0 && opCount%resetInterval == 0 {
-		lastReset := atomic.LoadInt64(&p.resources.lastPoolReset)
-		if atomic.CompareAndSwapInt64(&p.resources.lastPoolReset, lastReset, opCount) {
-			if !p.isClosing() {
-				p.recreateResourcePools()
-			}
-		}
-	}
-}
-
-// recreateResourcePools drains and resets the resource pools without losing warm pool benefits
-func (p *Processor) recreateResourcePools() {
-	// For string builder pool, just drain it - the pool will naturally refill with fresh builders
-	// This is more efficient than recreating the pool entirely
-	if p.resources.stringBuilderPool != nil {
-		// Drain the pool by getting and discarding items
-		for i := 0; i < 100; i++ { // Drain up to 100 items
-			if sb := p.resources.stringBuilderPool.Get(); sb != nil {
-				// Don't put it back - let it be garbage collected
-				continue
-			}
-			break // Pool is empty
-		}
-	}
-
-	// For path segment pool, same approach
-	if p.resources.pathSegmentPool != nil {
-		for i := 0; i < 100; i++ {
-			if segments := p.resources.pathSegmentPool.Get(); segments != nil {
-				continue
-			}
-			break
 		}
 	}
 }
@@ -294,22 +153,6 @@ func (p *Processor) Close() error {
 		if p.cache != nil {
 			p.cache.ClearCache()
 		}
-
-		p.resources.pathCacheMutex.Lock()
-		for k := range p.resources.pathParseCache {
-			delete(p.resources.pathParseCache, k)
-		}
-		p.resources.pathParseCache = nil
-		atomic.StoreInt64(&p.resources.pathCacheSize, 0)
-		p.resources.pathCacheMutex.Unlock()
-
-		p.resources.jsonCacheMutex.Lock()
-		for k := range p.resources.jsonParseCache {
-			delete(p.resources.jsonParseCache, k)
-		}
-		p.resources.jsonParseCache = nil
-		atomic.StoreInt64(&p.resources.jsonCacheSize, 0)
-		p.resources.jsonCacheMutex.Unlock()
 
 		p.resources.stringBuilderPool = nil
 		p.resources.pathSegmentPool = nil
@@ -332,56 +175,6 @@ func (p *Processor) IsClosed() bool {
 func (p *Processor) isClosing() bool {
 	state := atomic.LoadInt32(&p.state)
 	return state == 1 || state == 2
-}
-
-// acquireConcurrencySlot acquires a concurrency slot with timeout
-func (p *Processor) acquireConcurrencySlot(timeout time.Duration) error {
-	if p.isClosing() {
-		return &JsonsError{
-			Op:      "acquire_concurrency_slot",
-			Message: "processor is closing",
-			Err:     ErrProcessorClosed,
-		}
-	}
-
-	start := time.Now()
-
-	select {
-	case p.metrics.concurrencySemaphore <- struct{}{}:
-		// Successfully acquired slot
-		current := atomic.AddInt64(&p.metrics.concurrentOps, 1)
-
-		// Update max concurrent operations
-		for {
-			maxInt := atomic.LoadInt64(&p.metrics.maxConcurrentOps)
-			if current <= maxInt || atomic.CompareAndSwapInt64(&p.metrics.maxConcurrentOps, maxInt, current) {
-				break
-			}
-		}
-
-		// Record wait time
-		waitTime := time.Since(start).Nanoseconds()
-		atomic.AddInt64(&p.metrics.totalWaitTime, waitTime)
-
-		return nil
-
-	case <-time.After(timeout):
-		return &JsonsError{
-			Op:      "acquire_concurrency_slot",
-			Message: "timeout waiting for concurrency slot",
-			Err:     ErrOperationTimeout,
-		}
-	}
-}
-
-// releaseConcurrencySlot releases a concurrency slot
-func (p *Processor) releaseConcurrencySlot() {
-	select {
-	case <-p.metrics.concurrencySemaphore:
-		atomic.AddInt64(&p.metrics.concurrentOps, -1)
-	default:
-		// Should not happen, but handle gracefully
-	}
 }
 
 // executeWithConcurrencyControl executes an operation with full concurrency control
@@ -432,6 +225,22 @@ func (p *Processor) executeOperation(operationName string, operation func() erro
 	return err
 }
 
+// Helper functions for metric calculations
+func calculateSuccessRateInternal(successful, total int64) float64 {
+	if total == 0 {
+		return 0.0
+	}
+	return float64(successful) / float64(total) * 100.0
+}
+
+func calculateHitRatioInternal(hits, misses int64) float64 {
+	total := hits + misses
+	if total == 0 {
+		return 0.0
+	}
+	return float64(hits) / float64(total) * 100.0
+}
+
 // GetStats returns processor performance statistics
 func (p *Processor) GetStats() Stats {
 	cacheStats := p.cache.GetStats()
@@ -479,10 +288,10 @@ func (p *Processor) getMetrics() ProcessorMetrics {
 		TotalOperations:       internalMetrics.TotalOperations,
 		SuccessfulOperations:  internalMetrics.SuccessfulOps,
 		FailedOperations:      internalMetrics.FailedOps,
-		SuccessRate:           calculateSuccessRate(internalMetrics.SuccessfulOps, internalMetrics.TotalOperations),
+		SuccessRate:           calculateSuccessRateInternal(internalMetrics.SuccessfulOps, internalMetrics.TotalOperations),
 		CacheHits:             internalMetrics.CacheHits,
 		CacheMisses:           internalMetrics.CacheMisses,
-		CacheHitRate:          calculateHitRatio(internalMetrics.CacheHits, internalMetrics.CacheMisses),
+		CacheHitRate:          calculateHitRatioInternal(internalMetrics.CacheHits, internalMetrics.CacheMisses),
 		AverageProcessingTime: internalMetrics.AvgProcessingTime,
 		MaxProcessingTime:     internalMetrics.MaxProcessingTime,
 		MinProcessingTime:     internalMetrics.MinProcessingTime,
@@ -495,22 +304,6 @@ func (p *Processor) getMetrics() ProcessorMetrics {
 		uptime:                internalMetrics.Uptime,
 		errorsByType:          internalMetrics.ErrorsByType,
 	}
-}
-
-// Helper functions for metric calculations
-func calculateSuccessRate(successful, total int64) float64 {
-	if total == 0 {
-		return 0.0
-	}
-	return float64(successful) / float64(total) * 100.0
-}
-
-func calculateHitRatio(hits, misses int64) float64 {
-	total := hits + misses
-	if total == 0 {
-		return 0.0
-	}
-	return float64(hits) / float64(total) * 100.0
 }
 
 // GetHealthStatus returns the current health status
@@ -843,7 +636,7 @@ func (p *Processor) logError(ctx context.Context, operation, path string, err er
 // sanitizePath removes potentially sensitive information from paths
 func (p *Processor) sanitizePath(path string) string {
 	if len(path) > 100 {
-		return path[:50] + "...[truncated]..." + path[len(path)-20:]
+		return TruncateString(path, 100)
 	}
 	// Remove potential sensitive patterns but keep structure
 	sanitized := path
@@ -863,7 +656,7 @@ func (p *Processor) sanitizeError(err error) string {
 	}
 	errMsg := err.Error()
 	if len(errMsg) > 200 {
-		return errMsg[:100] + "...[truncated]"
+		return TruncateString(errMsg, 200)
 	}
 	return errMsg
 }
@@ -899,76 +692,10 @@ func (p *Processor) getProcessorID() string {
 	return fmt.Sprintf("proc_%p", p)
 }
 
-// isRetryableError checks if an error is retryable
-func (p *Processor) isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	// Check for specific retryable error types
-	var jsonErr *JsonsError
-	if errors.As(err, &jsonErr) {
-		switch {
-		case errors.Is(jsonErr.Err, ErrCacheFull), errors.Is(jsonErr.Err, ErrConcurrencyLimit), errors.Is(jsonErr.Err, ErrRateLimitExceeded):
-			return true
-		default:
-			return false
-		}
-	}
-
-	return false
-}
-
-// executeWithRetry executes an operation with automatic retry for retryable errors
-func (p *Processor) executeWithRetry(ctx context.Context, operation string, fn func() error) error {
-
-	var lastErr error
-	for attempt := 0; attempt <= MaxRetries; attempt++ {
-		err := fn()
-		if err == nil {
-			return nil // Success
-		}
-
-		lastErr = err
-
-		// Don't retry on the last attempt or if error is not retryable
-		if attempt == MaxRetries || !p.isRetryableError(err) {
-			break
-		}
-
-		// Exponential backoff
-		delay := BaseRetryDelay * time.Duration(1<<uint(attempt))
-
-		if p.logger != nil {
-			p.logger.WarnContext(ctx, "Retrying operation after error",
-				"operation", operation,
-				"attempt", attempt+1,
-				"max_retries", MaxRetries,
-				"delay_ms", delay.Milliseconds(),
-				"error", err,
-			)
-		}
-
-		// Wait before retry
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-			// Continue to next attempt
-		}
-	}
-
-	return lastErr
-}
-
 // validateInput validates JSON input string with enhanced security checks
 func (p *Processor) validateInput(jsonString string) error {
 	if jsonString == "" {
-		return &JsonsError{
-			Op:      "validate_input",
-			Message: "JSON string cannot be empty",
-			Err:     ErrInvalidJSON,
-		}
+		return newOperationError("validate_input", "JSON string cannot be empty", ErrInvalidJSON)
 	}
 
 	// Enhanced size limits with stricter defaults
@@ -978,77 +705,22 @@ func (p *Processor) validateInput(jsonString string) error {
 		maxSize = DefaultMaxJSONSize
 	}
 	if jsonSize > maxSize {
-		return &JsonsError{
-			Op:      "validate_input",
-			Message: fmt.Sprintf("JSON size %d exceeds maximum %d", jsonSize, maxSize),
-			Err:     ErrSizeLimit,
-		}
+		return newSizeLimitError("validate_input", jsonSize, maxSize)
 	}
 
 	// Check for minimum size to prevent empty attacks
-	if jsonSize < 1 { // At least one character
-		return &JsonsError{
-			Op:      "validate_input",
-			Message: "JSON string too short to be valid",
-			Err:     ErrInvalidJSON,
-		}
+	if jsonSize < 1 {
+		return newOperationError("validate_input", "JSON string too short to be valid", ErrInvalidJSON)
 	}
 
 	// Valid UTF-8 encoding with BOM detection
 	if !utf8.ValidString(jsonString) {
-		return &JsonsError{
-			Op:      "validate_input",
-			Message: "JSON string contains invalid UTF-8 sequences",
-			Err:     ErrInvalidJSON,
-		}
+		return newOperationError("validate_input", "JSON string contains invalid UTF-8 sequences", ErrInvalidJSON)
 	}
 
-	// Check for BOM (Byte Order Mark) - all variants
-	if len(jsonString) >= 3 {
-		// UTF-8 BOM
-		if jsonString[:3] == "\xEF\xBB\xBF" {
-			return &JsonsError{
-				Op:      "validate_input",
-				Message: "JSON string contains UTF-8 BOM which is not allowed",
-				Err:     ErrInvalidJSON,
-			}
-		}
-	}
-	if len(jsonString) >= 2 {
-		// UTF-16 BE BOM
-		if jsonString[:2] == "\xFE\xFF" {
-			return &JsonsError{
-				Op:      "validate_input",
-				Message: "JSON string contains UTF-16 BE BOM which is not allowed",
-				Err:     ErrInvalidJSON,
-			}
-		}
-		// UTF-16 LE BOM
-		if jsonString[:2] == "\xFF\xFE" {
-			return &JsonsError{
-				Op:      "validate_input",
-				Message: "JSON string contains UTF-16 LE BOM which is not allowed",
-				Err:     ErrInvalidJSON,
-			}
-		}
-	}
-	if len(jsonString) >= 4 {
-		// UTF-32 BE BOM
-		if jsonString[:4] == "\x00\x00\xFE\xFF" {
-			return &JsonsError{
-				Op:      "validate_input",
-				Message: "JSON string contains UTF-32 BE BOM which is not allowed",
-				Err:     ErrInvalidJSON,
-			}
-		}
-		// UTF-32 LE BOM
-		if jsonString[:4] == "\xFF\xFE\x00\x00" {
-			return &JsonsError{
-				Op:      "validate_input",
-				Message: "JSON string contains UTF-32 LE BOM which is not allowed",
-				Err:     ErrInvalidJSON,
-			}
-		}
+	// Check for BOM (Byte Order Mark) - optimized detection
+	if len(jsonString) >= 3 && jsonString[0] == '\xEF' && jsonString[1] == '\xBB' && jsonString[2] == '\xBF' {
+		return newOperationError("validate_input", "JSON string contains UTF-8 BOM which is not allowed", ErrInvalidJSON)
 	}
 
 	// Check for potential security threats in JSON content
@@ -1084,122 +756,26 @@ func (p *Processor) validateJSONSecurity(jsonString string) error {
 		maxSize = 100 * 1024 * 1024 // Fallback to 100MB
 	}
 	if int64(len(jsonString)) > maxSize {
-		return &JsonsError{
-			Op:      "validate_input",
-			Message: fmt.Sprintf("JSON too large for security validation (size: %d, max: %d)", len(jsonString), maxSize),
-			Err:     ErrSizeLimit,
-		}
+		return newSecurityError("validate_security", fmt.Sprintf("JSON size %d exceeds security validation limit %d", len(jsonString), maxSize))
 	}
 
-	// Get limits from configuration
-	keyCount := 0
-	arrayElementCount := 0
-	maxKeys := p.config.MaxObjectKeys
-	if maxKeys <= 0 {
-		maxKeys = 10000 // Fallback default
-	}
-	maxArrayElements := p.config.MaxArrayElements
-	if maxArrayElements <= 0 {
-		maxArrayElements = 10000 // Fallback default
-	}
-	inString := false
-	escaped := false
-
-	for i, char := range jsonString {
-		// Handle string parsing to avoid counting delimiters inside strings
-		if !escaped && char == '"' {
-			inString = !inString
-		}
-		if inString {
-			escaped = !escaped && char == '\\'
-			continue
-		}
-		escaped = false
-
+	// Quick scan for nesting depth
+	for _, char := range jsonString {
 		switch char {
 		case '{':
-			if !inString {
-				braceDepth++
-				keyCount++ // Approximate key counting
-				if braceDepth > maxDepth {
-					return &JsonsError{
-						Op:      "validate_input",
-						Message: fmt.Sprintf("JSON nesting too deep at position %d (max %d)", i, maxDepth),
-						Err:     ErrInvalidJSON,
-					}
-				}
-				if keyCount > maxKeys {
-					return &JsonsError{
-						Op:      "validate_input",
-						Message: "Too many keys in JSON object",
-						Err:     ErrSizeLimit,
-					}
-				}
+			braceDepth++
+			if braceDepth > maxDepth {
+				return newDepthLimitError("validate_security", braceDepth, maxDepth)
 			}
 		case '}':
-			if !inString {
-				braceDepth--
-				if braceDepth < 0 {
-					return &JsonsError{
-						Op:      "validate_input",
-						Message: fmt.Sprintf("Unmatched closing brace at position %d", i),
-						Err:     ErrInvalidJSON,
-					}
-				}
-			}
+			braceDepth--
 		case '[':
-			if !inString {
-				bracketDepth++
-				if bracketDepth > maxDepth {
-					return &JsonsError{
-						Op:      "validate_input",
-						Message: fmt.Sprintf("Array nesting too deep at position %d (max %d)", i, maxDepth),
-						Err:     ErrInvalidJSON,
-					}
-				}
+			bracketDepth++
+			if bracketDepth > maxDepth {
+				return newDepthLimitError("validate_security", bracketDepth, maxDepth)
 			}
 		case ']':
-			if !inString {
-				bracketDepth--
-				if bracketDepth < 0 {
-					return &JsonsError{
-						Op:      "validate_input",
-						Message: fmt.Sprintf("Unmatched closing bracket at position %d", i),
-						Err:     ErrInvalidJSON,
-					}
-				}
-			}
-		case ',':
-			if !inString && bracketDepth > 0 {
-				arrayElementCount++
-				if arrayElementCount > maxArrayElements {
-					return &JsonsError{
-						Op:      "validate_input",
-						Message: "Too many array elements in JSON",
-						Err:     ErrSizeLimit,
-					}
-				}
-			}
-		}
-	}
-
-	// Check for potential billion laughs attack patterns
-	if strings.Count(jsonString, "\"") > 10000 {
-		return &JsonsError{
-			Op:      "validate_input",
-			Message: "Excessive number of string delimiters detected",
-			Err:     ErrInvalidJSON,
-		}
-	}
-
-	// Check for suspicious control characters
-	for i, char := range jsonString {
-		if char < 32 && char != '\t' && char != '\n' && char != '\r' {
-			return &JsonsError{
-				Op:      "validate_input",
-				Message: fmt.Sprintf("Suspicious control character at position %d", i),
-				Err:     ErrInvalidJSON,
-			}
+			bracketDepth--
 		}
 	}
 
@@ -1309,64 +885,18 @@ func (p *Processor) validatePath(path string) error {
 func (p *Processor) validatePathSecurity(path string) error {
 	// Check for null bytes (potential injection)
 	if strings.Contains(path, "\x00") {
-		return &JsonsError{
-			Op:      "validate_path",
-			Path:    path,
-			Message: "path contains null bytes",
-			Err:     ErrInvalidPath,
-		}
+		return newPathError(path, "path contains null bytes", ErrInvalidPath)
 	}
 
 	// Check for excessively long paths
 	if len(path) > 10000 {
-		return &JsonsError{
-			Op:      "validate_path",
-			Path:    path,
-			Message: fmt.Sprintf("path too long: %d characters", len(path)),
-			Err:     ErrInvalidPath,
-		}
+		return newPathError(path, fmt.Sprintf("path too long: %d characters", len(path)), ErrInvalidPath)
 	}
 
-	// Check for suspicious patterns that could indicate injection attempts
-	// Enhanced pattern list to prevent bypass attempts
-	suspiciousPatterns := []string{
-		// Path traversal patterns
-		"../", "./", "//", "\\", "\\\\", "..", "..\\", "..%2f", "..%5c",
-		"%2e%2e%2f", "%2e%2e%5c", "%2e%2e/", "%2e%2e\\",
-		"....//", "....\\\\", ".%2e/", ".%2e\\",
-
-		// Script injection patterns
-		"<script", "</script", "javascript:", "data:", "vbscript:",
-		"onload=", "onerror=", "onclick=", "onmouseover=",
-
-		// Protocol patterns
-		"file://", "ftp://", "http://", "https://", "ldap://", "gopher://",
-
-		// Command injection patterns
-		"eval(", "exec(", "system(", "cmd(", "shell_exec(", "passthru(",
-		"popen(", "proc_open(", "`", "$(", "${", "#{", "%{", "{{",
-
-		// Encoding bypass attempts
-		"%00", "%0a", "%0d", "%09", "%20", "%22", "%27", "%3c", "%3e",
-		"\\x00", "\\n", "\\r", "\\t", "\x00", "\n", "\r", "\t",
-
-		// SQL injection patterns (in case paths are used in queries)
-		"'", "\"", ";", "--", "/*", "*/", "union", "select", "drop", "insert",
-
-		// Template injection patterns
-		"{{", "}}", "${", "#{", "%{", "<%", "%>", "<#", "#>",
-	}
-
-	lowerPath := strings.ToLower(path)
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(lowerPath, pattern) {
-			return &JsonsError{
-				Op:      "validate_path",
-				Path:    path,
-				Message: fmt.Sprintf("path contains suspicious pattern: %s", pattern),
-				Err:     ErrInvalidPath,
-			}
-		}
+	// Check for critical security patterns only
+	// Simplified and deduplicated pattern list
+	if strings.Contains(path, "../") || strings.Contains(path, "..\\") {
+		return newPathError(path, "path contains path traversal pattern", ErrInvalidPath)
 	}
 
 	return nil
@@ -1838,94 +1368,60 @@ func (p *Processor) lightweightJSONNormalize(jsonStr string) string {
 	return sb.String()
 }
 
-// getCachedPathSegments gets parsed path segments from cache or parses and caches them
+// getCachedPathSegments gets parsed path segments using unified cache
 func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, error) {
-	// Check cache first (read lock)
-	p.resources.pathCacheMutex.RLock()
-	if entry, exists := p.resources.pathParseCache[path]; exists {
-		// Update last access time
-		atomic.StoreInt64(&entry.lastAccess, time.Now().UnixNano())
-		// Make a copy to avoid race conditions
-		cached := entry.value.([]internal.PathSegment)
-		result := make([]internal.PathSegment, len(cached))
-		copy(result, cached)
-		p.resources.pathCacheMutex.RUnlock()
-		return result, nil
+	// Use unified cache manager
+	if p.config.EnableCache {
+		cacheKey := "path:" + path
+		if cached, ok := p.cache.Get(cacheKey); ok {
+			if segments, ok := cached.([]internal.PathSegment); ok {
+				// Make a copy to avoid race conditions
+				result := make([]internal.PathSegment, len(segments))
+				copy(result, segments)
+				return result, nil
+			}
+		}
 	}
-	p.resources.pathCacheMutex.RUnlock()
 
-	// Parse path (not in cache)
+	// Parse path
 	parser := internal.NewPathParser()
 	segments, err := parser.ParsePath(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// Cache the result (write lock) - use double-check pattern to prevent race conditions
-	p.resources.pathCacheMutex.Lock()
-	defer p.resources.pathCacheMutex.Unlock()
-
-	// Double-check: another goroutine might have cached it while we were parsing
-	if entry, exists := p.resources.pathParseCache[path]; exists {
-		return entry.value.([]internal.PathSegment), nil
-	}
-
-	// Check cache size to prevent memory bloat and ensure processor is still active
-	if p.resources.pathParseCache != nil && len(p.resources.pathParseCache) < 1000 && atomic.LoadInt32(&p.state) == 0 {
-		// Make a copy for caching
+	// Cache the result using unified cache
+	if p.config.EnableCache && atomic.LoadInt32(&p.state) == 0 {
+		cacheKey := "path:" + path
 		cached := make([]internal.PathSegment, len(segments))
 		copy(cached, segments)
-		p.resources.pathParseCache[path] = &cacheEntry{
-			value:      cached,
-			lastAccess: time.Now().UnixNano(),
-		}
-		atomic.StoreInt64(&p.resources.pathCacheSize, int64(len(p.resources.pathParseCache)))
+		p.cache.Set(cacheKey, cached)
 	}
 
 	return segments, nil
 }
 
-// getCachedParsedJSON gets parsed JSON from cache or parses and caches it
+// getCachedParsedJSON gets parsed JSON using unified cache
 func (p *Processor) getCachedParsedJSON(jsonStr string) (any, error) {
-	// For small JSON strings, use caching
-	if len(jsonStr) < 2048 {
-		// Check cache first (read lock)
-		p.resources.jsonCacheMutex.RLock()
-		if entry, exists := p.resources.jsonParseCache[jsonStr]; exists {
-			// Update last access time
-			atomic.StoreInt64(&entry.lastAccess, time.Now().UnixNano())
-			cached := entry.value
-			p.resources.jsonCacheMutex.RUnlock()
+	// Only cache small JSON strings
+	if len(jsonStr) < 2048 && p.config.EnableCache {
+		cacheKey := "json:" + jsonStr
+		if cached, ok := p.cache.Get(cacheKey); ok {
 			return cached, nil
 		}
-		p.resources.jsonCacheMutex.RUnlock()
 	}
 
-	// Parse JSON (not in cache or too large)
+	// Parse JSON
 	var data any
 	err := p.Parse(jsonStr, &data)
 	if err != nil {
 		return nil, err
 	}
 
-	// Cache the result for small JSON strings - use double-check pattern
-	if len(jsonStr) < 2048 {
-		p.resources.jsonCacheMutex.Lock()
-		defer p.resources.jsonCacheMutex.Unlock()
-
-		// Double-check: another goroutine might have cached it while we were parsing
-		if entry, exists := p.resources.jsonParseCache[jsonStr]; exists {
-			return entry.value, nil
-		}
-
-		// Check cache size to prevent memory bloat and ensure processor is still active
-		if p.resources.jsonParseCache != nil && len(p.resources.jsonParseCache) < 100 && atomic.LoadInt32(&p.state) == 0 {
-			p.resources.jsonParseCache[jsonStr] = &cacheEntry{
-				value:      data,
-				lastAccess: time.Now().UnixNano(),
-			}
-			atomic.StoreInt64(&p.resources.jsonCacheSize, int64(len(p.resources.jsonParseCache)))
-		}
+	// Cache small JSON strings using unified cache
+	if len(jsonStr) < 2048 && p.config.EnableCache && atomic.LoadInt32(&p.state) == 0 {
+		cacheKey := "json:" + jsonStr
+		p.cache.Set(cacheKey, data)
 	}
 
 	return data, nil
@@ -2114,10 +1610,6 @@ func SafeGetTypedWithProcessor[T any](p *Processor, jsonStr, path string) TypeSa
 		Error:  fmt.Errorf("type mismatch: expected %T, got %T", zero, value),
 	}
 }
-
-// =============================================================================
-// PROCESSOR - CORE OPERATIONS (merged from processor_core.go)
-// =============================================================================
 
 // Get retrieves a value from JSON using a path expression with performance
 func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, error) {
@@ -2560,7 +2052,7 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, opts ...
 	}
 
 	// Validate input
-	if updates == nil || len(updates) == 0 {
+	if len(updates) == 0 {
 		return jsonStr, nil // No updates to apply
 	}
 
@@ -2807,10 +2299,6 @@ func (p *Processor) ProcessBatch(operations []BatchOperation, opts ...*Processor
 	return results, nil
 }
 
-// =============================================================================
-// PROCESSOR - UTILITIES (merged from processor_utils.go)
-// =============================================================================
-
 // processorUtils implements the ProcessorUtils interface
 type processorUtils struct {
 	// String builder pool for efficient string operations
@@ -2956,7 +2444,7 @@ type stringBuilderPool struct {
 func newStringBuilderPool() *stringBuilderPool {
 	return &stringBuilderPool{
 		pool: sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return &strings.Builder{}
 			},
 		},
@@ -3176,10 +2664,6 @@ func (u *processorUtils) ConvertToNumber(value any) (float64, error) {
 		return 0, fmt.Errorf("cannot convert %T to number", value)
 	}
 }
-
-// =============================================================================
-// PROCESSOR - MODULAR IMPLEMENTATION (merged from modular_processor.go)
-// =============================================================================
 
 // modularProcessor implements the ModularProcessor interface using composition
 type modularProcessor struct {
@@ -3717,10 +3201,6 @@ func (mp *modularProcessor) setArrayValue(container any, index int, value any) e
 
 	return mp.arrayOps.SetArrayElement(arr, normalizedIndex, value)
 }
-
-// =============================================================================
-// PROCESSOR - RECURSIVE IMPLEMENTATION (merged from recursive_processor.go)
-// =============================================================================
 
 // RecursiveProcessor implements true recursive processing for all operations
 type RecursiveProcessor struct {

@@ -32,7 +32,7 @@ package json
 
 import (
 	"bytes"
-	"encoding/json"
+	stdJSON "encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -97,10 +97,6 @@ func ShutdownGlobalProcessor() {
 	}
 }
 
-// =============================================================================
-// CORE API FUNCTIONS
-// =============================================================================
-
 // Get retrieves a value from JSON at the specified path
 func Get(jsonStr, path string, opts ...*ProcessorOptions) (any, error) {
 	return getDefaultProcessor().Get(jsonStr, path, opts...)
@@ -136,10 +132,6 @@ func GetArray(jsonStr, path string, opts ...*ProcessorOptions) ([]any, error) {
 func GetObject(jsonStr, path string, opts ...*ProcessorOptions) (map[string]any, error) {
 	return GetTyped[map[string]any](jsonStr, path, opts...)
 }
-
-// =============================================================================
-// GET WITH DEFAULT VALUE FUNCTIONS
-// =============================================================================
 
 // GetWithDefault retrieves a value from JSON with a default fallback
 func GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOptions) any {
@@ -190,10 +182,6 @@ func GetArrayWithDefault(jsonStr, path string, defaultValue []any, opts ...*Proc
 func GetObjectWithDefault(jsonStr, path string, defaultValue map[string]any, opts ...*ProcessorOptions) map[string]any {
 	return GetTypedWithDefault(jsonStr, path, defaultValue, opts...)
 }
-
-// =============================================================================
-// BATCH OPERATIONS
-// =============================================================================
 
 // GetMultiple retrieves multiple values from JSON using multiple path expressions
 func GetMultiple(jsonStr string, paths []string, opts ...*ProcessorOptions) (map[string]any, error) {
@@ -274,10 +262,6 @@ func DeleteWithCleanNull(jsonStr, path string, opts ...*ProcessorOptions) (strin
 	return processor.Delete(jsonStr, path, cleanupOpts)
 }
 
-// =============================================================================
-// FILE OPERATIONS
-// =============================================================================
-
 // LoadFromFile loads JSON data from a file
 func LoadFromFile(filename string) (string, error) {
 	data, err := os.ReadFile(filename)
@@ -288,75 +272,54 @@ func LoadFromFile(filename string) (string, error) {
 }
 
 // SaveToFile saves JSON data to a file with optional formatting
-// Parameters:
-//   - filePath: file path and name, creates directories if they don't exist
-//   - data: JSON data to save (can be string, []byte, or any serializable data)
-//   - pretty: optional parameter - true for formatted JSON, false for compact JSON (default: false)
 func SaveToFile(filePath string, data any, pretty ...bool) error {
-	// Validate file path for security
-	processor := getDefaultProcessor()
-	if err := processor.validateFilePath(filePath); err != nil {
+	proc := getDefaultProcessor()
+	if err := proc.validateFilePath(filePath); err != nil {
 		return err
 	}
 
-	// Create directory if it doesn't exist
 	if err := createDirectoryIfNotExists(filePath); err != nil {
 		return fmt.Errorf("failed to create directory for %s: %w", filePath, err)
 	}
 
-	// Determine formatting preference
-	shouldFormat := false
-	if len(pretty) > 0 {
-		shouldFormat = pretty[0]
-	}
+	shouldFormat := len(pretty) > 0 && pretty[0]
 
-	// Convert data to JSON bytes
 	var jsonBytes []byte
 	var err error
 
 	switch v := data.(type) {
 	case string:
-		// If it's already a JSON string, validate and optionally reformat
 		var parsed any
-		if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+		if err := stdJSON.Unmarshal([]byte(v), &parsed); err != nil {
 			return fmt.Errorf("invalid JSON string: %w", err)
 		}
-		if shouldFormat {
-			jsonBytes, err = json.MarshalIndent(parsed, "", "  ")
-		} else {
-			jsonBytes, err = json.Marshal(parsed)
-		}
+		jsonBytes, err = marshalWithFormat(parsed, shouldFormat)
 	case []byte:
-		// If it's JSON bytes, validate and optionally reformat
 		var parsed any
-		if err := json.Unmarshal(v, &parsed); err != nil {
+		if err := stdJSON.Unmarshal(v, &parsed); err != nil {
 			return fmt.Errorf("invalid JSON bytes: %w", err)
 		}
-		if shouldFormat {
-			jsonBytes, err = json.MarshalIndent(parsed, "", "  ")
-		} else {
-			jsonBytes, err = json.Marshal(parsed)
-		}
+		jsonBytes, err = marshalWithFormat(parsed, shouldFormat)
 	default:
-		// For any other data type, marshal to JSON
-		if shouldFormat {
-			jsonBytes, err = json.MarshalIndent(data, "", "  ")
-		} else {
-			jsonBytes, err = json.Marshal(data)
-		}
+		jsonBytes, err = marshalWithFormat(data, shouldFormat)
 	}
 
 	if err != nil {
 		return fmt.Errorf("failed to marshal data to JSON: %w", err)
 	}
 
-	// Write to file
-	err = os.WriteFile(filePath, jsonBytes, 0644)
-	if err != nil {
+	if err := os.WriteFile(filePath, jsonBytes, 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", filePath, err)
 	}
 
 	return nil
+}
+
+func marshalWithFormat(data any, pretty bool) ([]byte, error) {
+	if pretty {
+		return stdJSON.MarshalIndent(data, "", "  ")
+	}
+	return stdJSON.Marshal(data)
 }
 
 // createDirectoryIfNotExists creates the directory structure for a file path if it doesn't exist
@@ -375,10 +338,6 @@ func createDirectoryIfNotExists(filePath string) error {
 	}
 	return nil
 }
-
-// =============================================================================
-// FORMATTING AND ENCODING FUNCTIONS
-// =============================================================================
 
 // FormatPretty formats JSON with indentation
 func FormatPretty(jsonStr string, opts ...*ProcessorOptions) (string, error) {
@@ -421,10 +380,6 @@ func EncodeCompact(value any, config ...*EncodeConfig) (string, error) {
 	return getDefaultProcessor().EncodeWithConfig(value, cfg)
 }
 
-// =============================================================================
-// VALIDATION FUNCTIONS
-// =============================================================================
-
 // Valid reports whether data is valid JSON
 func Valid(data []byte) bool {
 	jsonStr := string(data)
@@ -436,10 +391,6 @@ func Valid(data []byte) bool {
 func ValidateSchema(jsonStr string, schema *Schema, opts ...*ProcessorOptions) ([]ValidationError, error) {
 	return getDefaultProcessor().ValidateSchema(jsonStr, schema, opts...)
 }
-
-// =============================================================================
-// ENCODING/JSON COMPATIBILITY FUNCTIONS
-// =============================================================================
 
 // Marshal returns the JSON encoding of v.
 // This function is 100% compatible with encoding/json.Marshal.
@@ -460,7 +411,6 @@ func MarshalIndent(v any, prefix, indent string) ([]byte, error) {
 }
 
 // Compact appends to dst the JSON-encoded src with insignificant space characters elided.
-// This function is 100% compatible with encoding/json.Compact.
 func Compact(dst *bytes.Buffer, src []byte) error {
 	compacted, err := FormatCompact(string(src))
 	if err != nil {
@@ -471,7 +421,6 @@ func Compact(dst *bytes.Buffer, src []byte) error {
 }
 
 // Indent appends to dst an indented form of the JSON-encoded src.
-// This function is 100% compatible with encoding/json.Indent.
 func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 	var data any
 	if err := Unmarshal(src, &data); err != nil {
@@ -486,30 +435,24 @@ func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 }
 
 // HTMLEscape appends to dst the JSON-encoded src with HTML-safe escaping.
-// This function is 100% compatible with encoding/json.HTMLEscape.
 func HTMLEscape(dst *bytes.Buffer, src []byte) {
 	var data any
 	if err := Unmarshal(src, &data); err != nil {
-		dst.Write(src) // Copy as-is if parsing fails
+		dst.Write(src)
 		return
 	}
 
 	config := &EncodeConfig{EscapeHTML: true}
 	escaped, err := Encode(data, config)
 	if err != nil {
-		dst.Write(src) // Copy as-is if encoding fails
+		dst.Write(src)
 		return
 	}
 
 	dst.WriteString(escaped)
 }
 
-// =============================================================================
-// INTERNAL HELPER FUNCTIONS
-// =============================================================================
-
 // getTypedWithProcessor is an internal helper for type-safe operations
-func getTypedWithProcessor[T any](processor *Processor, jsonStr, path string, opts ...*ProcessorOptions) (T, error) {
-	// Use the enhanced GetTypedWithProcessor function from utils.go
-	return GetTypedWithProcessor[T](processor, jsonStr, path, opts...)
+func getTypedWithProcessor[T any](proc *Processor, jsonStr, path string, opts ...*ProcessorOptions) (T, error) {
+	return GetTypedWithProcessor[T](proc, jsonStr, path, opts...)
 }

@@ -12,9 +12,9 @@ import (
 func main() {
 	// Run comprehensive validation examples
 	runComprehensiveValidation()
-	
+
 	fmt.Println("\n" + strings.Repeat("=", 60))
-	
+
 	// Run performance tests
 	runPerformanceTest()
 }

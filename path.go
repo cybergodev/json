@@ -12,14 +12,6 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// =============================================================================
-// Source: parser.go
-// =============================================================================
-
-// =============================================================================
-// PROCESSOR PARSING METHODS
-// =============================================================================
-
 // Parse parses a JSON string into the provided target with improved error handling
 func (p *Processor) Parse(jsonStr string, target any, opts ...*ProcessorOptions) error {
 	if err := p.checkClosed(); err != nil {
@@ -248,10 +240,6 @@ func (p *Processor) Compact(jsonStr string, opts ...*ProcessorOptions) (string, 
 
 	return result, nil
 }
-
-// =============================================================================
-// PATH PARSER (merged from path_parser.go)
-// =============================================================================
 
 // pathParser implements the PathParser interface
 type pathParser struct {
@@ -831,10 +819,6 @@ func (pp *pathParser) isNumericIndex(s string) bool {
 	return true
 }
 
-// =============================================================================
-// NUMBER PARSER (merged from number_parser.go)
-// =============================================================================
-
 // NumberPreservingDecoder provides JSON decoding with optimized number format preservation
 type NumberPreservingDecoder struct {
 	preserveNumbers bool
@@ -851,7 +835,7 @@ func NewNumberPreservingDecoder(preserveNumbers bool) *NumberPreservingDecoder {
 	return &NumberPreservingDecoder{
 		preserveNumbers: preserveNumbers,
 		bufferPool: &sync.Pool{
-			New: func() interface{} {
+			New: func() any {
 				return make([]byte, 0, 1024) // Pre-allocate 1KB buffer
 			},
 		},
@@ -1215,14 +1199,6 @@ func ConvertFromScientific(s string) (string, error) {
 	return FormatNumber(f), nil
 }
 
-// =============================================================================
-// Source: navigation.go
-// =============================================================================
-
-// =============================================================================
-// NAVIGATOR INTERFACE IMPLEMENTATION
-// =============================================================================
-
 // navigator implements the Navigator interface
 type navigator struct {
 	pathParser PathParser
@@ -1573,10 +1549,6 @@ func (n *navigator) isNumericProperty(property string) bool {
 	}
 	return len(property) > 0
 }
-
-// =============================================================================
-// NAVIGATION CORE (merged from navigation_core.go)
-// =============================================================================
 
 // navigateToPath navigates to a specific path
 func (p *Processor) navigateToPath(data any, path string) (any, error) {
@@ -2116,10 +2088,6 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 
 	return segments
 }
-
-// =============================================================================
-// NAVIGATION UTILITIES (merged from navigation_utils.go)
-// =============================================================================
 
 // Type checking utilities
 

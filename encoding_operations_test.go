@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// TestEncodingOperations provides comprehensive testing for JSON encoding, decoding, and validation
-// Merged from: encoding_test.go and validation parts from other test files
-func TestEncodingOperations(t *testing.T) {
+// TestEncoding tests JSON encoding, decoding, and marshaling
+// Validation tests are in validation_comprehensive_test.go
+func TestEncoding(t *testing.T) {
 	helper := NewTestHelper(t)
 
 	t.Run("Encoding", func(t *testing.T) {

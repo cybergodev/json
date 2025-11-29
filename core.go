@@ -14,10 +14,6 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// =============================================================================
-// Source: types.go
-// =============================================================================
-
 // Error definitions - using sentinel errors for better performance and type safety
 var (
 	ErrInvalidJSON       = errors.New("invalid JSON format")
@@ -38,6 +34,7 @@ var (
 	ErrCircuitOpen       = errors.New("circuit breaker is open")
 	ErrDeadlockDetected  = errors.New("potential deadlock detected")
 	ErrResourceExhausted = errors.New("system resources exhausted")
+	ErrIteratorControl   = errors.New("iterator control signal")
 )
 
 // PropertyAccessResult represents the result of a property access operation
@@ -211,10 +208,6 @@ func (e *JsonsError) Is(target error) bool {
 	return e.Err != nil && errors.Is(e.Err, target)
 }
 
-// =============================================================================
-// ENCODING/JSON COMPATIBILITY ERROR TYPES
-// =============================================================================
-
 // InvalidUnmarshalError describes an invalid argument passed to Unmarshal.
 // (The argument to Unmarshal must be a non-nil pointer.)
 type InvalidUnmarshalError struct {
@@ -300,10 +293,6 @@ func (e *MarshalerError) Error() string {
 }
 
 func (e *MarshalerError) Unwrap() error { return e.Err }
-
-// =============================================================================
-// STANDARD INTERFACES FOR ENCODING/JSON COMPATIBILITY
-// =============================================================================
 
 // Marshaler is the interface implemented by types that
 // can marshal themselves into valid JSON.
@@ -437,9 +426,9 @@ type Stats struct {
 // DetailedStats provides comprehensive processor statistics (internal debugging)
 type DetailedStats struct {
 	Stats             Stats             `json:"stats"`
-	state             int32             `json:"state"`               // Processor state (0=active, 1=closing, 2=closed) - private
-	configSnapshot    Config            `json:"config_snapshot"`     // Configuration snapshot - private
-	resourcePoolStats ResourcePoolStats `json:"resource_pool_stats"` // Resource pool statistics - private
+	state             int32             // Processor state (0=active, 1=closing, 2=closed) - private
+	configSnapshot    Config            // Configuration snapshot - private
+	resourcePoolStats ResourcePoolStats // Resource pool statistics - private
 }
 
 // ResourcePoolStats provides statistics about resource pools
@@ -494,9 +483,9 @@ type ProcessorMetrics struct {
 	MaxConcurrentOps    int64 `json:"max_concurrent_ops"`
 
 	// Runtime metrics (private - internal use only)
-	runtimeMemStats runtime.MemStats `json:"runtime_mem_stats"`
-	uptime          time.Duration    `json:"uptime"`
-	errorsByType    map[string]int64 `json:"errors_by_type"`
+	runtimeMemStats runtime.MemStats
+	uptime          time.Duration
+	errorsByType    map[string]int64
 }
 
 // HealthStatus represents the health status of the processor
@@ -753,10 +742,6 @@ func (c *Config) ShouldValidateFilePath() bool          { return c.ValidateFileP
 func (c *Config) AreResourcePoolsEnabled() bool         { return c.EnableResourcePools }
 func (c *Config) GetMaxPoolSize() int                   { return c.MaxPoolSize }
 func (c *Config) GetPoolCleanupInterval() time.Duration { return c.PoolCleanupInterval }
-
-// =============================================================================
-// Source: interfaces.go
-// =============================================================================
 
 // Operation represents the type of operation being performed
 type Operation int
@@ -1024,10 +1009,6 @@ var (
 	ErrRateLimitNew      = &ProcessorError{Type: ErrTypeRateLimit, Message: "rate limit exceeded"}
 )
 
-// =============================================================================
-// Source: config.go
-// =============================================================================
-
 // DefaultConfig returns a default configuration for the JSON processor
 func DefaultConfig() *Config {
 	return &Config{
@@ -1201,8 +1182,8 @@ func (s *Schema) SetExclusiveMaximum(exclusive bool) *Schema {
 }
 
 // GetSecurityLimits returns a summary of current security limits
-func (c *Config) GetSecurityLimits() map[string]interface{} {
-	return map[string]interface{}{
+func (c *Config) GetSecurityLimits() map[string]any {
+	return map[string]any{
 		"max_nesting_depth":            c.MaxNestingDepthSecurity,
 		"max_security_validation_size": c.MaxSecurityValidationSize,
 		"max_object_keys":              c.MaxObjectKeys,
@@ -1311,10 +1292,6 @@ func ValidateOptions(options *ProcessorOptions) error {
 	return nil
 }
 
-// =============================================================================
-// ENCODING OPTIONS AND FUNCTIONAL OPTIONS
-// =============================================================================
-
 // DefaultEncodeConfig returns default encoding configuration
 func DefaultEncodeConfig() *EncodeConfig {
 	return &EncodeConfig{
@@ -1338,10 +1315,6 @@ func DefaultEncodeConfig() *EncodeConfig {
 		CustomEscapes:   nil,
 	}
 }
-
-// =============================================================================
-// CONVENIENT CONFIGURATION BUILDERS
-// =============================================================================
 
 // NewPrettyConfig creates a configuration for pretty-printed JSON
 func NewPrettyConfig() *EncodeConfig {
@@ -1459,10 +1432,6 @@ func NewCleanConfig() *EncodeConfig {
 		CustomEscapes:   nil,
 	}
 }
-
-// =============================================================================
-// Source: resource_monitor.go
-// =============================================================================
 
 // ResourceMonitor provides enhanced resource monitoring and leak detection
 type ResourceMonitor struct {

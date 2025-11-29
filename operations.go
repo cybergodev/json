@@ -9,14 +9,6 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// =============================================================================
-// Source: operations_array.go
-// =============================================================================
-
-// =============================================================================
-// Processor Array Methods
-// =============================================================================
-
 // handleArrayAccess handles array access with support for negative indices
 func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAccessResult {
 	segmentValue := segment.Value
@@ -64,16 +56,7 @@ func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAcc
 	return PropertyAccessResult{Value: nil, Exists: false}
 }
 
-// handleArrayAccessValue returns the value directly (for backward compatibility)
-func (p *Processor) handleArrayAccessValue(data any, segment string) any {
-	// Convert string segment to PathSegment for processing
-	pathSegment := internal.NewLegacyPathSegment("array", segment)
-	result := p.handleArrayAccess(data, pathSegment)
-	if !result.Exists {
-		return nil
-	}
-	return result.Value
-}
+// handleArrayAccessValue has been removed - use handleArrayAccess instead
 
 // parseArrayIndexFromSegment parses array index from segment value
 func (p *Processor) parseArrayIndexFromSegment(segmentValue string) int {
@@ -576,10 +559,6 @@ func (p *Processor) replaceArrayInParentContext(data any, segments []PathSegment
 	return nil
 }
 
-// =============================================================================
-// ArrayOperations Interface Implementation
-// =============================================================================
-
 // arrayOperations implements the ArrayOperations interface
 type arrayOperations struct {
 	utils ProcessorUtils
@@ -917,14 +896,6 @@ func (ao *arrayOperations) SetArrayElement(arr []any, index int, value any) erro
 	return nil
 }
 
-// =============================================================================
-// Source: operations_delete.go
-// =============================================================================
-
-// =============================================================================
-// DELETE OPERATIONS - PROCESSOR METHODS
-// =============================================================================
-
 // DeletionTarget represents a specific location in the original data structure that needs to be deleted
 type DeletionTarget struct {
 	Container any    // The container (array or object) that holds the value to delete
@@ -1115,7 +1086,7 @@ func (cdp *ComplexDeleteProcessor) findTargetsInItem(item any, extractionSegment
 			targets = append(targets, DeletionTarget{
 				Container: obj,
 				Key:       extractionSegment.Key,
-				Path:      basePath + "." + extractionSegment.Key,
+				Path:      JoinPath(basePath, extractionSegment.Key),
 			})
 		}
 		return targets, nil
@@ -1818,16 +1789,14 @@ func (cdp *ComplexDeleteProcessor) deleteFromNestedExtraction(data any, path str
 	if strings.Contains(arrayOp, ":") {
 		// Handle slice operation like "0:2", "1:", ":3"
 		return cdp.deleteFromNestedExtractionSlice(objects, arrayFieldName, arrayOp, subfield)
-	} else {
-		// Handle single index operation like "0", "-1"
-		index, err := strconv.Atoi(arrayOp)
-		if err != nil {
-			return fmt.Errorf("invalid array index '%s': %w", arrayOp, err)
-		}
-		return cdp.deleteFromNestedExtractionIndex(objects, arrayFieldName, index, subfield)
 	}
 
-	return nil
+	// Handle single index operation like "0", "-1"
+	index, err := strconv.Atoi(arrayOp)
+	if err != nil {
+		return fmt.Errorf("invalid array index '%s': %w", arrayOp, err)
+	}
+	return cdp.deleteFromNestedExtractionIndex(objects, arrayFieldName, index, subfield)
 }
 
 // parseArrayIndex parses array index from operation string
@@ -2024,10 +1993,6 @@ func getArrayLength(data any) int {
 	}
 	return -1
 }
-
-// =============================================================================
-// DELETE OPERATIONS - HANDLERS
-// =============================================================================
 
 // deleteValueAtPath deletes a value at the specified path
 func (p *Processor) deleteValueAtPath(data any, path string) error {
@@ -2747,10 +2712,6 @@ func (p *Processor) cleanupDeletedMarkers(data any) any {
 	}
 }
 
-// =============================================================================
-// DELETE OPERATIONS - INTERFACE IMPLEMENTATION
-// =============================================================================
-
 // deleteOperations implements the DeleteOperations interface
 type deleteOperations struct {
 	utils      ProcessorUtils
@@ -3332,14 +3293,6 @@ func (do *deleteOperations) parseSliceParameters(segment PathSegmentInfo) (start
 	return start, end, step
 }
 
-// =============================================================================
-// Source: operations_extract.go
-// =============================================================================
-
-// =============================================================================
-// EXTRACTION OPERATIONS - PROCESSOR METHODS
-// =============================================================================
-
 // handleExtraction handles extraction syntax with flattening
 func (p *Processor) handleExtraction(data any, segment PathSegment) (any, error) {
 	field := segment.Extract
@@ -3805,10 +3758,6 @@ type ExtractionContext struct {
 	OperationType      string // Type of operation: "get", "set", "delete"
 }
 
-// =============================================================================
-// EXTRACTION OPERATIONS - INTERFACE IMPLEMENTATION
-// =============================================================================
-
 // extractionOperations implements the ExtractionOperations interface
 type extractionOperations struct {
 	utils ProcessorUtils
@@ -4193,14 +4142,6 @@ func (eo *extractionOperations) FilterExtractionResults(data any, predicate func
 
 	return results
 }
-
-// =============================================================================
-// Source: operations_set.go
-// =============================================================================
-
-// =============================================================================
-// SET OPERATIONS - PROCESSOR METHODS
-// =============================================================================
 
 // ArrayExtensionNeededError indicates that an array needs to be extended
 type ArrayExtensionNeededError struct {
@@ -5467,10 +5408,6 @@ func (p *Processor) replaceArrayInJSONPointerParent(parent any, oldArray, newArr
 	// Cannot extend in place
 	return newContainer, nil
 }
-
-// =============================================================================
-// SET OPERATIONS - INTERFACE IMPLEMENTATION
-// =============================================================================
 
 // setOperations implements the SetOperations interface
 type setOperations struct {

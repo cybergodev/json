@@ -4,7 +4,8 @@ import (
 	"testing"
 )
 
-// TestPathNavigation tests path parsing and navigation functionality
+// TestPathNavigation tests advanced path features (extraction, slicing, validation)
+// Basic path access is covered in operations_test.go
 func TestPathNavigation(t *testing.T) {
 	helper := NewTestHelper(t)
 
@@ -28,59 +29,6 @@ func TestPathNavigation(t *testing.T) {
 		},
 		"items": [1, 2, 3, 4, 5]
 	}`
-
-	t.Run("BasicPathAccess", func(t *testing.T) {
-		name, err := GetString(testData, "company.name")
-		helper.AssertNoError(err)
-		helper.AssertEqual("TechCorp", name)
-
-		deptName, err := GetString(testData, "company.departments[0].name")
-		helper.AssertNoError(err)
-		helper.AssertEqual("Engineering", deptName)
-	})
-
-	t.Run("ArrayAccess", func(t *testing.T) {
-		first, err := GetInt(testData, "items[0]")
-		helper.AssertNoError(err)
-		helper.AssertEqual(1, first)
-
-		last, err := GetInt(testData, "items[-1]")
-		helper.AssertNoError(err)
-		helper.AssertEqual(5, last)
-
-		outOfBounds, err := Get(testData, "items[100]")
-		helper.AssertNoError(err)
-		helper.AssertNil(outOfBounds)
-	})
-
-	t.Run("ArraySlicing", func(t *testing.T) {
-		slice, err := Get(testData, "items[1:4]")
-		helper.AssertNoError(err)
-		expected := []any{float64(2), float64(3), float64(4)}
-		helper.AssertEqual(expected, slice)
-
-		fromStart, err := Get(testData, "items[3:]")
-		helper.AssertNoError(err)
-		if arr, ok := fromStart.([]any); ok {
-			helper.AssertEqual(2, len(arr))
-		}
-
-		toEnd, err := Get(testData, "items[:2]")
-		helper.AssertNoError(err)
-		if arr, ok := toEnd.([]any); ok {
-			helper.AssertEqual(2, len(arr))
-		}
-	})
-
-	t.Run("NestedArrayAccess", func(t *testing.T) {
-		memberName, err := GetString(testData, "company.departments[0].teams[0].members[0].name")
-		helper.AssertNoError(err)
-		helper.AssertEqual("Alice", memberName)
-
-		skills, err := GetArray(testData, "company.departments[0].teams[0].members[0].skills")
-		helper.AssertNoError(err)
-		helper.AssertEqual(2, len(skills))
-	})
 
 	t.Run("Extraction", func(t *testing.T) {
 		names, err := Get(testData, "company.departments[0].teams[0].members{name}")

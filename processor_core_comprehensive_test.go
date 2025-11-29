@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
-// TestProcessorCoreComprehensive tests processor core functionality
-func TestProcessorCoreComprehensive(t *testing.T) {
+// TestProcessorCore tests processor-specific functionality (batch, stats, health, lifecycle)
+// Basic operations are covered in operations_test.go
+func TestProcessorCore(t *testing.T) {
 	helper := NewTestHelper(t)
 
 	t.Run("GetMultiple", func(t *testing.T) {
@@ -215,74 +216,6 @@ func TestProcessorCoreComprehensive(t *testing.T) {
 		// Test that operations fail on closed processor
 		_, err := processor.Get(`{"test": "value"}`, "test")
 		helper.AssertError(err, "Operations should fail on closed processor")
-	})
-
-	t.Run("ErrorHandling", func(t *testing.T) {
-		processor := New()
-		defer processor.Close()
-
-		// Test invalid JSON
-		_, err := processor.Get(`{invalid json}`, "test")
-		helper.AssertError(err, "Should error on invalid JSON")
-
-		// Test invalid path
-		_, err = processor.Get(`{"test": "value"}`, "invalid[path")
-		helper.AssertError(err, "Should error on invalid path")
-
-		// Test operations on nil data
-		_, err = processor.Get("", "test")
-		helper.AssertError(err, "Should error on empty JSON")
-	})
-
-	t.Run("ConcurrencyHandling", func(t *testing.T) {
-		processor := New()
-		defer processor.Close()
-
-		testData := `{"counter": 0, "items": [1, 2, 3, 4, 5]}`
-
-		// Test concurrent operations
-		concurrencyTester := NewConcurrencyTester(t, 10, 100)
-		concurrencyTester.Run(func(workerID, iteration int) error {
-			// Perform various operations concurrently
-			_, err := processor.Get(testData, "items[0]")
-			if err != nil {
-				return err
-			}
-
-			_, err = processor.Set(testData, "counter", workerID)
-			if err != nil {
-				return err
-			}
-
-			return nil
-		})
-
-		// Verify processor is still functional after concurrent operations
-		result, err := processor.Get(testData, "items[0]")
-		helper.AssertNoError(err, "Processor should still work after concurrent operations")
-		helper.AssertEqual(float64(1), result, "Should get correct result after concurrent operations")
-	})
-
-	t.Run("LargeDataHandling", func(t *testing.T) {
-		processor := New()
-		defer processor.Close()
-
-		// Generate large JSON data
-		generator := NewTestDataGenerator()
-		largeData := generator.GenerateComplexJSON() // Generate complex JSON
-
-		// Test operations on large data
-		result, err := processor.Get(largeData, "users[0].name")
-		helper.AssertNoError(err, "Should handle large data")
-		helper.AssertNotNil(result, "Should get result from large data")
-
-		// Test setting in large data
-		_, err = processor.Set(largeData, "newField", "newValue")
-		helper.AssertNoError(err, "Should set in large data")
-
-		// Test deletion in large data
-		_, err = processor.Delete(largeData, "users[0].name")
-		helper.AssertNoError(err, "Should delete from large data")
 	})
 
 	t.Run("MemoryManagement", func(t *testing.T) {

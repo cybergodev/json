@@ -60,7 +60,7 @@ func NewOptimizedCacheManager(config ConfigInterface) *OptimizedCacheManager {
 	shardCount := calculateOptimalShardCount(config.GetMaxCacheSize())
 	shards := make([]*optimizedCacheShard, shardCount)
 	shardSize := config.GetMaxCacheSize() / shardCount
-	
+
 	for i := range shards {
 		shards[i] = newOptimizedShard(shardSize)
 	}
@@ -100,7 +100,7 @@ func (ocm *OptimizedCacheManager) Get(key string) (any, bool) {
 
 	shard := ocm.getShard(key)
 	shard.mu.RLock()
-	
+
 	elem, exists := shard.items[key]
 	if !exists {
 		shard.mu.RUnlock()
@@ -109,7 +109,7 @@ func (ocm *OptimizedCacheManager) Get(key string) (any, bool) {
 	}
 
 	entry := elem.Value.(*lruEntry)
-	
+
 	// Check expiration
 	if ocm.config.GetCacheTTL() > 0 {
 		now := time.Now().UnixNano()
@@ -128,13 +128,13 @@ func (ocm *OptimizedCacheManager) Get(key string) (any, bool) {
 	now := time.Now().UnixNano()
 	atomic.StoreInt64(&entry.lastAccess, now)
 	atomic.AddInt64(&entry.hits, 1)
-	
+
 	// Move to front (most recently used)
 	shard.evictList.MoveToFront(elem)
-	
+
 	value := entry.value
 	shard.mu.RUnlock()
-	
+
 	atomic.AddInt64(&ocm.hitCount, 1)
 	return value, true
 }
@@ -268,7 +268,7 @@ func (ocm *OptimizedCacheManager) CleanExpiredCache() {
 
 	for _, shard := range ocm.shards {
 		shard.mu.Lock()
-		
+
 		// Iterate from back (oldest) to front
 		for elem := shard.evictList.Back(); elem != nil; {
 			entry := elem.Value.(*lruEntry)
@@ -281,7 +281,7 @@ func (ocm *OptimizedCacheManager) CleanExpiredCache() {
 				break
 			}
 		}
-		
+
 		shard.mu.Unlock()
 	}
 }
@@ -312,7 +312,7 @@ func OptimizedCacheKey(op, jsonStr, path string) string {
 	h := fnv.New64a()
 	h.Write([]byte(op))
 	h.Write([]byte(path))
-	
+
 	// Sample large JSON for better performance
 	if len(jsonStr) > 2048 {
 		h.Write([]byte(jsonStr[:1024]))
@@ -320,6 +320,6 @@ func OptimizedCacheKey(op, jsonStr, path string) string {
 	} else {
 		h.Write([]byte(jsonStr))
 	}
-	
+
 	return op + ":" + path + ":" + strconv.FormatUint(h.Sum64(), 36)
 }

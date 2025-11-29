@@ -17,14 +17,6 @@ import (
 	"unicode/utf8"
 )
 
-// =============================================================================
-// Source: encoder.go
-// =============================================================================
-
-// =============================================================================
-// PROCESSOR ENCODING METHODS
-// =============================================================================
-
 // EncodeWithOptions converts any Go value to JSON string with advanced options
 func (p *Processor) EncodeWithOptions(value any, encOpts *EncodeConfig, opts ...*ProcessorOptions) (string, error) {
 	if err := p.checkClosed(); err != nil {
@@ -341,14 +333,10 @@ func (p *Processor) EncodeWithTags(value any, pretty bool, opts ...*ProcessorOpt
 	return p.EncodeWithConfig(value, config, opts...)
 }
 
-// =============================================================================
-// CUSTOM ENCODER (merged from custom_encoder.go)
-// =============================================================================
-
 // Buffer pools for custom encoder memory optimization
 var (
 	encoderBufferPool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			return &bytes.Buffer{}
 		},
 	}
@@ -965,25 +953,17 @@ func (e *CustomEncoder) isEmpty(v reflect.Value) bool {
 	return false
 }
 
-// =============================================================================
-// Source: stream.go
-// =============================================================================
-
-// =============================================================================
-// BUFFER POOLS FOR MEMORY OPTIMIZATION
-// =============================================================================
-
 var (
 	// Global buffer pools for memory efficiency with improved sizing
 	bufferPool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			buf := make([]byte, 0, 1024) // Increased initial capacity for better performance
 			return &buf
 		},
 	}
 
 	bytesBufferPool = sync.Pool{
-		New: func() interface{} {
+		New: func() any {
 			buf := &bytes.Buffer{}
 			buf.Grow(1024) // Pre-allocate reasonable capacity
 			return buf
@@ -1034,10 +1014,6 @@ func putBytesBuffer(buf *bytes.Buffer) {
 		bytesBufferPool.Put(buf)
 	}
 }
-
-// =============================================================================
-// DECODER IMPLEMENTATION
-// =============================================================================
 
 // Decoder reads and decodes JSON values from an input stream.
 // This type is fully compatible with encoding/json.Decoder.
@@ -1112,7 +1088,7 @@ func (dec *Decoder) assignResult(result any, v any) error {
 	rv = rv.Elem()
 	resultValue := reflect.ValueOf(result)
 
-	// If the target is interface{}, assign directly
+	// If the target is any (interface{}), assign directly
 	if rv.Kind() == reflect.Interface {
 		rv.Set(resultValue)
 		return nil
@@ -1132,7 +1108,7 @@ func (dec *Decoder) assignResult(result any, v any) error {
 	return json.Unmarshal(jsonBytes, v)
 }
 
-// UseNumber causes the Decoder to unmarshal a number into an interface{} as a
+// UseNumber causes the Decoder to unmarshal a number into any as a
 // Number instead of as a float64.
 func (dec *Decoder) UseNumber() {
 	dec.useNumber = true
@@ -1535,10 +1511,6 @@ func (dec *Decoder) parseNumber(first byte) (any, error) {
 	return val, nil
 }
 
-// =============================================================================
-// ENCODER IMPLEMENTATION
-// =============================================================================
-
 // Encoder writes JSON values to an output stream.
 // This type is fully compatible with encoding/json.Encoder.
 type Encoder struct {
@@ -1604,10 +1576,6 @@ func (enc *Encoder) SetIndent(prefix, indent string) {
 	enc.prefix = prefix
 	enc.indent = indent
 }
-
-// =============================================================================
-// HELPER TYPES AND FUNCTIONS
-// =============================================================================
 
 // Token holds a value of one of these types:
 //
@@ -1678,10 +1646,6 @@ func isCompleteValue(s string) bool {
 
 	return false
 }
-
-// =============================================================================
-// Source: validation.go
-// =============================================================================
 
 // ValidateSchema validates JSON data against a schema
 func (p *Processor) ValidateSchema(jsonStr string, schema *Schema, opts ...*ProcessorOptions) ([]ValidationError, error) {

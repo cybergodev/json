@@ -8,6 +8,7 @@ import (
 
 // Unified type conversion module
 // Consolidates all type conversion logic into a single, maintainable location
+// This module provides the core conversion functions used throughout the library
 
 // ConvertToInt converts any value to int with comprehensive type support
 func ConvertToInt(value any) (int, bool) {

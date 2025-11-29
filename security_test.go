@@ -96,7 +96,7 @@ func TestSecurityValidation(t *testing.T) {
 		if err != nil {
 			t.Logf("Unicode key handling: %v", err)
 		}
-		
+
 		// ASCII keys should work
 		result, err := Get(testData, "cafe")
 		helper.AssertNoError(err, "Should handle ASCII keys")

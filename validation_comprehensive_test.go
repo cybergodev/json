@@ -198,7 +198,7 @@ func TestValidationComprehensive(t *testing.T) {
 		helper.AssertNoError(err, "Should validate without error")
 		helper.AssertEqual(0, len(errors), "Should have no validation errors")
 
-		errors, err = ValidateSchema(`"invalid-email"`, emailSchema)
+		_, err = ValidateSchema(`"invalid-email"`, emailSchema)
 		helper.AssertNoError(err, "Should validate without error")
 		// Note: Format validation may not be fully implemented, so we just check it doesn't crash
 
@@ -207,10 +207,10 @@ func TestValidationComprehensive(t *testing.T) {
 		dateSchema.Type = "string"
 		dateSchema.Format = "date"
 
-		errors, err = ValidateSchema(`"2024-01-01"`, dateSchema)
+		_, err = ValidateSchema(`"2024-01-01"`, dateSchema)
 		helper.AssertNoError(err, "Should validate without error")
 
-		errors, err = ValidateSchema(`"invalid-date"`, dateSchema)
+		_, err = ValidateSchema(`"invalid-date"`, dateSchema)
 		helper.AssertNoError(err, "Should validate without error")
 
 		// Test datetime format
@@ -218,7 +218,7 @@ func TestValidationComprehensive(t *testing.T) {
 		datetimeSchema.Type = "string"
 		datetimeSchema.Format = "date-time"
 
-		errors, err = ValidateSchema(`"2024-01-01T12:00:00Z"`, datetimeSchema)
+		_, err = ValidateSchema(`"2024-01-01T12:00:00Z"`, datetimeSchema)
 		helper.AssertNoError(err, "Should validate without error")
 
 		// Test URI format
@@ -226,10 +226,10 @@ func TestValidationComprehensive(t *testing.T) {
 		uriSchema.Type = "string"
 		uriSchema.Format = "uri"
 
-		errors, err = ValidateSchema(`"https://example.com"`, uriSchema)
+		_, err = ValidateSchema(`"https://example.com"`, uriSchema)
 		helper.AssertNoError(err, "Should validate without error")
 
-		errors, err = ValidateSchema(`"not-a-uri"`, uriSchema)
+		_, err = ValidateSchema(`"not-a-uri"`, uriSchema)
 		helper.AssertNoError(err, "Should validate without error")
 
 		// Test UUID format
@@ -237,10 +237,10 @@ func TestValidationComprehensive(t *testing.T) {
 		uuidSchema.Type = "string"
 		uuidSchema.Format = "uuid"
 
-		errors, err = ValidateSchema(`"550e8400-e29b-41d4-a716-446655440000"`, uuidSchema)
+		_, err = ValidateSchema(`"550e8400-e29b-41d4-a716-446655440000"`, uuidSchema)
 		helper.AssertNoError(err, "Should validate without error")
 
-		errors, err = ValidateSchema(`"not-a-uuid"`, uuidSchema)
+		_, err = ValidateSchema(`"not-a-uuid"`, uuidSchema)
 		helper.AssertNoError(err, "Should validate without error")
 	})
 

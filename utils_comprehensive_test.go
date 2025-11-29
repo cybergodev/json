@@ -1,7 +1,6 @@
 package json
 
 import (
-	"reflect"
 	"testing"
 )
 
@@ -276,16 +275,15 @@ func TestUtilsComprehensive(t *testing.T) {
 	})
 
 	t.Run("ArrayConversion", func(t *testing.T) {
-		// Test array conversion utilities
+		// Test unified type conversion for arrays
 		mixedArray := []interface{}{"1", "2", "3"}
-		converted, ok := tryArrayConversion[[]int](mixedArray)
+		converted, ok := UnifiedTypeConversion[[]int](mixedArray)
 		helper.AssertTrue(ok, "Should successfully convert array")
 		helper.AssertNotNil(converted, "Should convert array elements")
 
-		// Test element conversion
-		element, err := convertElementToType("123", reflect.TypeOf(int(0)))
-		helper.AssertNoError(err, "Should convert element without error")
-		helper.AssertNotNil(element, "Should convert element type")
+		// Test element conversion through unified conversion
+		element, ok := UnifiedTypeConversion[int]("123")
+		helper.AssertTrue(ok, "Should convert element without error")
 		helper.AssertEqual(123, element, "Should convert to correct value")
 	})
 
