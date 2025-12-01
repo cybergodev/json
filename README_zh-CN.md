@@ -958,10 +958,6 @@ lastUser, _ := json.Get(jsonData, "users[-1]") // 获取 Bob
 - **[配置管理](examples/configuration)** - 处理器配置和优化
 - **[兼容性示例](examples/compatibility)** - 直接替换演示
 
-#### 快速参考
-- **[⚡ 快速参考指南](docs/QUICK_REFERENCE_CN.md)** - 常用功能和操作的快速参考
-- **[⚡ Quick Reference Guide](docs/QUICK_REFERENCE.md)** - English quick reference guide
-
 ---
 
 ## 📄 许可证
