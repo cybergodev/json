@@ -1086,7 +1086,7 @@ func (cdp *ComplexDeleteProcessor) findTargetsInItem(item any, extractionSegment
 			targets = append(targets, DeletionTarget{
 				Container: obj,
 				Key:       extractionSegment.Key,
-				Path:      JoinPath(basePath, extractionSegment.Key),
+				Path:      joinPath(basePath, extractionSegment.Key),
 			})
 		}
 		return targets, nil
@@ -1936,9 +1936,7 @@ func (cdp *ComplexDeleteProcessor) findSourceObjectsFromExtractionPath(data any,
 	}
 
 	basePathBeforeExtraction := extractionPath[:lastBraceStart]
-	if strings.HasSuffix(basePathBeforeExtraction, ".") {
-		basePathBeforeExtraction = basePathBeforeExtraction[:len(basePathBeforeExtraction)-1]
-	}
+	basePathBeforeExtraction = strings.TrimSuffix(basePathBeforeExtraction, ".")
 
 	// Navigate to the base path
 	var containers []any
@@ -3260,8 +3258,6 @@ func (do *deleteOperations) cleanupDeletedMarkersRecursive(data any) any {
 	}
 }
 
-// Helper functions
-
 // parseArrayIndex parses an array index from a string
 func (do *deleteOperations) parseArrayIndex(indexStr string) int {
 	indexStr = strings.Trim(indexStr, "[]")
@@ -4191,7 +4187,7 @@ func (p *Processor) setValueAdvancedPath(data any, path string, value any, creat
 
 	// Check if this is a complex path that should use RecursiveProcessor
 	// But exclude simple array slice paths that need array extension support
-	if p.isComplexPath(path) && !p.needsLegacyComplexHandling(path) && !p.isSimpleArraySlicePath(path) {
+	if p.isComplexPath(path) && !p.isSimpleArraySlicePath(path) {
 		// Use RecursiveProcessor for complex paths like flat extraction
 		unifiedProcessor := NewRecursiveProcessor(p)
 		_, err := unifiedProcessor.ProcessRecursivelyWithOptions(data, path, OpSet, value, createPaths)
@@ -4910,13 +4906,9 @@ func (p *Processor) setValueForProperty(current any, property string, value any,
 		return nil
 	default:
 		if createPaths {
-			// Try to convert to map
-			if newMap := make(map[string]any); newMap != nil {
-				newMap[property] = value
-				// Note: This doesn't actually replace the original,
-				// which is a limitation of this approach
-				return fmt.Errorf("cannot convert %T to map for property setting", current)
-			}
+			// Cannot convert non-map types to map for property setting
+			// This is a fundamental limitation
+			return fmt.Errorf("cannot convert %T to map for property setting", current)
 		}
 		return fmt.Errorf("cannot set property '%s' on type %T", property, current)
 	}
@@ -5875,8 +5867,6 @@ func (so *setOperations) navigateToExtract(current any, extractKey string, creat
 	}
 }
 
-// Helper functions
-
 // parseArrayIndex parses an array index from a string
 func (so *setOperations) parseArrayIndex(indexStr string) int {
 	// Remove brackets if present
@@ -6089,15 +6079,29 @@ func (so *setOperations) extendArrayProperty(parent any, segment PathSegmentInfo
 }
 
 // extendArrayForIndex extends an array to accommodate a specific index
+// Note: This function cannot modify the parent container directly due to Go's value semantics
+// Array extension must be handled at a higher level where parent references are available
 func (so *setOperations) extendArrayForIndex(arr []any, index int, value any) error {
-	// This is a placeholder - in practice, we'd need to modify the parent container
-	// For now, return an error indicating array extension is needed
-	return fmt.Errorf("array extension required for index %d (current length %d)", index, len(arr))
+	if index < 0 {
+		return fmt.Errorf("cannot extend array with negative index: %d", index)
+	}
+	return fmt.Errorf("array extension required for index %d (current length %d) - must be handled by caller", index, len(arr))
 }
 
 // replaceCurrentData replaces current data with new data
+// Note: This function cannot modify the parent container directly due to Go's value semantics
+// Data replacement must be handled at a higher level where parent references are available
 func (so *setOperations) replaceCurrentData(current, newData any) error {
-	// This is a placeholder - in practice, we'd need to modify the parent container
-	// For now, return an error indicating data replacement is needed
-	return fmt.Errorf("data replacement required: %T -> %T", current, newData)
+	return fmt.Errorf("data replacement required: %T -> %T - must be handled by caller", current, newData)
+}
+
+// joinPath efficiently joins path segments
+func joinPath(base, segment string) string {
+	if base == "" {
+		return segment
+	}
+	if segment == "" {
+		return base
+	}
+	return base + "." + segment
 }

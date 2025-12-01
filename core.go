@@ -360,18 +360,13 @@ type Config struct {
 	CompactArrays    bool `json:"compact_arrays"`    // Remove all null values from arrays (not just trailing)
 
 	// Additional options for interface compatibility
-	EnableMetrics       bool          `json:"enable_metrics"`        // Enable metrics collection
-	EnableHealthCheck   bool          `json:"enable_health_check"`   // Enable health checking
-	AllowCommentsFlag   bool          `json:"allow_comments"`        // Allow JSON with comments
-	PreserveNumbersFlag bool          `json:"preserve_numbers"`      // Preserve number format
-	ValidateInput       bool          `json:"validate_input"`        // Validate input
-	MaxNestingDepth     int           `json:"max_nesting_depth"`     // Maximum nesting depth
-	EnableRateLimit     bool          `json:"enable_rate_limit"`     // Enable rate limiting
-	RateLimitPerSec     int           `json:"rate_limit_per_sec"`    // Rate limit per second
-	ValidateFilePath    bool          `json:"validate_file_path"`    // Validate file paths
-	EnableResourcePools bool          `json:"enable_resource_pools"` // Enable resource pools
-	MaxPoolSize         int           `json:"max_pool_size"`         // Maximum pool size
-	PoolCleanupInterval time.Duration `json:"pool_cleanup_interval"` // Pool cleanup interval
+	EnableMetrics       bool `json:"enable_metrics"`      // Enable metrics collection
+	EnableHealthCheck   bool `json:"enable_health_check"` // Enable health checking
+	AllowCommentsFlag   bool `json:"allow_comments"`      // Allow JSON with comments
+	PreserveNumbersFlag bool `json:"preserve_numbers"`    // Preserve number format
+	ValidateInput       bool `json:"validate_input"`      // Validate input
+	MaxNestingDepth     int  `json:"max_nesting_depth"`   // Maximum nesting depth
+	ValidateFilePath    bool `json:"validate_file_path"`  // Validate file paths
 }
 
 // ProcessorOptions provides per-operation configuration
@@ -720,28 +715,23 @@ func (c *EncodeConfig) Clone() *EncodeConfig {
 
 // ConfigInterface implementation methods
 
-func (c *Config) IsCacheEnabled() bool                  { return c.EnableCache }
-func (c *Config) GetMaxCacheSize() int                  { return c.MaxCacheSize }
-func (c *Config) GetCacheTTL() time.Duration            { return c.CacheTTL }
-func (c *Config) GetMaxJSONSize() int64                 { return c.MaxJSONSize }
-func (c *Config) GetMaxPathDepth() int                  { return c.MaxPathDepth }
-func (c *Config) GetMaxConcurrency() int                { return c.MaxConcurrency }
-func (c *Config) IsMetricsEnabled() bool                { return c.EnableMetrics }
-func (c *Config) IsHealthCheckEnabled() bool            { return c.EnableHealthCheck }
-func (c *Config) IsStrictMode() bool                    { return c.StrictMode }
-func (c *Config) AllowComments() bool                   { return c.AllowCommentsFlag }
-func (c *Config) PreserveNumbers() bool                 { return c.PreserveNumbersFlag }
-func (c *Config) ShouldCreatePaths() bool               { return c.CreatePaths }
-func (c *Config) ShouldCleanupNulls() bool              { return c.CleanupNulls }
-func (c *Config) ShouldCompactArrays() bool             { return c.CompactArrays }
-func (c *Config) ShouldValidateInput() bool             { return c.ValidateInput }
-func (c *Config) GetMaxNestingDepth() int               { return c.MaxNestingDepth }
-func (c *Config) IsRateLimitEnabled() bool              { return c.EnableRateLimit }
-func (c *Config) GetRateLimitPerSec() int               { return c.RateLimitPerSec }
-func (c *Config) ShouldValidateFilePath() bool          { return c.ValidateFilePath }
-func (c *Config) AreResourcePoolsEnabled() bool         { return c.EnableResourcePools }
-func (c *Config) GetMaxPoolSize() int                   { return c.MaxPoolSize }
-func (c *Config) GetPoolCleanupInterval() time.Duration { return c.PoolCleanupInterval }
+func (c *Config) IsCacheEnabled() bool         { return c.EnableCache }
+func (c *Config) GetMaxCacheSize() int         { return c.MaxCacheSize }
+func (c *Config) GetCacheTTL() time.Duration   { return c.CacheTTL }
+func (c *Config) GetMaxJSONSize() int64        { return c.MaxJSONSize }
+func (c *Config) GetMaxPathDepth() int         { return c.MaxPathDepth }
+func (c *Config) GetMaxConcurrency() int       { return c.MaxConcurrency }
+func (c *Config) IsMetricsEnabled() bool       { return c.EnableMetrics }
+func (c *Config) IsHealthCheckEnabled() bool   { return c.EnableHealthCheck }
+func (c *Config) IsStrictMode() bool           { return c.StrictMode }
+func (c *Config) AllowComments() bool          { return c.AllowCommentsFlag }
+func (c *Config) PreserveNumbers() bool        { return c.PreserveNumbersFlag }
+func (c *Config) ShouldCreatePaths() bool      { return c.CreatePaths }
+func (c *Config) ShouldCleanupNulls() bool     { return c.CleanupNulls }
+func (c *Config) ShouldCompactArrays() bool    { return c.CompactArrays }
+func (c *Config) ShouldValidateInput() bool    { return c.ValidateInput }
+func (c *Config) GetMaxNestingDepth() int      { return c.MaxNestingDepth }
+func (c *Config) ShouldValidateFilePath() bool { return c.ValidateFilePath }
 
 // Operation represents the type of operation being performed
 type Operation int
@@ -806,7 +796,6 @@ type PathParser interface {
 	ValidatePath(path string) error
 	SplitPathIntoSegments(path string) []PathSegmentInfo
 	PreprocessPath(path string) string
-	NeedsLegacyHandling(path string) bool
 }
 
 // Navigator interface for basic navigation operations
@@ -1009,28 +998,7 @@ var (
 	ErrRateLimitNew      = &ProcessorError{Type: ErrTypeRateLimit, Message: "rate limit exceeded"}
 )
 
-// DefaultConfig returns a default configuration for the JSON processor
-func DefaultConfig() *Config {
-	return &Config{
-		MaxCacheSize:      1000,
-		CacheTTL:          DefaultCacheTTL,
-		EnableCache:       true,
-		MaxJSONSize:       DefaultMaxJSONSize,
-		MaxPathDepth:      DefaultMaxPathDepth,
-		MaxBatchSize:      DefaultMaxBatchSize,
-		MaxConcurrency:    DefaultMaxConcurrency,
-		ParallelThreshold: DefaultParallelThreshold,
-		EnableValidation:  true,
-		StrictMode:        false,
-		CreatePaths:       false,
-
-		// Security configuration with safe defaults (reduced from 100MB to 10MB)
-		MaxNestingDepthSecurity:   DefaultMaxNestingDepth,
-		MaxSecurityValidationSize: MaxSecurityValidationSize,
-		MaxObjectKeys:             DefaultMaxObjectKeys,
-		MaxArrayElements:          DefaultMaxArrayElements,
-	}
-}
+// DefaultConfig moved to config.go
 
 // HighSecurityConfig returns a configuration with enhanced security settings
 func HighSecurityConfig() *Config {
@@ -1193,88 +1161,7 @@ func (c *Config) GetSecurityLimits() map[string]any {
 	}
 }
 
-// ValidateConfig validates processor configuration with comprehensive checks
-func ValidateConfig(config *Config) error {
-	if config == nil {
-		return fmt.Errorf("config cannot be nil")
-	}
-
-	// Valid cache settings
-	if config.MaxCacheSize < 0 {
-		return fmt.Errorf("MaxCacheSize cannot be negative: %d", config.MaxCacheSize)
-	}
-	if config.MaxCacheSize > 1000000 {
-		return fmt.Errorf("MaxCacheSize too large (max 1,000,000): %d", config.MaxCacheSize)
-	}
-	if config.CacheTTL < 0 {
-		return fmt.Errorf("CacheTTL cannot be negative: %v", config.CacheTTL)
-	}
-	if config.CacheTTL > 24*time.Hour {
-		return fmt.Errorf("CacheTTL too large (max 24h): %v", config.CacheTTL)
-	}
-
-	// Valid size limits
-	if config.MaxJSONSize < 0 {
-		return fmt.Errorf("MaxJSONSize cannot be negative: %d", config.MaxJSONSize)
-	}
-	if config.MaxJSONSize > 1024*1024*1024 { // 1GB limit
-		return fmt.Errorf("MaxJSONSize too large (max 1GB): %d", config.MaxJSONSize)
-	}
-	if config.MaxPathDepth < 1 {
-		return fmt.Errorf("MaxPathDepth must be at least 1: %d", config.MaxPathDepth)
-	}
-	if config.MaxPathDepth > 1000 {
-		return fmt.Errorf("MaxPathDepth too large (max 1000): %d", config.MaxPathDepth)
-	}
-	if config.MaxBatchSize < 0 {
-		return fmt.Errorf("MaxBatchSize cannot be negative: %d", config.MaxBatchSize)
-	}
-	if config.MaxBatchSize > 100000 {
-		return fmt.Errorf("MaxBatchSize too large (max 100,000): %d", config.MaxBatchSize)
-	}
-
-	// Valid concurrency settings
-	if config.MaxConcurrency < 1 {
-		return fmt.Errorf("MaxConcurrency must be at least 1: %d", config.MaxConcurrency)
-	}
-	if config.MaxConcurrency > 1000 {
-		return fmt.Errorf("MaxConcurrency too large (max 1000): %d", config.MaxConcurrency)
-	}
-	if config.ParallelThreshold < 1 {
-		return fmt.Errorf("ParallelThreshold must be at least 1: %d", config.ParallelThreshold)
-	}
-
-	// Validate security limits with autocorrection
-	if config.MaxNestingDepthSecurity <= 0 {
-		config.MaxNestingDepthSecurity = 50 // Set safe default
-	}
-	if config.MaxNestingDepthSecurity > 1000 {
-		return fmt.Errorf("MaxNestingDepthSecurity too high (%d), maximum allowed is 1000", config.MaxNestingDepthSecurity)
-	}
-
-	if config.MaxSecurityValidationSize <= 0 {
-		config.MaxSecurityValidationSize = 100 * 1024 * 1024 // Set safe default
-	}
-	if config.MaxSecurityValidationSize > 1024*1024*1024 { // 1GB limit
-		return fmt.Errorf("MaxSecurityValidationSize too high (%d), maximum allowed is 1GB", config.MaxSecurityValidationSize)
-	}
-
-	if config.MaxObjectKeys <= 0 {
-		config.MaxObjectKeys = 10000 // Set safe default
-	}
-	if config.MaxObjectKeys > 1000000 { // 1M keys limit
-		return fmt.Errorf("MaxObjectKeys too high (%d), maximum allowed is 1,000,000", config.MaxObjectKeys)
-	}
-
-	if config.MaxArrayElements <= 0 {
-		config.MaxArrayElements = 10000 // Set safe default
-	}
-	if config.MaxArrayElements > 1000000 { // 1M elements limit
-		return fmt.Errorf("MaxArrayElements too high (%d), maximum allowed is 1,000,000", config.MaxArrayElements)
-	}
-
-	return nil
-}
+// ValidateConfig moved to config.go
 
 // ValidateOptions validates processor options with enhanced checks
 func ValidateOptions(options *ProcessorOptions) error {
@@ -1292,77 +1179,7 @@ func ValidateOptions(options *ProcessorOptions) error {
 	return nil
 }
 
-// DefaultEncodeConfig returns default encoding configuration
-func DefaultEncodeConfig() *EncodeConfig {
-	return &EncodeConfig{
-		Pretty:          false,
-		Indent:          "  ",
-		Prefix:          "",
-		EscapeHTML:      true,
-		SortKeys:        false,
-		OmitEmpty:       false,
-		ValidateUTF8:    true,
-		MaxDepth:        100,
-		DisallowUnknown: false,
-		PreserveNumbers: false, // Disable number preservation for encoding/json compatibility
-		FloatPrecision:  -1,    // Automatic precision
-		DisableEscaping: false,
-		EscapeUnicode:   false,
-		EscapeSlash:     false,
-		EscapeNewlines:  true,
-		EscapeTabs:      true,
-		IncludeNulls:    true, // Include null values by default
-		CustomEscapes:   nil,
-	}
-}
-
-// NewPrettyConfig creates a configuration for pretty-printed JSON
-func NewPrettyConfig() *EncodeConfig {
-	return &EncodeConfig{
-		Pretty:          true,
-		Indent:          "  ",
-		Prefix:          "",
-		EscapeHTML:      true,
-		SortKeys:        true,
-		OmitEmpty:       false,
-		ValidateUTF8:    true,
-		MaxDepth:        100,
-		DisallowUnknown: false,
-		PreserveNumbers: true, // Enable number preservation for pretty printing
-		FloatPrecision:  -1,   // Automatic precision
-		DisableEscaping: false,
-		EscapeUnicode:   false,
-		EscapeSlash:     false,
-		EscapeNewlines:  true,
-		EscapeTabs:      true,
-		IncludeNulls:    true, // Include null values by default
-		CustomEscapes:   nil,
-	}
-}
-
-// NewCompactConfig creates a configuration for compact JSON
-func NewCompactConfig() *EncodeConfig {
-	return &EncodeConfig{
-		Pretty:          false,
-		Indent:          "",
-		Prefix:          "",
-		EscapeHTML:      true,
-		SortKeys:        false,
-		OmitEmpty:       false,
-		ValidateUTF8:    true,
-		MaxDepth:        100,
-		DisallowUnknown: false,
-		PreserveNumbers: false, // Disable number preservation for encoding/json compatibility
-		FloatPrecision:  -1,    // Automatic precision
-		DisableEscaping: false,
-		EscapeUnicode:   false,
-		EscapeSlash:     false,
-		EscapeNewlines:  true,
-		EscapeTabs:      true,
-		IncludeNulls:    true, // Include null values by default
-		CustomEscapes:   nil,
-	}
-}
+// DefaultEncodeConfig, NewPrettyConfig, NewCompactConfig moved to config.go
 
 // NewReadableConfig creates a configuration for human-readable JSON with minimal escaping
 func NewReadableConfig() *EncodeConfig {
@@ -1657,32 +1474,4 @@ func newLimitError(op string, current, max int64, limitType string) *JsonsError 
 	}
 }
 
-// newSecurityError creates security violation errors
-func newSecurityError(op, message string) *JsonsError {
-	return &JsonsError{
-		Op:      op,
-		Message: message,
-		Err:     ErrSecurityViolation,
-	}
-}
-
-// Legacy compatibility wrappers (inline, no function call overhead)
-func newValidationError(op, path, message string, err error) *JsonsError {
-	return newError(op, path, message, err)
-}
-
-func newOperationError(op, message string, err error) *JsonsError {
-	return newError(op, "", message, err)
-}
-
-func newPathError(path, message string, err error) *JsonsError {
-	return newError("validate_path", path, message, err)
-}
-
-func newSizeLimitError(op string, size, maxSize int64) *JsonsError {
-	return newLimitError(op, size, maxSize, "size")
-}
-
-func newDepthLimitError(op string, depth, maxDepth int) *JsonsError {
-	return newLimitError(op, int64(depth), int64(maxDepth), "depth")
-}
+// Error helper functions moved to errors.go

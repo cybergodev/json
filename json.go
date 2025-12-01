@@ -39,33 +39,34 @@ import (
 	"sync"
 )
 
-// Global processor instance for convenience functions with improved thread safety
+// Global processor instance for convenience functions with proper synchronization
 var (
 	defaultProcessor   *Processor
 	defaultProcessorMu sync.RWMutex
 )
 
-// getDefaultProcessor returns the global default processor instance with proper recreation logic
+// getDefaultProcessor returns the global default processor instance with proper locking
 func getDefaultProcessor() *Processor {
-	// Fast path with read lock
+	// Fast path: read lock for existing processor
 	defaultProcessorMu.RLock()
-	p := defaultProcessor
-	defaultProcessorMu.RUnlock()
-
-	// Check if processor is valid
-	if p != nil && !p.IsClosed() {
+	if defaultProcessor != nil && !defaultProcessor.IsClosed() {
+		p := defaultProcessor
+		defaultProcessorMu.RUnlock()
 		return p
 	}
+	defaultProcessorMu.RUnlock()
 
-	// Slow path: create or recreate processor
+	// Slow path: write lock for initialization
 	defaultProcessorMu.Lock()
 	defer defaultProcessorMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if defaultProcessor == nil || defaultProcessor.IsClosed() {
-		defaultProcessor = New()
+	if defaultProcessor != nil && !defaultProcessor.IsClosed() {
+		return defaultProcessor
 	}
 
+	// Create new processor with default config
+	defaultProcessor = New()
 	return defaultProcessor
 }
 
@@ -107,28 +108,32 @@ func GetTyped[T any](jsonStr, path string, opts ...*ProcessorOptions) (T, error)
 	return getTypedWithProcessor[T](getDefaultProcessor(), jsonStr, path, opts...)
 }
 
-// Type-safe convenience functions for common types
-
+// GetString retrieves a string value from JSON
 func GetString(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
 	return GetTyped[string](jsonStr, path, opts...)
 }
 
+// GetInt retrieves an int value from JSON
 func GetInt(jsonStr, path string, opts ...*ProcessorOptions) (int, error) {
 	return GetTyped[int](jsonStr, path, opts...)
 }
 
+// GetFloat64 retrieves a float64 value from JSON
 func GetFloat64(jsonStr, path string, opts ...*ProcessorOptions) (float64, error) {
 	return GetTyped[float64](jsonStr, path, opts...)
 }
 
+// GetBool retrieves a bool value from JSON
 func GetBool(jsonStr, path string, opts ...*ProcessorOptions) (bool, error) {
 	return GetTyped[bool](jsonStr, path, opts...)
 }
 
+// GetArray retrieves an array from JSON
 func GetArray(jsonStr, path string, opts ...*ProcessorOptions) ([]any, error) {
 	return GetTyped[[]any](jsonStr, path, opts...)
 }
 
+// GetObject retrieves an object from JSON
 func GetObject(jsonStr, path string, opts ...*ProcessorOptions) (map[string]any, error) {
 	return GetTyped[map[string]any](jsonStr, path, opts...)
 }
@@ -144,13 +149,11 @@ func GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOp
 
 // GetTypedWithDefault retrieves a typed value with a default fallback
 func GetTypedWithDefault[T any](jsonStr, path string, defaultValue T, opts ...*ProcessorOptions) T {
-	// First check if the path exists using Get
 	rawValue, err := Get(jsonStr, path, opts...)
 	if err != nil || rawValue == nil {
 		return defaultValue
 	}
 
-	// Path exists, now get the typed value
 	value, err := GetTyped[T](jsonStr, path, opts...)
 	if err != nil {
 		return defaultValue
@@ -158,7 +161,6 @@ func GetTypedWithDefault[T any](jsonStr, path string, defaultValue T, opts ...*P
 	return value
 }
 
-// Type-safe convenience functions with default values
 func GetStringWithDefault(jsonStr, path, defaultValue string, opts ...*ProcessorOptions) string {
 	return GetTypedWithDefault(jsonStr, path, defaultValue, opts...)
 }

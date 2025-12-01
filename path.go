@@ -341,33 +341,6 @@ func (pp *pathParser) PreprocessPath(path string) string {
 	return sb.String()
 }
 
-// NeedsLegacyHandling determines if a path needs legacy complex handling
-func (pp *pathParser) NeedsLegacyHandling(path string) bool {
-	// Only use legacy handling for very specific complex patterns
-	legacyPatterns := []string{
-		// Add patterns that require legacy handling
-	}
-
-	for _, pattern := range legacyPatterns {
-		if strings.Contains(path, pattern) {
-			return true
-		}
-	}
-
-	// Check for multiple consecutive extractions (very complex patterns)
-	extractCount := strings.Count(path, "{")
-	if extractCount > 4 {
-		return true
-	}
-
-	// Check for step-based slicing (e.g., [::2], [1:5:2])
-	if strings.Contains(path, "::") || (strings.Count(path, ":") > 2) {
-		return true
-	}
-
-	return false
-}
-
 // parseDotNotation parses dot notation paths like "user.name" or "users[0].name"
 func (pp *pathParser) parseDotNotation(path string) ([]PathSegmentInfo, error) {
 	var segments []PathSegmentInfo
@@ -1475,9 +1448,31 @@ func (n *navigator) parseArrayIndex(indexStr string) int {
 
 // tryConvertToArray tries to convert a map to an array if it has numeric keys
 func (n *navigator) tryConvertToArray(m map[string]any) ([]any, bool) {
-	// This is a simplified implementation
-	// In a real scenario, you might want more sophisticated logic
-	return nil, false
+	if len(m) == 0 {
+		return []any{}, true
+	}
+
+	// Check if all keys are numeric and sequential
+	maxIndex := -1
+	for key := range m {
+		if index, err := strconv.Atoi(key); err == nil && index >= 0 {
+			if index > maxIndex {
+				maxIndex = index
+			}
+		} else {
+			return nil, false // Non-numeric key found
+		}
+	}
+
+	// Create array with proper size
+	arr := make([]any, maxIndex+1)
+	for key, value := range m {
+		if index, err := strconv.Atoi(key); err == nil {
+			arr[index] = value
+		}
+	}
+
+	return arr, true
 }
 
 // isBoundaryCase determines if a navigation failure is a boundary case
@@ -1790,7 +1785,11 @@ func (p *Processor) preprocessPath(path string, sb *strings.Builder) string {
 
 // needsDotBefore checks if a dot is needed before the current character
 func (p *Processor) needsDotBefore(prevChar rune) bool {
-	return prevChar != '.' && prevChar != '[' && prevChar != '{'
+	// Use same logic as pathParser for consistency
+	return (prevChar >= 'a' && prevChar <= 'z') ||
+		(prevChar >= 'A' && prevChar <= 'Z') ||
+		(prevChar >= '0' && prevChar <= '9') ||
+		prevChar == '_' || prevChar == ']' || prevChar == '}'
 }
 
 // splitPathIntoSegments splits a preprocessed path into segments
@@ -1921,9 +1920,8 @@ func (p *Processor) isDistributedOperationSegment(segment PathSegment) bool {
 	return segment.IsDistributed || segment.Extract != ""
 }
 
-// handleDistributedOperation handles distributed operations
+// handleDistributedOperation handles distributed operations across extracted arrays
 func (p *Processor) handleDistributedOperation(data any, segments []PathSegment) (any, error) {
-	// This is a placeholder - the actual implementation would be in extraction_handler.go
 	return p.getValueWithDistributedOperation(data, p.reconstructPath(segments))
 }
 
@@ -2368,9 +2366,7 @@ func (p *Processor) isValidArrayIndex(index string) bool {
 	}
 
 	// Check for negative indices
-	if strings.HasPrefix(index, "-") {
-		index = index[1:]
-	}
+	index = strings.TrimPrefix(index, "-")
 
 	// Check if it's a valid number
 	_, err := strconv.Atoi(index)
@@ -2396,37 +2392,6 @@ func (p *Processor) isValidSliceRange(rangeStr string) bool {
 	return true
 }
 
-// needsLegacyComplexHandling determines if a path needs legacy complex handling
-func (p *Processor) needsLegacyComplexHandling(path string) bool {
-	// Check if this is a distributed operation - if so, don't use legacy handling
-	if p.isDistributedOperationPath(path) {
-		return false
-	}
-
-	// Only use legacy handling for very specific complex patterns that the unified processor can't handle yet
-	var legacyPatterns []string
-
-	for _, pattern := range legacyPatterns {
-		if strings.Contains(path, pattern) {
-			return true
-		}
-	}
-
-	// Check for multiple consecutive extractions (very complex patterns)
-	// Note: Modern distributed operations can handle multiple extractions, so we're more lenient
-	extractCount := strings.Count(path, "{")
-	if extractCount > 4 { // Increased threshold since distributed operations can handle more complexity
-		return true
-	}
-
-	// Check for step-based slicing (e.g., [::2], [1:5:2])
-	if strings.Contains(path, "::") || (strings.Count(path, ":") > 2) {
-		return true
-	}
-
-	return false
-}
-
 // Error utilities
 
 // wrapError wraps an error with additional context
@@ -2444,46 +2409,36 @@ func (p *Processor) createPathError(path string, operation string, err error) er
 
 // Memory management utilities
 
-// getStringBuilder gets a string builder from the pool with enhanced safety and monitoring
+// getStringBuilder gets a string builder from the pool (optimized for performance)
 func (p *Processor) getStringBuilder() *strings.Builder {
-	if p.resources.stringBuilderPool != nil && !p.isClosing() {
-		if builder := p.resources.stringBuilderPool.Get(); builder != nil {
-			if sb, ok := builder.(*strings.Builder); ok {
-				sb.Reset()
-				if p.resourceMonitor != nil {
-					p.resourceMonitor.RecordPoolHit()
-				}
-				return sb
-			}
+	// Fast path: direct pool access without closing check (checked once at operation start)
+	if pool := p.resources.stringBuilderPool; pool != nil {
+		if builder := pool.Get(); builder != nil {
+			sb := builder.(*strings.Builder)
+			sb.Reset()
+			return sb
 		}
-	}
-
-	// Record pool miss
-	if p.resourceMonitor != nil {
-		p.resourceMonitor.RecordPoolMiss()
-		p.resourceMonitor.RecordAllocation(512) // Estimated initial capacity
 	}
 
 	// Fallback: create new builder with optimized capacity
 	sb := &strings.Builder{}
-	sb.Grow(512)
+	sb.Grow(DefaultStringBuilderSize)
 	return sb
 }
 
-// putStringBuilder returns a string builder to the pool with optimized size limits and monitoring
+// putStringBuilder returns a string builder to the pool (optimized for performance)
 func (p *Processor) putStringBuilder(builder *strings.Builder) {
-	if p.resources.stringBuilderPool != nil && builder != nil && !p.isClosing() {
-		// Optimized size limits for better memory efficiency
-		capacity := builder.Cap()
-		if capacity <= 4096 && capacity >= 128 { // Reduced upper limit for better memory usage
-			builder.Reset() // Clear content but keep capacity
-			p.resources.stringBuilderPool.Put(builder)
-		} else {
-			// Record eviction for oversized or undersized builders
-			if p.resourceMonitor != nil {
-				p.resourceMonitor.RecordPoolEviction()
-				p.resourceMonitor.RecordDeallocation(int64(capacity))
-			}
+	if builder == nil {
+		return
+	}
+
+	// Fast path: check capacity and return to pool
+	capacity := builder.Cap()
+	if capacity >= MinPoolBufferSize && capacity <= MaxPoolBufferSize {
+		if pool := p.resources.stringBuilderPool; pool != nil {
+			builder.Reset()
+			pool.Put(builder)
 		}
 	}
+	// Oversized/undersized builders are simply discarded (GC will handle them)
 }

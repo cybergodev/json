@@ -30,14 +30,7 @@ type ConfigInterface interface {
 	// Security configuration
 	ShouldValidateInput() bool
 	GetMaxNestingDepth() int
-	IsRateLimitEnabled() bool
-	GetRateLimitPerSec() int
 	ShouldValidateFilePath() bool
-
-	// Memory management
-	AreResourcePoolsEnabled() bool
-	GetMaxPoolSize() int
-	GetPoolCleanupInterval() time.Duration
 }
 
 // ProcessorOptionsInterface defines the interface for processor options
