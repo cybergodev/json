@@ -960,10 +960,6 @@ The repository includes comprehensive examples demonstrating various features an
 - **[Configuration Management](examples/configuration)** - Processor configuration and optimization
 - **[Compatibility Examples](examples/compatibility)** - Drop-in replacement demonstrations
 
-#### Quick Reference
-- **[⚡ Quick Reference Guide](docs/QUICK_REFERENCE.md)** - Quick reference for common features and operations
-- **[⚡ 快速参考指南](docs/QUICK_REFERENCE_CN.md)** - 中文版快速参考指南
-
 ---
 
 ## 📄 License
