@@ -185,36 +185,32 @@ func (p *Processor) validateFilePathSecure(filePath string) error {
 		return newOperationError("validate_file_path", "file path cannot be empty", ErrOperationFailed)
 	}
 
-	// Normalize path to prevent path traversal
-	cleanPath := filepath.Clean(filePath)
-
-	// Check for path traversal patterns BEFORE converting to absolute
-	// filepath.Clean normalizes ".." but we still need to detect it
-	if strings.Contains(filePath, "..") {
-		// After cleaning, if ".." still exists or path goes outside current dir, block it
-		if strings.Contains(cleanPath, "..") || strings.HasPrefix(cleanPath, "..") {
-			return newSecurityError("validate_file_path", "path traversal detected")
-		}
-	}
-
-	// Check for null bytes
-	if strings.Contains(cleanPath, "\x00") {
+	// SECURITY: Check for null bytes before any processing
+	if strings.Contains(filePath, "\x00") {
 		return newSecurityError("validate_file_path", "null byte in path")
 	}
 
-	// Check path length
+	// SECURITY: Check for path traversal patterns BEFORE normalization
+	// This prevents bypassing via encoded sequences or mixed separators
+	if containsPathTraversal(filePath) {
+		return newSecurityError("validate_file_path", "path traversal pattern detected")
+	}
+
+	// Platform-specific security checks on original path (before normalization)
+	if runtime.GOOS == "windows" {
+		if err := validateWindowsPath(filePath); err != nil {
+			return err
+		}
+	}
+
+	// Normalize the path after security checks
+	cleanPath := filepath.Clean(filePath)
+
+	// Check path length after cleaning
 	if len(cleanPath) > MaxPathLength {
 		return newOperationError("validate_file_path",
 			fmt.Sprintf("path too long: %d > %d", len(cleanPath), MaxPathLength),
 			ErrOperationFailed)
-	}
-
-	// Platform-specific security checks on clean path (before absolute conversion)
-	// This ensures we catch device names in relative paths too
-	if runtime.GOOS == "windows" {
-		if err := validateWindowsPath(cleanPath); err != nil {
-			return err
-		}
 	}
 
 	// Convert to absolute path for further validation
@@ -230,16 +226,21 @@ func (p *Processor) validateFilePathSecure(filePath string) error {
 		}
 	}
 
-	// Check symlinks
+	// Check symlinks with loop detection
 	if info, err := os.Lstat(absPath); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			realPath, err := filepath.EvalSymlinks(absPath)
 			if err != nil {
 				return fmt.Errorf("cannot resolve symlink: %w", err)
 			}
-			// Validate the real path as well
+
+			// Ensure symlink doesn't escape to restricted areas
 			if runtime.GOOS != "windows" {
 				if err := validateUnixPath(realPath); err != nil {
+					return err
+				}
+			} else {
+				if err := validateWindowsPath(realPath); err != nil {
 					return err
 				}
 			}
@@ -254,6 +255,37 @@ func (p *Processor) validateFilePathSecure(filePath string) error {
 	}
 
 	return nil
+}
+
+// containsPathTraversal checks for path traversal patterns comprehensively
+// SECURITY FIX: Enhanced detection with more bypass patterns
+func containsPathTraversal(path string) bool {
+	// Check for various path traversal patterns including bypass attempts
+	patterns := []string{
+		"..",         // Standard traversal
+		"%2e%2e",     // URL encoded
+		"%252e%252e", // Double URL encoded
+		"..%2f",      // Mixed encoding
+		"..%5c",      // Windows backslash encoded
+		"..%c0%af",   // UTF-8 overlong encoding
+		"..%c1%9c",   // UTF-8 overlong encoding variant
+		".%2e",       // Partial encoding
+		"%2e.",       // Partial encoding variant
+	}
+
+	lowerPath := strings.ToLower(path)
+	for _, pattern := range patterns {
+		if strings.Contains(lowerPath, pattern) {
+			return true
+		}
+	}
+
+	// Additional check: consecutive dots in any form
+	if strings.Contains(path, "...") {
+		return true
+	}
+
+	return false
 }
 
 // validateUnixPath validates Unix-specific path security
@@ -283,30 +315,47 @@ func validateUnixPath(absPath string) error {
 // validateWindowsPath validates Windows-specific path security
 func validateWindowsPath(absPath string) error {
 	// Check for UNC paths
-	if strings.HasPrefix(absPath, "\\\\") {
-		if strings.Contains(absPath, "\x00") {
-			return newSecurityError("validate_windows_path", "invalid UNC path")
-		}
+	if strings.HasPrefix(absPath, "\\\\") || strings.HasPrefix(absPath, "//") {
+		return newSecurityError("validate_windows_path", "UNC paths not allowed")
 	}
 
-	// Check reserved device names
+	// Extract filename for device name checking
 	filename := strings.ToUpper(filepath.Base(absPath))
 	if idx := strings.LastIndex(filename, "."); idx > 0 {
 		filename = filename[:idx]
 	}
 
-	reserved := []string{"CON", "PRN", "AUX", "NUL"}
+	// Check reserved device names (complete list)
+	reserved := []string{"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
 	for _, name := range reserved {
 		if filename == name {
 			return newSecurityError("validate_windows_path", "Windows reserved device name")
 		}
 	}
 
-	// Check COM1-9 and LPT1-9
-	if len(filename) == 4 && filename[3] >= '1' && filename[3] <= '9' {
+	// Additional check for alternate data streams (ADS) which could bypass validation
+	if strings.Contains(absPath, ":") && len(absPath) > 2 && absPath[1] != ':' {
+		return newSecurityError("validate_windows_path", "alternate data streams not allowed")
+	}
+
+	// Check COM1-9 and LPT1-9 (COM0/LPT0 are technically valid but we block them for safety)
+	if len(filename) == 4 && filename[3] >= '0' && filename[3] <= '9' {
 		prefix := filename[:3]
 		if prefix == "COM" || prefix == "LPT" {
 			return newSecurityError("validate_windows_path", "Windows reserved device name")
+		}
+	}
+
+	// Check for invalid characters in Windows paths (excluding drive letter colon)
+	pathToCheck := absPath
+	if len(absPath) > 2 && absPath[1] == ':' {
+		pathToCheck = absPath[2:]
+	}
+
+	invalidChars := []string{"<", ">", ":", "\"", "|", "?", "*"}
+	for _, char := range invalidChars {
+		if strings.Contains(pathToCheck, char) {
+			return newSecurityError("validate_windows_path", "invalid character in path")
 		}
 	}
 

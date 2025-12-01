@@ -27,12 +27,7 @@ func TestConfigMethods(t *testing.T) {
 		_ = config.ShouldCompactArrays()
 		_ = config.ShouldValidateInput()
 		helper.AssertTrue(config.GetMaxNestingDepth() >= 0, "Max nesting depth should be non-negative")
-		_ = config.IsRateLimitEnabled()
-		helper.AssertTrue(config.GetRateLimitPerSec() >= 0, "Rate limit should be non-negative")
 		_ = config.ShouldValidateFilePath()
-		_ = config.AreResourcePoolsEnabled()
-		helper.AssertTrue(config.GetMaxPoolSize() >= 0, "Max pool size should be non-negative")
-		helper.AssertTrue(config.GetPoolCleanupInterval() >= 0, "Pool cleanup interval should be non-negative")
 
 		limits := config.GetSecurityLimits()
 		helper.AssertNotNil(limits, "Security limits should not be nil")

@@ -14,36 +14,36 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// Modern Go 1.24+ type constraints with enhanced generic support
+// Type constraints for Go 1.24+ generics
 type (
-	// Numeric represents all numeric types with improved constraint definition
+	// Numeric represents all numeric types
 	Numeric interface {
 		~int | ~int8 | ~int16 | ~int32 | ~int64 |
 			~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
 			~float32 | ~float64
 	}
 
-	// Ordered represents types that can be ordered (supports comparison operators)
+	// Ordered represents types that can be ordered
 	Ordered interface {
 		Numeric | ~string
 	}
 
-	// JSONValue represents valid JSON value types with type safety
+	// JSONValue represents valid JSON value types
 	JSONValue interface {
 		~bool | ~string | Numeric | ~[]any | ~map[string]any | any
 	}
 
-	// Signed represents signed integer types for better type safety
+	// Signed represents signed integer types
 	Signed interface {
 		~int | ~int8 | ~int16 | ~int32 | ~int64
 	}
 
-	// Unsigned represents unsigned integer types for better type safety
+	// Unsigned represents unsigned integer types
 	Unsigned interface {
 		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64
 	}
 
-	// Float represents floating-point types for better type safety
+	// Float represents floating-point types
 	Float interface {
 		~float32 | ~float64
 	}
@@ -243,7 +243,6 @@ func IsValidPath(path string) bool {
 
 // ValidatePath validates a path expression and returns detailed error information
 func ValidatePath(path string) error {
-	// Empty path is invalid
 	if path == "" {
 		return &JsonsError{
 			Op:      "validate_path",
@@ -253,78 +252,45 @@ func ValidatePath(path string) error {
 		}
 	}
 
-	// Root path "." is valid
 	if path == "." {
 		return nil
 	}
 
-	// Use default processor for detailed validation
 	processor := getDefaultProcessor()
 	return processor.validatePath(path)
 }
 
-// isJSONPointerPath checks if a path is in JSON Pointer format (internal use)
+// Internal path type checking functions (used by tests)
 func isJSONPointerPath(path string) bool {
 	return path != "" && path[0] == '/'
 }
 
-// isDotNotationPath checks if a path is in dot notation format (internal use)
 func isDotNotationPath(path string) bool {
-	return path != "" && path != "." && path[0] != '/' && !isJSONPointerPath(path)
+	return path != "" && path != "." && path[0] != '/'
 }
 
-// isArrayPath checks if a path contains array access syntax (internal use)
 func isArrayPath(path string) bool {
 	return strings.Contains(path, "[") && strings.Contains(path, "]")
 }
 
-// isSlicePath checks if a path contains slice syntax (internal use)
 func isSlicePath(path string) bool {
 	return strings.Contains(path, "[") && strings.Contains(path, ":") && strings.Contains(path, "]")
 }
 
-// isExtractionPath checks if a path contains extraction syntax (internal use)
 func isExtractionPath(path string) bool {
 	return strings.Contains(path, "{") && strings.Contains(path, "}")
 }
 
-// getPathType returns the type of path (dot_notation, json_pointer, or mixed) (internal use)
-func getPathType(path string) string {
-	if path == "" {
-		return "invalid"
-	}
-
-	if path == "." {
-		return "root"
-	}
-
-	if isJSONPointerPath(path) {
-		return "json_pointer"
-	}
-
-	if isDotNotationPath(path) {
-		if isArrayPath(path) || isSlicePath(path) || isExtractionPath(path) {
-			return "dot_notation_complex"
-		}
-		return "dot_notation_simple"
-	}
-
-	return "unknown"
-}
-
-// isJsonObject checks if data is a JSON object type (internal use)
 func isJsonObject(data any) bool {
 	_, ok := data.(map[string]any)
 	return ok
 }
 
-// isJsonArray checks if data is a JSON array type (internal use)
 func isJsonArray(data any) bool {
 	_, ok := data.([]any)
 	return ok
 }
 
-// isJsonPrimitive checks if data is a JSON primitive type (internal use)
 func isJsonPrimitive(data any) bool {
 	switch data.(type) {
 	case string, int, int32, int64, float32, float64, bool, nil:
@@ -421,21 +387,6 @@ func MergeJson(json1, json2 string) (string, error) {
 	}
 
 	return string(result), nil
-}
-
-// GetNumeric retrieves a numeric value with modern generic constraints (alias for GetTyped)
-func GetNumeric[T Numeric](jsonStr, path string, opts ...*ProcessorOptions) (T, error) {
-	return GetTyped[T](jsonStr, path, opts...)
-}
-
-// GetOrdered retrieves an ordered value with default fallback (alias for GetTypedWithDefault)
-func GetOrdered[T Ordered](jsonStr, path string, defaultValue T, opts ...*ProcessorOptions) T {
-	return GetTypedWithDefault(jsonStr, path, defaultValue, opts...)
-}
-
-// GetJSONValue retrieves any valid JSON value with type constraints
-func GetJSONValue[T JSONValue](jsonStr, path string, opts ...*ProcessorOptions) (T, error) {
-	return GetTyped[T](jsonStr, path, opts...)
 }
 
 // SafeTypeAssert performs a safe type assertion with error handling
@@ -821,20 +772,26 @@ func (cm *ConcurrencyManager) DetectDeadlocks() []DeadlockInfo {
 }
 
 // cleanupStaleTimeouts removes stale entries from operationTimeouts map
-// Enhanced version with better memory management
+// CRITICAL FIX: Prevents unbounded memory growth with strict limits
 func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 	cm.timeoutMutex.Lock()
 	defer cm.timeoutMutex.Unlock()
 
 	now := time.Now().UnixNano()
 	threshold := int64(60 * time.Second)
-	const maxMapSize = 10000
-	const targetSize = 5000
+	const maxMapSize = 5000 // Reduced from 10000
+	const targetSize = 2000 // Reduced from 5000
 
 	currentSize := len(cm.operationTimeouts)
 
 	// If map is empty or nil, nothing to clean
 	if cm.operationTimeouts == nil || currentSize == 0 {
+		return
+	}
+
+	// CRITICAL: If map exceeds max size, recreate with proper capacity
+	if currentSize > maxMapSize {
+		cm.operationTimeouts = make(map[uint64]int64, targetSize)
 		return
 	}
 
@@ -849,7 +806,6 @@ func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 	}
 
 	// If map is large, recreate with only fresh entries
-	// Pre-allocate with target size for better performance
 	newMap := make(map[uint64]int64, targetSize)
 	count := 0
 	for gid, startTime := range cm.operationTimeouts {
@@ -859,11 +815,7 @@ func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 		}
 	}
 
-	// Replace old map with new one
 	cm.operationTimeouts = newMap
-
-	// Explicitly set old map to nil to help GC
-	// (Go compiler should optimize this, but being explicit)
 }
 
 // DeadlockInfo represents information about a potential deadlock
@@ -919,13 +871,13 @@ const (
 	IteratorBreak                           // Break entire iteration
 )
 
-// Nested call tracking to prevent state conflicts with aggressive memory leak prevention
+// Nested call tracking to prevent state conflicts with optimized memory management
 var (
 	nestedCallTracker = make(map[uint64]int) // goroutine ID -> nesting level
 	nestedCallMutex   sync.RWMutex
 	lastCleanupTime   int64       // Unix timestamp of last cleanup
-	maxTrackerSize    = 1000      // Aggressive limit to prevent memory bloat
-	cleanupInterval   = int64(60) // Cleanup every minute for better memory management
+	maxTrackerSize    = 100       // Strict limit to prevent memory bloat
+	cleanupInterval   = int64(10) // Frequent cleanup every 10 seconds
 )
 
 // getGoroutineID returns the current goroutine ID (optimized version)
@@ -1023,19 +975,20 @@ func exitNestedCall() {
 	}
 }
 
-// cleanupDeadGoroutines removes entries for goroutines that no longer exist with enhanced logic
+// cleanupDeadGoroutines removes entries for goroutines that no longer exist
+// CRITICAL FIX: Prevents unbounded memory growth from dead goroutines
 func cleanupDeadGoroutines() {
-	// Ultra-aggressive cleanup strategy to prevent memory leaks
 	trackerSize := len(nestedCallTracker)
 
-	// If tracker exceeds limit, clear everything immediately
+	// CRITICAL: If tracker exceeds limit, clear everything immediately
 	if trackerSize > maxTrackerSize {
-		nestedCallTracker = make(map[uint64]int, maxTrackerSize/4)
+		nestedCallTracker = make(map[uint64]int, maxTrackerSize/2)
 		return
 	}
 
-	// If tracker is more than half full, remove zero-level entries
-	if trackerSize > maxTrackerSize/2 {
+	// If tracker is more than 20% full, start aggressive cleanup
+	if trackerSize > maxTrackerSize/5 {
+		// Remove all zero-level entries (goroutines that finished)
 		for gid, level := range nestedCallTracker {
 			if level <= 0 {
 				delete(nestedCallTracker, gid)
@@ -1043,9 +996,9 @@ func cleanupDeadGoroutines() {
 		}
 	}
 
-	// Final check: if still too large after cleanup, clear everything
-	if len(nestedCallTracker) > maxTrackerSize*2/3 {
-		nestedCallTracker = make(map[uint64]int, maxTrackerSize/4)
+	// Final check: if still more than 40% full, clear everything
+	if len(nestedCallTracker) > maxTrackerSize*2/5 {
+		nestedCallTracker = make(map[uint64]int, maxTrackerSize/2)
 	}
 }
 
@@ -1349,13 +1302,9 @@ func (iv *IterableValue) Get(path string) any {
 	var result any
 	var err error
 
-	// Use compatibility layer - new architecture handles all paths uniformly
-	if iv.processor.needsLegacyComplexHandling(adjustedPath) {
-		result, err = iv.processor.navigateToPath(searchContext, adjustedPath)
-	} else {
-		unifiedProcessor := NewRecursiveProcessor(iv.processor)
-		result, err = unifiedProcessor.ProcessRecursively(searchContext, adjustedPath, OpGet, nil)
-	}
+	// Use unified recursive processor for all paths
+	unifiedProcessor := NewRecursiveProcessor(iv.processor)
+	result, err = unifiedProcessor.ProcessRecursively(searchContext, adjustedPath, OpGet, nil)
 
 	if err != nil {
 		// If navigation failed, try alternative approaches for complex paths
@@ -1652,8 +1601,8 @@ func (iv *IterableValue) GetStringWithDefault(path, defaultValue string) string 
 		return defaultValue
 	}
 
-	// If the result is empty string and the original value was nil, return default
-	if res == "" && rawValue == nil {
+	// If the result is empty string, return default
+	if res == "" {
 		return defaultValue
 	}
 
@@ -1845,13 +1794,9 @@ func GetIterableValue[T any](iv *IterableValue, path string) (T, error) {
 	var result any
 	var err error
 
-	// Use compatibility layer - new architecture handles all paths uniformly
-	if iv.processor.needsLegacyComplexHandling(adjustedPath) {
-		result, err = iv.processor.navigateToPath(searchContext, adjustedPath)
-	} else {
-		unifiedProcessor := NewRecursiveProcessor(iv.processor)
-		result, err = unifiedProcessor.ProcessRecursively(searchContext, adjustedPath, OpGet, nil)
-	}
+	// Use unified recursive processor for all paths
+	unifiedProcessor := NewRecursiveProcessor(iv.processor)
+	result, err = unifiedProcessor.ProcessRecursively(searchContext, adjustedPath, OpGet, nil)
 
 	if err != nil {
 		// If navigation failed, try alternative approaches for complex paths
@@ -1964,7 +1909,7 @@ func convertToTypeForIterator[T any](value any, path string) (T, error) {
 	return finalResult, nil
 }
 
-// Helper functions for type conversion - use centralized implementations from type_conversion.go
+// convertToInt delegates to centralized type conversion
 func convertToInt(value any) (int, error) {
 	if result, ok := ConvertToInt(value); ok {
 		return result, nil
@@ -2861,7 +2806,7 @@ func (iv *IterableValue) SetMultiple(updates map[string]any) error {
 		return fmt.Errorf("no processor available")
 	}
 
-	if updates == nil || len(updates) == 0 {
+	if len(updates) == 0 {
 		return nil // No updates to apply
 	}
 

@@ -334,10 +334,13 @@ func (p *Processor) EncodeWithTags(value any, pretty bool, opts ...*ProcessorOpt
 }
 
 // Buffer pools for custom encoder memory optimization
+// PERFORMANCE FIX: Pre-allocated buffers with strict size limits
 var (
 	encoderBufferPool = sync.Pool{
 		New: func() any {
-			return &bytes.Buffer{}
+			buf := &bytes.Buffer{}
+			buf.Grow(2048) // Pre-allocate for typical JSON
+			return buf
 		},
 	}
 )
@@ -350,10 +353,16 @@ func getEncoderBuffer() *bytes.Buffer {
 }
 
 // putEncoderBuffer returns a bytes.Buffer to the encoder pool
+// PERFORMANCE FIX: Stricter size limits prevent memory bloat
 func putEncoderBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 64 * 1024 // 64KB - more reasonable for real workloads
-	if buf != nil && buf.Cap() <= maxPoolBufferSize {
-		encoderBufferPool.Put(buf)
+	const maxPoolBufferSize = 32 * 1024 // Reduced from 64KB
+	const minPoolBufferSize = 1024
+	if buf != nil {
+		cap := buf.Cap()
+		if cap >= minPoolBufferSize && cap <= maxPoolBufferSize {
+			buf.Reset() // Ensure clean state
+			encoderBufferPool.Put(buf)
+		}
 	}
 }
 
@@ -954,10 +963,10 @@ func (e *CustomEncoder) isEmpty(v reflect.Value) bool {
 }
 
 var (
-	// Global buffer pools for memory efficiency with improved sizing
+	// Global buffer pools for memory efficiency with optimized sizing
 	bufferPool = sync.Pool{
 		New: func() any {
-			buf := make([]byte, 0, 1024) // Increased initial capacity for better performance
+			buf := make([]byte, 0, 2048) // Optimized for typical JSON sizes
 			return &buf
 		},
 	}
@@ -965,7 +974,7 @@ var (
 	bytesBufferPool = sync.Pool{
 		New: func() any {
 			buf := &bytes.Buffer{}
-			buf.Grow(1024) // Pre-allocate reasonable capacity
+			buf.Grow(2048) // Optimized pre-allocation
 			return buf
 		},
 	}
@@ -980,15 +989,20 @@ func getBuffer() *[]byte {
 		}
 	}
 	// Fallback: create new buffer with optimized capacity
-	buf := make([]byte, 0, 1024)
+	buf := make([]byte, 0, 2048)
 	return &buf
 }
 
-// putBuffer returns a byte slice to the pool with optimized size limits
+// putBuffer returns a byte slice to the pool with strict size limits
+// PERFORMANCE FIX: Tighter bounds prevent memory bloat
 func putBuffer(buf *[]byte) {
-	if buf != nil && cap(*buf) <= 16384 && cap(*buf) >= 512 { // Optimized limits
-		*buf = (*buf)[:0] // Reset length but keep capacity
-		bufferPool.Put(buf)
+	if buf != nil {
+		cap := cap(*buf)
+		// Only pool buffers within reasonable size range
+		if cap >= 1024 && cap <= 32768 { // Stricter upper limit
+			*buf = (*buf)[:0] // Reset length but keep capacity
+			bufferPool.Put(buf)
+		}
 	}
 }
 
@@ -1001,17 +1015,21 @@ func getBytesBuffer() *bytes.Buffer {
 		}
 	}
 	// Fallback: create new buffer with optimized capacity
-	buf := bytes.NewBuffer(make([]byte, 0, 1024))
+	buf := bytes.NewBuffer(make([]byte, 0, 2048))
 	return buf
 }
 
-// putBytesBuffer returns a bytes.Buffer to the pool with optimized size limits
+// putBytesBuffer returns a bytes.Buffer to the pool with strict size limits
+// PERFORMANCE FIX: Prevents memory bloat from oversized buffers
 func putBytesBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 64 * 1024 // 64KB
-	const minPoolBufferSize = 512
-	if buf != nil && buf.Cap() <= maxPoolBufferSize && buf.Cap() >= minPoolBufferSize {
-		buf.Reset() // Ensure buffer is clean before returning to pool
-		bytesBufferPool.Put(buf)
+	const maxPoolBufferSize = 32 * 1024 // Reduced from 64KB
+	const minPoolBufferSize = 1024      // Increased from 512
+	if buf != nil {
+		cap := buf.Cap()
+		if cap >= minPoolBufferSize && cap <= maxPoolBufferSize {
+			buf.Reset() // Ensure buffer is clean before returning to pool
+			bytesBufferPool.Put(buf)
+		}
 	}
 }
 

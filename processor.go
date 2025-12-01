@@ -225,7 +225,6 @@ func (p *Processor) executeOperation(operationName string, operation func() erro
 	return err
 }
 
-// Helper functions for metric calculations
 func calculateSuccessRateInternal(successful, total int64) float64 {
 	if total == 0 {
 		return 0.0
@@ -618,8 +617,8 @@ func (p *Processor) logError(ctx context.Context, operation, path string, err er
 		p.metrics.collector.RecordError(errorType)
 	}
 
-	sanitizedPath := p.sanitizePath(path)
-	sanitizedError := p.sanitizeError(err)
+	sanitizedPath := sanitizePath(path)
+	sanitizedError := sanitizeError(err)
 
 	p.logger.ErrorContext(ctx, "JSON operation failed",
 		slog.String("operation", operation),
@@ -634,31 +633,50 @@ func (p *Processor) logError(ctx context.Context, operation, path string, err er
 }
 
 // sanitizePath removes potentially sensitive information from paths
-func (p *Processor) sanitizePath(path string) string {
+func sanitizePath(path string) string {
 	if len(path) > 100 {
-		return TruncateString(path, 100)
+		return truncateString(path, 100)
 	}
 	// Remove potential sensitive patterns but keep structure
-	sanitized := path
-	sensitivePatterns := []string{"password", "token", "key", "secret", "auth"}
+	// Use case-insensitive matching for better security
+	lowerPath := strings.ToLower(path)
+	sensitivePatterns := []string{
+		"password", "passwd", "pwd",
+		"token", "bearer",
+		"key", "apikey", "api_key", "api-key",
+		"secret", "credential", "cred",
+		"auth", "authorization",
+		"session", "cookie",
+	}
 	for _, pattern := range sensitivePatterns {
-		if strings.Contains(strings.ToLower(sanitized), pattern) {
+		if strings.Contains(lowerPath, pattern) {
 			return "[REDACTED_PATH]"
 		}
 	}
-	return sanitized
+	return path
 }
 
 // sanitizeError removes potentially sensitive information from error messages
-func (p *Processor) sanitizeError(err error) string {
+func sanitizeError(err error) string {
 	if err == nil {
 		return ""
 	}
 	errMsg := err.Error()
 	if len(errMsg) > 200 {
-		return TruncateString(errMsg, 200)
+		return truncateString(errMsg, 200)
 	}
 	return errMsg
+}
+
+// truncateString efficiently truncates a string with ellipsis
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // logOperation logs a successful operation with structured logging and performance warnings
@@ -692,14 +710,16 @@ func (p *Processor) getProcessorID() string {
 	return fmt.Sprintf("proc_%p", p)
 }
 
-// validateInput validates JSON input string with enhanced security checks
+// validateInput validates JSON input string with optimized security checks
 func (p *Processor) validateInput(jsonString string) error {
+	// Fast path: check empty string
 	if jsonString == "" {
 		return newOperationError("validate_input", "JSON string cannot be empty", ErrInvalidJSON)
 	}
 
-	// Enhanced size limits with stricter defaults
 	jsonSize := int64(len(jsonString))
+
+	// Size validation with configured limits
 	maxSize := p.config.MaxJSONSize
 	if maxSize <= 0 {
 		maxSize = DefaultMaxJSONSize
@@ -708,59 +728,80 @@ func (p *Processor) validateInput(jsonString string) error {
 		return newSizeLimitError("validate_input", jsonSize, maxSize)
 	}
 
-	// Check for minimum size to prevent empty attacks
-	if jsonSize < 1 {
-		return newOperationError("validate_input", "JSON string too short to be valid", ErrInvalidJSON)
-	}
-
-	// Valid UTF-8 encoding with BOM detection
-	if !utf8.ValidString(jsonString) {
+	// UTF-8 validation (optimized: only check if not ASCII-only)
+	if !isASCIIOnly(jsonString) && !utf8.ValidString(jsonString) {
 		return newOperationError("validate_input", "JSON string contains invalid UTF-8 sequences", ErrInvalidJSON)
 	}
 
-	// Check for BOM (Byte Order Mark) - optimized detection
-	if len(jsonString) >= 3 && jsonString[0] == '\xEF' && jsonString[1] == '\xBB' && jsonString[2] == '\xBF' {
+	// BOM detection (optimized: single check)
+	if jsonSize >= 3 && jsonString[0] == '\xEF' && jsonString[1] == '\xBB' && jsonString[2] == '\xBF' {
 		return newOperationError("validate_input", "JSON string contains UTF-8 BOM which is not allowed", ErrInvalidJSON)
 	}
 
-	// Check for potential security threats in JSON content
-	if err := p.validateJSONSecurity(jsonString); err != nil {
-		return err
-	}
-
-	// Basic JSON structure validation (quick check)
-	if err := p.validateJSONStructure(jsonString); err != nil {
-		return &JsonsError{
-			Op:      "validate_input",
-			Message: fmt.Sprintf("invalid JSON structure: %v", err),
-			Err:     ErrInvalidJSON,
-		}
-	}
-
-	return nil
+	// Combined security and structure validation (single pass)
+	return p.validateJSONSecurityAndStructure(jsonString)
 }
 
-// validateJSONSecurity checks for potential security threats in JSON content
-func (p *Processor) validateJSONSecurity(jsonString string) error {
+// isASCIIOnly checks if string contains only ASCII characters (fast path optimization)
+func isASCIIOnly(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+// validateJSONSecurityAndStructure performs combined security and structure validation in a single pass
+// This optimization reduces redundant iterations over the JSON string
+func (p *Processor) validateJSONSecurityAndStructure(jsonString string) error {
 	// Get security limits from configuration
-	braceDepth := 0
-	bracketDepth := 0
 	maxDepth := p.config.MaxNestingDepthSecurity
 	if maxDepth <= 0 {
-		maxDepth = 50 // Fallback default
+		maxDepth = DefaultMaxNestingDepth
 	}
 
-	// Check size limits from configuration
-	maxSize := p.config.MaxSecurityValidationSize
-	if maxSize <= 0 {
-		maxSize = 100 * 1024 * 1024 // Fallback to 100MB
-	}
-	if int64(len(jsonString)) > maxSize {
-		return newSecurityError("validate_security", fmt.Sprintf("JSON size %d exceeds security validation limit %d", len(jsonString), maxSize))
+	// Trim whitespace for structure validation
+	trimmed := strings.TrimSpace(jsonString)
+	if len(trimmed) == 0 {
+		return newOperationError("validate_input", "empty JSON after trimming whitespace", ErrInvalidJSON)
 	}
 
-	// Quick scan for nesting depth
-	for _, char := range jsonString {
+	// Validate first and last characters for basic structure
+	firstChar := trimmed[0]
+	lastChar := trimmed[len(trimmed)-1]
+
+	// Quick structure validation based on first character
+	switch firstChar {
+	case '{':
+		if lastChar != '}' {
+			return newOperationError("validate_input", "JSON object not properly closed", ErrInvalidJSON)
+		}
+	case '[':
+		if lastChar != ']' {
+			return newOperationError("validate_input", "JSON array not properly closed", ErrInvalidJSON)
+		}
+	case '"':
+		if lastChar != '"' || len(trimmed) < 2 {
+			return newOperationError("validate_input", "JSON string not properly closed", ErrInvalidJSON)
+		}
+		return nil // String values don't need depth checking
+	case 't', 'f', 'n':
+		// Primitive values (true, false, null) - no depth checking needed
+		return nil
+	default:
+		// Numbers - no depth checking needed
+		if !isValidNumberStart(firstChar) {
+			return newOperationError("validate_input", fmt.Sprintf("invalid JSON start character: %c", firstChar), ErrInvalidJSON)
+		}
+		return nil
+	}
+
+	// Depth validation (only for objects and arrays)
+	braceDepth := 0
+	bracketDepth := 0
+
+	for _, char := range trimmed {
 		switch char {
 		case '{':
 			braceDepth++
@@ -782,52 +823,8 @@ func (p *Processor) validateJSONSecurity(jsonString string) error {
 	return nil
 }
 
-// validateJSONStructure performs basic JSON structure validation
-func (p *Processor) validateJSONStructure(jsonString string) error {
-	trimmed := strings.TrimSpace(jsonString)
-	if len(trimmed) == 0 {
-		return fmt.Errorf("empty JSON after trimming whitespace")
-	}
-
-	// Check for basic JSON structure
-	firstChar := trimmed[0]
-	lastChar := trimmed[len(trimmed)-1]
-
-	switch firstChar {
-	case '{':
-		if lastChar != '}' {
-			return fmt.Errorf("JSON object not properly closed")
-		}
-	case '[':
-		if lastChar != ']' {
-			return fmt.Errorf("JSON array not properly closed")
-		}
-	case '"':
-		if lastChar != '"' || len(trimmed) < 2 {
-			return fmt.Errorf("JSON string not properly closed")
-		}
-	case 't', 'f':
-		// Boolean values
-		if !strings.HasPrefix(trimmed, "true") && !strings.HasPrefix(trimmed, "false") {
-			return fmt.Errorf("invalid boolean value")
-		}
-	case 'n':
-		// Null value
-		if !strings.HasPrefix(trimmed, "null") {
-			return fmt.Errorf("invalid null value")
-		}
-	default:
-		// Should be a number
-		if !p.isValidNumberStart(firstChar) {
-			return fmt.Errorf("invalid JSON start character: %c", firstChar)
-		}
-	}
-
-	return nil
-}
-
 // isValidNumberStart checks if character can start a valid JSON number
-func (p *Processor) isValidNumberStart(c byte) bool {
+func isValidNumberStart(c byte) bool {
 	return (c >= '0' && c <= '9') || c == '-'
 }
 
@@ -885,18 +882,34 @@ func (p *Processor) validatePath(path string) error {
 func (p *Processor) validatePathSecurity(path string) error {
 	// Check for null bytes (potential injection)
 	if strings.Contains(path, "\x00") {
-		return newPathError(path, "path contains null bytes", ErrInvalidPath)
+		return newSecurityError("validate_path", "null byte injection detected in path")
 	}
 
 	// Check for excessively long paths
-	if len(path) > 10000 {
-		return newPathError(path, fmt.Sprintf("path too long: %d characters", len(path)), ErrInvalidPath)
+	if len(path) > MaxPathLength {
+		return newPathError(path, fmt.Sprintf("path too long: %d characters (max: %d)", len(path), MaxPathLength), ErrInvalidPath)
 	}
 
-	// Check for critical security patterns only
-	// Simplified and deduplicated pattern list
-	if strings.Contains(path, "../") || strings.Contains(path, "..\\") {
-		return newPathError(path, "path contains path traversal pattern", ErrInvalidPath)
+	// Enhanced path traversal detection with bypass protection
+	// Check for standard traversal patterns
+	if strings.Contains(path, "..") {
+		return newSecurityError("validate_path", "path traversal pattern detected")
+	}
+
+	// Check for URL-encoded traversal patterns (case-insensitive)
+	normalized := strings.ToLower(path)
+	encodedPatterns := []string{
+		"%2e%2e", // URL-encoded ..
+		"%2e.",   // Partially encoded (mixed)
+		".%2e",   // Partially encoded (mixed)
+		"%252e",  // Double-encoded .
+		"%c0%af", // UTF-8 overlong encoding for /
+		"%c1%9c", // UTF-8 overlong encoding for \
+	}
+	for _, pattern := range encodedPatterns {
+		if strings.Contains(normalized, pattern) {
+			return newSecurityError("validate_path", "encoded path traversal pattern detected")
+		}
 	}
 
 	return nil
@@ -1721,61 +1734,7 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 		}
 	}
 
-	// Check if this is a complex path that needs special handling
-	if p.needsLegacyComplexHandling(path) {
-		// Use legacy complex path handling for compatibility
-		result, err := p.navigateToPath(data, path)
-		if err != nil {
-			p.incrementErrorCount()
-			if p.metrics != nil && p.metrics.collector != nil {
-				p.metrics.collector.RecordOperation(time.Since(startTime), false, 0)
-			}
-			return nil, &JsonsError{
-				Op:      "get",
-				Path:    path,
-				Message: err.Error(),
-				Err:     err,
-			}
-		}
-
-		// Record successful operation
-		if p.metrics != nil && p.metrics.collector != nil {
-			p.metrics.collector.RecordOperation(time.Since(startTime), true, 0)
-		}
-		return result, nil
-	}
-
-	// Note: Distributed operations are now handled by the unified recursive processor
-	// which has better support for complex multi-layer distributed operations
-
-	// Check if this needs legacy complex handling
-	if p.needsLegacyComplexHandling(path) {
-		result, err := p.navigateToPath(data, path)
-		if err != nil {
-			p.incrementErrorCount()
-			if p.metrics != nil && p.metrics.collector != nil {
-				p.metrics.collector.RecordOperation(time.Since(startTime), false, 0)
-			}
-			return nil, &JsonsError{
-				Op:      "get",
-				Path:    path,
-				Message: err.Error(),
-				Err:     err,
-			}
-		}
-
-		// Cache result if enabled
-		p.setCachedResult(cacheKey, result, options)
-
-		// Record successful operation
-		if p.metrics != nil && p.metrics.collector != nil {
-			p.metrics.collector.RecordOperation(time.Since(startTime), true, 0)
-		}
-
-		return result, nil
-	}
-
-	// Use unified recursive processor for simple paths
+	// Use unified recursive processor for all paths
 	unifiedProcessor := NewRecursiveProcessor(p)
 	result, err := unifiedProcessor.ProcessRecursively(data, path, OpGet, nil)
 	if err != nil {
@@ -1801,8 +1760,6 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 
 	return result, nil
 }
-
-// needsLegacyComplexHandling is defined in navigation_utils.go
 
 // GetMultiple retrieves multiple values from JSON using multiple path expressions
 func (p *Processor) GetMultiple(jsonStr string, paths []string, opts ...*ProcessorOptions) (map[string]any, error) {
@@ -1836,16 +1793,9 @@ func (p *Processor) GetMultiple(jsonStr string, paths []string, opts ...*Process
 			return nil, err
 		}
 
-		// Use the same logic as Get method for consistency
-		var result any
-		var err error
-
-		if p.needsLegacyComplexHandling(path) {
-			result, err = p.navigateToPath(data, path)
-		} else {
-			unifiedProcessor := NewRecursiveProcessor(p)
-			result, err = unifiedProcessor.ProcessRecursively(data, path, OpGet, nil)
-		}
+		// Use unified processor for all paths
+		unifiedProcessor := NewRecursiveProcessor(p)
+		result, err := unifiedProcessor.ProcessRecursively(data, path, OpGet, nil)
 
 		if err != nil {
 			// Continue with other paths, store error as result
@@ -1904,16 +1854,12 @@ func (p *Processor) getMultipleParallel(data any, paths []string, _ *ProcessorOp
 				mu.Unlock()
 				return
 			default:
-				// Use the same logic as Get method for consistency
+				// Use unified recursive processor for consistency
 				var result any
 				var err error
 
-				if p.needsLegacyComplexHandling(currentPath) {
-					result, err = p.navigateToPath(data, currentPath)
-				} else {
-					unifiedProcessor := NewRecursiveProcessor(p)
-					result, err = unifiedProcessor.ProcessRecursively(data, currentPath, OpGet, nil)
-				}
+				unifiedProcessor := NewRecursiveProcessor(p)
+				result, err = unifiedProcessor.ProcessRecursively(data, currentPath, OpGet, nil)
 
 				// Store result
 				mu.Lock()
@@ -2461,8 +2407,6 @@ func (p *stringBuilderPool) Put(sb *strings.Builder) {
 	sb.Reset()
 	p.pool.Put(sb)
 }
-
-// Helper functions for common operations
 
 // ParseInt parses a string to integer with error handling
 func ParseInt(s string) (int, error) {
@@ -3548,9 +3492,8 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 				return nil, nil // Index out of bounds
 			}
 			if operation == OpSet && createPaths && index >= 0 {
-				// For array extension, we need to fall back to legacy handling
-				// because the unified processor can't modify parent references directly
-				return nil, fmt.Errorf("array extension required: use legacy handling for index %d on array length %d", index, len(container))
+				// Array extension required
+				return nil, fmt.Errorf("array extension required for index %d on array length %d", index, len(container))
 			}
 			return nil, fmt.Errorf("array index %d out of bounds (length %d)", segment.Index, len(container))
 		}
@@ -3820,9 +3763,7 @@ func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment int
 	actualKey := segment.Key
 	if isFlat {
 		// The key should already be cleaned by the parser, but double-check
-		if strings.HasPrefix(actualKey, "flat:") {
-			actualKey = strings.TrimPrefix(actualKey, "flat:")
-		}
+		actualKey = strings.TrimPrefix(actualKey, "flat:")
 	}
 
 	switch container := data.(type) {
@@ -4432,142 +4373,6 @@ func (urp *RecursiveProcessor) shouldUseDistributedArrayOperation(container []an
 }
 
 // ============================================================================
-// Processor Enhancements (from processor_enhancements.go)
+// Note: ProcessorEnhancements removed - incomplete experimental code
+// Use standard Processor with appropriate Config settings for security
 // ============================================================================
-
-// ProcessorEnhancements provides enhanced processor functionality
-type ProcessorEnhancements struct {
-	processor     *Processor
-	dosProtection *DOSProtection
-	enableDOS     bool
-}
-
-// NewEnhancedProcessor creates a processor with enhanced security and monitoring
-func NewEnhancedProcessor(config *Config, enableDOS bool) *ProcessorEnhancements {
-	processor := New(config)
-
-	var dosProtection *DOSProtection
-	if enableDOS {
-		dosProtection = NewDOSProtection(DefaultDOSConfig())
-	}
-
-	return &ProcessorEnhancements{
-		processor:     processor,
-		dosProtection: dosProtection,
-		enableDOS:     enableDOS,
-	}
-}
-
-// Get retrieves a value with DOS protection
-func (pe *ProcessorEnhancements) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, error) {
-	// Check DOS protection
-	if pe.enableDOS && pe.dosProtection != nil {
-		if err := pe.dosProtection.CheckRequest(int64(len(jsonStr)), ""); err != nil {
-			return nil, err
-		}
-		defer pe.dosProtection.ReleaseRequest()
-
-		// Validate depth
-		if err := pe.dosProtection.ValidateDepth(jsonStr); err != nil {
-			return nil, err
-		}
-	}
-
-	// Execute with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Add context to options
-	var enhancedOpts *ProcessorOptions
-	if len(opts) > 0 && opts[0] != nil {
-		enhancedOpts = opts[0].Clone()
-	} else {
-		enhancedOpts = &ProcessorOptions{}
-	}
-	enhancedOpts.Context = ctx
-
-	return pe.processor.Get(jsonStr, path, enhancedOpts)
-}
-
-// Set sets a value with DOS protection
-func (pe *ProcessorEnhancements) Set(jsonStr, path string, value any, opts ...*ProcessorOptions) (string, error) {
-	// Check DOS protection
-	if pe.enableDOS && pe.dosProtection != nil {
-		if err := pe.dosProtection.CheckRequest(int64(len(jsonStr)), ""); err != nil {
-			return jsonStr, err
-		}
-		defer pe.dosProtection.ReleaseRequest()
-
-		// Validate depth
-		if err := pe.dosProtection.ValidateDepth(jsonStr); err != nil {
-			return jsonStr, err
-		}
-	}
-
-	// Execute with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Add context to options
-	var enhancedOpts *ProcessorOptions
-	if len(opts) > 0 && opts[0] != nil {
-		enhancedOpts = opts[0].Clone()
-	} else {
-		enhancedOpts = &ProcessorOptions{}
-	}
-	enhancedOpts.Context = ctx
-
-	return pe.processor.Set(jsonStr, path, value, enhancedOpts)
-}
-
-// Delete deletes a value with DOS protection
-func (pe *ProcessorEnhancements) Delete(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
-	// Check DOS protection
-	if pe.enableDOS && pe.dosProtection != nil {
-		if err := pe.dosProtection.CheckRequest(int64(len(jsonStr)), ""); err != nil {
-			return jsonStr, err
-		}
-		defer pe.dosProtection.ReleaseRequest()
-
-		// Validate depth
-		if err := pe.dosProtection.ValidateDepth(jsonStr); err != nil {
-			return jsonStr, err
-		}
-	}
-
-	// Execute with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Add context to options
-	var enhancedOpts *ProcessorOptions
-	if len(opts) > 0 && opts[0] != nil {
-		enhancedOpts = opts[0].Clone()
-	} else {
-		enhancedOpts = &ProcessorOptions{}
-	}
-	enhancedOpts.Context = ctx
-
-	return pe.processor.Delete(jsonStr, path, enhancedOpts)
-}
-
-// GetProcessor returns the underlying processor
-func (pe *ProcessorEnhancements) GetProcessor() *Processor {
-	return pe.processor
-}
-
-// GetDOSStats returns DOS protection statistics
-func (pe *ProcessorEnhancements) GetDOSStats() DOSStats {
-	if pe.dosProtection != nil {
-		return pe.dosProtection.GetStats()
-	}
-	return DOSStats{}
-}
-
-// Close closes the enhanced processor
-func (pe *ProcessorEnhancements) Close() error {
-	if pe.processor != nil {
-		return pe.processor.Close()
-	}
-	return nil
-}

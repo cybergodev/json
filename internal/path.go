@@ -138,50 +138,59 @@ func NewExtractSegment(extract string) PathSegment {
 }
 
 // NewLegacyPathSegment creates a PathSegment from legacy string type
+// Simplified implementation - most type inference is now handled by the parser
 func NewLegacyPathSegment(typeStr, value string) PathSegment {
 	segment := PathSegment{
 		Value: value,
+		Key:   value,
 	}
 
+	// Map legacy type strings to PathSegmentType
 	switch typeStr {
-	case "property":
+	case "property", "pointer":
 		segment.Type = PropertySegment
-		segment.Key = value
 	case "array":
 		segment.Type = ArrayIndexSegment
-		// Try to parse index from value
-		if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
-			indexStr := value[1 : len(value)-1]
-			if index, err := strconv.Atoi(indexStr); err == nil {
-				segment.Index = index
-			}
+		// Parse index if in bracket notation
+		if idx := parseIndexFromBrackets(value); idx != -1 {
+			segment.Index = idx
 		}
 	case "slice":
 		segment.Type = ArraySliceSegment
 	case "extract":
 		segment.Type = ExtractSegment
-		if strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}") {
-			extract := value[1 : len(value)-1]
-
-			// Check if this is a flat extraction
-			isFlat := strings.HasPrefix(extract, "flat:")
-			actualExtract := extract
-			if isFlat {
-				actualExtract = strings.TrimPrefix(extract, "flat:")
-			}
-
-			segment.Extract = actualExtract
-			segment.Key = actualExtract
-			segment.IsFlat = isFlat
+		if extract := parseExtractField(value); extract != "" {
+			segment.Extract = extract
+			segment.Key = extract
+			segment.IsFlat = strings.HasPrefix(value, "{flat:")
 		}
-	case "pointer":
-		segment.Type = PropertySegment // JSON Pointer is treated as property access
 	default:
 		segment.Type = PropertySegment
-		segment.Key = value
 	}
 
 	return segment
+}
+
+// parseIndexFromBrackets extracts index from bracket notation like "[5]"
+func parseIndexFromBrackets(value string) int {
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		if indexStr := value[1 : len(value)-1]; indexStr != "" {
+			if index, err := strconv.Atoi(indexStr); err == nil {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+// parseExtractField extracts field name from extraction syntax like "{name}"
+func parseExtractField(value string) string {
+	if strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}") {
+		extract := value[1 : len(value)-1]
+		// Remove "flat:" prefix if present
+		return strings.TrimPrefix(extract, "flat:")
+	}
+	return ""
 }
 
 // PathPatterns holds compiled regex patterns for path parsing

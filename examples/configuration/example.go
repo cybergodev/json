@@ -209,8 +209,6 @@ func securityConfigDemo(data string) {
 		EnableValidation: true,
 		StrictMode:       true,
 		ValidateInput:    true,
-		EnableRateLimit:  true,
-		RateLimitPerSec:  1000,
 
 		// Conservative processing options
 		CreatePaths:   false, // Don't auto-create paths
