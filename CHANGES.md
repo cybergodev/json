@@ -8,7 +8,7 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
-## v1.0.5 - Security hardening and performance optimization (2024-12-01)
+## v1.0.5 - Security hardening and performance optimization (2025-12-01)
 
 ### Added
 - Enhanced path traversal detection with 9 bypass pattern protections (URL encoding, double encoding, UTF-8 overlong, mixed encoding, partial encoding)
