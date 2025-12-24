@@ -5,11 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
+	"strings"
 )
-
-// Unified type conversion module
-// Consolidates all type conversion logic into a single, maintainable location
-// This module provides the core conversion functions used throughout the library
 
 // ConvertToInt converts any value to int with comprehensive type support
 func ConvertToInt(value any) (int, bool) {
@@ -159,14 +156,18 @@ func ConvertToUint64(value any) (uint64, bool) {
 			return uint64(v), true
 		}
 	case string:
-		if u, err := strconv.ParseUint(v, 10, 64); err == nil {
-			return u, true
+		if i, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return i, true
 		}
 	case bool:
 		if v {
 			return 1, true
 		}
 		return 0, true
+	case json.Number:
+		if i, err := v.Int64(); err == nil && i >= 0 {
+			return uint64(i), true
+		}
 	}
 	return 0, false
 }
@@ -212,46 +213,7 @@ func ConvertToFloat64(value any) (float64, bool) {
 			return f, true
 		}
 	}
-	return 0, false
-}
-
-// ConvertToString converts any value to string
-func ConvertToString(value any) (string, bool) {
-	switch v := value.(type) {
-	case string:
-		return v, true
-	case int:
-		return strconv.Itoa(v), true
-	case int8:
-		return strconv.FormatInt(int64(v), 10), true
-	case int16:
-		return strconv.FormatInt(int64(v), 10), true
-	case int32:
-		return strconv.FormatInt(int64(v), 10), true
-	case int64:
-		return strconv.FormatInt(v, 10), true
-	case uint:
-		return strconv.FormatUint(uint64(v), 10), true
-	case uint8:
-		return strconv.FormatUint(uint64(v), 10), true
-	case uint16:
-		return strconv.FormatUint(uint64(v), 10), true
-	case uint32:
-		return strconv.FormatUint(uint64(v), 10), true
-	case uint64:
-		return strconv.FormatUint(v, 10), true
-	case float32:
-		return strconv.FormatFloat(float64(v), 'g', -1, 32), true
-	case float64:
-		return strconv.FormatFloat(v, 'g', -1, 64), true
-	case bool:
-		return strconv.FormatBool(v), true
-	case json.Number:
-		return string(v), true
-	case fmt.Stringer:
-		return v.String(), true
-	}
-	return "", false
+	return 0.0, false
 }
 
 // ConvertToBool converts any value to bool
@@ -259,50 +221,172 @@ func ConvertToBool(value any) (bool, bool) {
 	switch v := value.(type) {
 	case bool:
 		return v, true
-	case int:
-		return v != 0, true
-	case int64:
-		return v != 0, true
-	case float64:
-		return v != 0, true
+	case int, int8, int16, int32, int64:
+		return reflect.ValueOf(v).Int() != 0, true
+	case uint, uint8, uint16, uint32, uint64:
+		return reflect.ValueOf(v).Uint() != 0, true
+	case float32, float64:
+		return reflect.ValueOf(v).Float() != 0.0, true
 	case string:
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b, true
-		}
-		if v == "1" {
+		switch strings.ToLower(v) {
+		case "true", "1", "yes", "on":
 			return true, true
-		}
-		if v == "0" {
+		case "false", "0", "no", "off", "":
 			return false, true
+		}
+	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return f != 0.0, true
 		}
 	}
 	return false, false
 }
 
-// FormatNumber formats a number value to string preserving its type
-func FormatNumber(value any) string {
-	switch v := value.(type) {
-	case int, int8, int16, int32, int64:
-		if s, ok := ConvertToString(v); ok {
-			return s
-		}
-	case uint, uint8, uint16, uint32, uint64:
-		if s, ok := ConvertToString(v); ok {
-			return s
-		}
-	case float32, float64:
-		if s, ok := ConvertToString(v); ok {
-			return s
-		}
-	case json.Number:
-		return string(v)
-	case string:
-		return v
+// UnifiedTypeConversion provides optimized type conversion with comprehensive support
+func UnifiedTypeConversion[T any](value any) (T, bool) {
+	var zero T
+
+	// Handle nil values
+	if value == nil {
+		return zero, true
 	}
-	return fmt.Sprintf("%v", value)
+
+	// Direct type assertion (fastest path)
+	if typedValue, ok := value.(T); ok {
+		return typedValue, true
+	}
+
+	// Get target type information
+	targetType := reflect.TypeOf(zero)
+	if targetType == nil {
+		return zero, false
+	}
+
+	// Handle pointer types
+	if targetType.Kind() == reflect.Ptr {
+		elemType := targetType.Elem()
+		elemValue := reflect.New(elemType).Interface()
+		if converted, ok := convertValue(value, elemValue); ok {
+			if result, ok := converted.(T); ok {
+				return result, true
+			}
+		}
+		return zero, false
+	}
+
+	// Convert to target type
+	if converted, ok := convertValue(value, zero); ok {
+		if result, ok := converted.(T); ok {
+			return result, true
+		}
+	}
+
+	return zero, false
 }
 
-// SafeConvertToInt64 converts any value to int64 with error return
+// convertValue handles the actual conversion logic
+func convertValue(value any, target any) (any, bool) {
+	targetType := reflect.TypeOf(target)
+
+	switch targetType.Kind() {
+	case reflect.String:
+		// Inline string conversion - fix order to handle json.Number before fmt.Stringer
+		switch v := value.(type) {
+		case string:
+			return v, true
+		case []byte:
+			return string(v), true
+		case json.Number:
+			return string(v), true
+		case fmt.Stringer:
+			return v.String(), true
+		default:
+			return fmt.Sprintf("%v", v), true
+		}
+	case reflect.Int:
+		if i, ok := ConvertToInt(value); ok {
+			return i, true
+		}
+	case reflect.Int64:
+		if i, ok := ConvertToInt64(value); ok {
+			return i, true
+		}
+	case reflect.Uint64:
+		if i, ok := ConvertToUint64(value); ok {
+			return i, true
+		}
+	case reflect.Float64:
+		if f, ok := ConvertToFloat64(value); ok {
+			return f, true
+		}
+	case reflect.Bool:
+		if b, ok := ConvertToBool(value); ok {
+			return b, true
+		}
+	case reflect.Slice:
+		if s, ok := convertToSlice(value, targetType); ok {
+			return s, true
+		}
+	case reflect.Map:
+		if m, ok := convertToMap(value, targetType); ok {
+			return m, true
+		}
+	}
+
+	return nil, false
+}
+
+// convertToSlice converts value to slice type
+func convertToSlice(value any, targetType reflect.Type) (any, bool) {
+	rv := reflect.ValueOf(value)
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil, false
+	}
+
+	elemType := targetType.Elem()
+	result := reflect.MakeSlice(targetType, rv.Len(), rv.Len())
+
+	for i := 0; i < rv.Len(); i++ {
+		elem := rv.Index(i).Interface()
+		if converted, ok := convertValue(elem, reflect.Zero(elemType).Interface()); ok {
+			result.Index(i).Set(reflect.ValueOf(converted))
+		} else {
+			return nil, false
+		}
+	}
+
+	return result.Interface(), true
+}
+
+// convertToMap converts value to map type
+func convertToMap(value any, targetType reflect.Type) (any, bool) {
+	rv := reflect.ValueOf(value)
+	if rv.Kind() != reflect.Map {
+		return nil, false
+	}
+
+	keyType := targetType.Key()
+	elemType := targetType.Elem()
+	result := reflect.MakeMap(targetType)
+
+	for _, key := range rv.MapKeys() {
+		keyInterface := key.Interface()
+		valueInterface := rv.MapIndex(key).Interface()
+
+		convertedKey, keyOk := convertValue(keyInterface, reflect.Zero(keyType).Interface())
+		convertedValue, valueOk := convertValue(valueInterface, reflect.Zero(elemType).Interface())
+
+		if keyOk && valueOk {
+			result.SetMapIndex(reflect.ValueOf(convertedKey), reflect.ValueOf(convertedValue))
+		} else {
+			return nil, false
+		}
+	}
+
+	return result.Interface(), true
+}
+
+// SafeConvertToInt64 safely converts any value to int64 with error handling
 func SafeConvertToInt64(value any) (int64, error) {
 	if result, ok := ConvertToInt64(value); ok {
 		return result, nil
@@ -310,7 +394,7 @@ func SafeConvertToInt64(value any) (int64, error) {
 	return 0, fmt.Errorf("cannot convert %T to int64", value)
 }
 
-// SafeConvertToUint64 converts any value to uint64 with error return
+// SafeConvertToUint64 safely converts any value to uint64 with error handling
 func SafeConvertToUint64(value any) (uint64, error) {
 	if result, ok := ConvertToUint64(value); ok {
 		return result, nil
@@ -318,154 +402,36 @@ func SafeConvertToUint64(value any) (uint64, error) {
 	return 0, fmt.Errorf("cannot convert %T to uint64", value)
 }
 
-// ============================================================================
-// Generic Type Conversion (from type_conversion_unified.go)
-// ============================================================================
-
-// UnifiedTypeConversion provides a single entry point for all type conversions
-// This replaces the scattered conversion logic in helpers.go and path.go
-func UnifiedTypeConversion[T any](value any) (T, bool) {
-	var zero T
-
-	// Fast path: direct type match
-	if typedValue, ok := value.(T); ok {
-		return typedValue, true
+// FormatNumber formats a number value as a string
+func FormatNumber(value any) string {
+	switch v := value.(type) {
+	case int:
+		return strconv.Itoa(v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case json.Number:
+		return string(v)
+	default:
+		return fmt.Sprintf("%v", v)
 	}
-
-	// Handle array/slice conversions
-	if converted, ok := convertArray[T](value); ok {
-		return converted, true
-	}
-
-	// Use type switch for common conversions
-	targetType := fmt.Sprintf("%T", zero)
-
-	switch targetType {
-	case "string":
-		if str, ok := convertToStringUnified(value); ok {
-			if result, ok := any(str).(T); ok {
-				return result, true
-			}
-		}
-	case "int":
-		if intVal, ok := ConvertToInt(value); ok {
-			if result, ok := any(intVal).(T); ok {
-				return result, true
-			}
-		}
-	case "int64":
-		if int64Val, ok := ConvertToInt64(value); ok {
-			if result, ok := any(int64Val).(T); ok {
-				return result, true
-			}
-		}
-	case "uint64":
-		if uint64Val, ok := ConvertToUint64(value); ok {
-			if result, ok := any(uint64Val).(T); ok {
-				return result, true
-			}
-		}
-	case "float64":
-		if float64Val, ok := ConvertToFloat64(value); ok {
-			if result, ok := any(float64Val).(T); ok {
-				return result, true
-			}
-		}
-	case "bool":
-		if boolVal, ok := ConvertToBool(value); ok {
-			if result, ok := any(boolVal).(T); ok {
-				return result, true
-			}
-		}
-	}
-
-	return zero, false
 }
 
-// convertToStringUnified handles all string conversions including json.Number
-func convertToStringUnified(value any) (string, bool) {
+// ConvertToString converts any value to string (for backward compatibility)
+func ConvertToString(value any) string {
 	switch v := value.(type) {
 	case string:
-		return v, true
+		return v
+	case []byte:
+		return string(v)
 	case json.Number:
-		return string(v), true
-	case int:
-		return strconv.Itoa(v), true
-	case int64:
-		return strconv.FormatInt(v, 10), true
-	case float64:
-		return strconv.FormatFloat(v, 'g', -1, 64), true
-	case bool:
-		return strconv.FormatBool(v), true
+		return string(v)
+	case fmt.Stringer:
+		return v.String()
 	default:
-		return ConvertToString(value)
+		return fmt.Sprintf("%v", v)
 	}
-}
-
-// convertArray handles array/slice type conversions
-func convertArray[T any](value any) (T, bool) {
-	var zero T
-
-	targetType := reflect.TypeOf(zero)
-	if targetType.Kind() != reflect.Slice {
-		return zero, false
-	}
-
-	sourceSlice, ok := value.([]any)
-	if !ok {
-		return zero, false
-	}
-
-	elemType := targetType.Elem()
-	resultSlice := reflect.MakeSlice(targetType, len(sourceSlice), len(sourceSlice))
-
-	for i, elem := range sourceSlice {
-		convertedElem, err := convertElement(elem, elemType)
-		if err != nil {
-			return zero, false
-		}
-		resultSlice.Index(i).Set(reflect.ValueOf(convertedElem))
-	}
-
-	if result, ok := resultSlice.Interface().(T); ok {
-		return result, true
-	}
-
-	return zero, false
-}
-
-// convertElement converts a single element to the target type
-func convertElement(elem any, targetType reflect.Type) (any, error) {
-	if elem == nil {
-		return reflect.Zero(targetType).Interface(), nil
-	}
-
-	if reflect.TypeOf(elem) == targetType {
-		return elem, nil
-	}
-
-	switch targetType.Kind() {
-	case reflect.String:
-		if str, ok := convertToStringUnified(elem); ok {
-			return str, nil
-		}
-	case reflect.Int:
-		if i, ok := ConvertToInt(elem); ok {
-			return i, nil
-		}
-	case reflect.Int64:
-		if i, ok := ConvertToInt64(elem); ok {
-			return i, nil
-		}
-	case reflect.Float64:
-		if f, ok := ConvertToFloat64(elem); ok {
-			return f, nil
-		}
-	case reflect.Bool:
-		if b, ok := ConvertToBool(elem); ok {
-			return b, nil
-		}
-	}
-
-	return nil, fmt.Errorf("cannot convert %T to %v", elem, targetType)
 }

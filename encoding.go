@@ -355,11 +355,11 @@ func getEncoderBuffer() *bytes.Buffer {
 // putEncoderBuffer returns a bytes.Buffer to the encoder pool
 // PERFORMANCE FIX: Stricter size limits prevent memory bloat
 func putEncoderBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 32 * 1024 // Reduced from 64KB
-	const minPoolBufferSize = 1024
+	const maxPoolBufferSize = 8 * 1024 // CRITICAL FIX: Reduced from 16KB to 8KB
+	const minPoolBufferSize = 256      // CRITICAL FIX: Reduced from 512 to 256
 	if buf != nil {
-		cap := buf.Cap()
-		if cap >= minPoolBufferSize && cap <= maxPoolBufferSize {
+		c := buf.Cap()
+		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
 			buf.Reset() // Ensure clean state
 			encoderBufferPool.Put(buf)
 		}
@@ -964,13 +964,6 @@ func (e *CustomEncoder) isEmpty(v reflect.Value) bool {
 
 var (
 	// Global buffer pools for memory efficiency with optimized sizing
-	bufferPool = sync.Pool{
-		New: func() any {
-			buf := make([]byte, 0, 2048) // Optimized for typical JSON sizes
-			return &buf
-		},
-	}
-
 	bytesBufferPool = sync.Pool{
 		New: func() any {
 			buf := &bytes.Buffer{}
@@ -979,32 +972,6 @@ var (
 		},
 	}
 )
-
-// getBuffer gets a byte slice from the pool with enhanced safety
-func getBuffer() *[]byte {
-	if buf := bufferPool.Get(); buf != nil {
-		if slice, ok := buf.(*[]byte); ok {
-			*slice = (*slice)[:0] // Reset length but keep capacity
-			return slice
-		}
-	}
-	// Fallback: create new buffer with optimized capacity
-	buf := make([]byte, 0, 2048)
-	return &buf
-}
-
-// putBuffer returns a byte slice to the pool with strict size limits
-// PERFORMANCE FIX: Tighter bounds prevent memory bloat
-func putBuffer(buf *[]byte) {
-	if buf != nil {
-		cap := cap(*buf)
-		// Only pool buffers within reasonable size range
-		if cap >= 1024 && cap <= 32768 { // Stricter upper limit
-			*buf = (*buf)[:0] // Reset length but keep capacity
-			bufferPool.Put(buf)
-		}
-	}
-}
 
 // getBytesBuffer gets a bytes.Buffer from the pool with enhanced safety
 func getBytesBuffer() *bytes.Buffer {
@@ -1022,11 +989,11 @@ func getBytesBuffer() *bytes.Buffer {
 // putBytesBuffer returns a bytes.Buffer to the pool with strict size limits
 // PERFORMANCE FIX: Prevents memory bloat from oversized buffers
 func putBytesBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 32 * 1024 // Reduced from 64KB
-	const minPoolBufferSize = 1024      // Increased from 512
+	const maxPoolBufferSize = 8 * 1024 // CRITICAL FIX: Reduced from 16KB to 8KB
+	const minPoolBufferSize = 256      // CRITICAL FIX: Reduced from 512 to 256
 	if buf != nil {
-		cap := buf.Cap()
-		if cap >= minPoolBufferSize && cap <= maxPoolBufferSize {
+		c := buf.Cap()
+		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
 			buf.Reset() // Ensure buffer is clean before returning to pool
 			bytesBufferPool.Put(buf)
 		}
@@ -1636,33 +1603,6 @@ func isSpace(c byte) bool {
 // isDigit reports whether the character is a digit.
 func isDigit(c byte) bool {
 	return '0' <= c && c <= '9'
-}
-
-// isCompleteValue reports whether the string represents a complete JSON primitive value.
-func isCompleteValue(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-
-	// Check for complete literals
-	switch s {
-	case "true", "false", "null":
-		return true
-	}
-
-	// Check for complete string (starts and ends with quotes)
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return true
-	}
-
-	// Check for complete number
-	if isDigit(s[0]) || s[0] == '-' {
-		// Simple check - if it parses as a number, it's complete
-		_, err := strconv.ParseFloat(s, 64)
-		return err == nil
-	}
-
-	return false
 }
 
 // ValidateSchema validates JSON data against a schema

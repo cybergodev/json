@@ -14,17 +14,13 @@
 ## 📚 Table of Contents
 
 - [📖 Overview](#-overview)
+- [📋 Basic Path Syntax](#-Basic-Path-Syntax)
 - [🚀 Quick Start](#-quick-start)
-- [⚡ Core Features](#-core-features)
-- [📊 Performance Benchmarks](#-performance-benchmarks)
-- [🎯 Path Expressions](#-base-path-expressions)
+- [🏆 Core Features](#-core-features)
 - [🔧 Configuration Options](#-configuration-options)
 - [📁 File Operations](#-file-operations)
-- [🔄 Data Validation](#-data-validation)
 - [🎯 Use Cases](#-use-cases)
-- [📋 API Reference](#-api-reference)
-- [🛡️ Error Handling Guide](#-error-handling-guide)
-- [💡 Examples & Resources](#-examples--resources)
+- [🌐 Examples & Resources](#-examples--resources)
 
 ---
 
@@ -53,65 +49,12 @@
 
 - **[📁 Examples](examples)** - Comprehensive code examples for all features
 - **[⚙️ Configuration Guide](examples/configuration)** - Advanced configuration and optimization
-- **[📖 Compatibility](docs/compatibility.md)** - Compatibility guide and migration information
-- **[⚡ Quick Reference](docs/QUICK_REFERENCE.md)** - Quick reference guide for common features
+- **[📖 Compatibility](docs/COMPATIBILITY.md)** - Compatibility guide and migration information
+- **[🔄 Quick Reference](docs/QUICK_REFERENCE.md)** - Quick reference guide for common features
 
 ---
 
-## 📊 Performance Benchmarks
-
-### Comparison with encoding/json
-
-Our library maintains 100% compatibility while offering significant performance improvements:
-
-| Operation           | cybergodev/json | encoding/json | Improvement        |
-|---------------------|-----------------|---------------|--------------------|
-| Marshal (small)     | 1.2 µs/op       | 1.5 µs/op     | **25% faster** ⚡   |
-| Marshal (large)     | 45 µs/op        | 58 µs/op      | **22% faster** ⚡   |
-| Unmarshal (small)   | 2.1 µs/op       | 2.8 µs/op     | **33% faster** ⚡   |
-| Unmarshal (large)   | 78 µs/op        | 95 µs/op      | **18% faster** ⚡   |
-| Path Get (cached)   | 0.3 µs/op       | N/A           | **New feature** 🎯 |
-| Path Get (uncached) | 0.8 µs/op       | N/A           | **New feature** 🎯 |
-
-### Memory Efficiency
-
-```go
-// Memory allocation comparison
-BenchmarkMarshal/cybergodev-json    1000000    1234 ns/op    512 B/op    8 allocs/op
-BenchmarkMarshal/encoding-json      800000     1567 ns/op    768 B/op    12 allocs/op
-
-// Results:
-// - 33% fewer allocations
-// - 40% less memory per operation
-// - 85-95% cache hit ratio in typical workloads
-```
-
-### Concurrency Performance
-
-- **Thread-safe operations**: Zero performance penalty
-- **Concurrent throughput**: 10,000+ operations/second
-- **Cache efficiency**: 85-95% hit ratio in production workloads
-- **Memory safety**: Zero memory leaks in stress tests
-
-### Run Benchmarks Yourself
-
-```bash
-# Run all benchmarks
-go test -bench=. -benchmem
-
-# Run specific benchmarks
-go test -bench=BenchmarkMarshal -benchmem
-go test -bench=BenchmarkGet -benchmem
-go test -bench=BenchmarkConcurrent -benchmem
-```
-
-**Note**: Benchmarks run on: Intel i7-9700K, 16GB RAM, Go 1.24, Windows 11
-
----
-
-## 🎯 Base Path Expressions
-
-### Path Syntax
+## 📋 Basic Path Syntax
 
 | Syntax             | Description     | Example              | Result                     |
 |--------------------|-----------------|----------------------|----------------------------|
@@ -143,7 +86,7 @@ import (
 func main() {
     // 1. Full compatibility with standard library
     data := map[string]any{"name": "Alice", "age": 25}
-    jsonBytes, _ := json.Marshal(data)
+    jsonBytes, err := json.Marshal(data)
 
     var result map[string]any
     json.Unmarshal(jsonBytes, &result)
@@ -151,10 +94,10 @@ func main() {
     // 2. Powerful path operations (enhanced features)
     jsonStr := `{"user":{"profile":{"name":"Alice","age":25}}}`
 
-    name, _ := json.GetString(jsonStr, "user.profile.name")
+    name, err := json.GetString(jsonStr, "user.profile.name")
     fmt.Println(name) // "Alice"
 
-    age, _ := json.GetInt(jsonStr, "user.profile.age")
+    age, err := json.GetInt(jsonStr, "user.profile.age")
     fmt.Println(age) // 25
 }
 ```
@@ -170,17 +113,17 @@ complexData := `{
   ]
 }`
 
-// Get all user names
-names, _ := json.Get(complexData, "users{name}")
+// Get all usernames
+names, err := json.Get(complexData, "users{name}")
 // Result: ["Alice", "Bob"]
 
 // Get all skills (flattened)
-skills, _ := json.Get(complexData, "users{flat:skills}")
+skills, err := json.Get(complexData, "users{flat:skills}")
 // Result: ["Go", "Python", "Java", "React"]
 
 // Batch get multiple values
 paths := []string{"users[0].name", "users[1].name", "users{active}"}
-results, _ := json.GetMultiple(complexData, paths)
+results, err := json.GetMultiple(complexData, paths)
 ```
 
 
@@ -195,6 +138,7 @@ results, _ := json.GetMultiple(complexData, paths)
 json.Get(data, "user.name")          // Get any type
 json.GetString(data, "user.name")    // Get string
 json.GetInt(data, "user.age")        // Get integer
+json.GetFloat64(data, "user.score")  // Get float64
 json.GetBool(data, "user.active")    // Get boolean
 json.GetArray(data, "user.tags")     // Get array
 json.GetObject(data, "user.profile") // Get object
@@ -204,33 +148,31 @@ json.GetTyped[string](data, "user.name") // Generic type safety
 json.GetTyped[[]User](data, "users")     // Custom types
 
 // Retrieval with default values
+json.GetWithDefault(data, "user.name", "Anonymous")
 json.GetStringWithDefault(data, "user.name", "Anonymous")
 json.GetIntWithDefault(data, "user.age", 0)
+json.GetFloat64WithDefault(data, "user.score", 0.0)
+json.GetBoolWithDefault(data, "user.active", false)
+json.GetArrayWithDefault(data, "user.tags", []any{})
+json.GetObjectWithDefault(data, "user.profile", map[string]any{})
 
 // Batch retrieval
 paths := []string{"user.name", "user.age", "user.email"}
-results, _ := json.GetMultiple(data, paths)
+results, err := json.GetMultiple(data, paths)
 ```
 
 ### Data Modification
 
 ```go
 // Basic setting - returns modified data on success, original data on failure
+data := `{"user":{"name":"Bob","age":25}}`
 result, err := json.Set(data, "user.name", "Alice")
-if err != nil {
-    // result contains original unmodified data
-    fmt.Printf("Set failed: %v, original data preserved\n", err)
-} else {
-    // result contains modified data
-    fmt.Println("Set successful, data modified")
-}
+// result => {"user":{"name":"Alice","age":25}}
 
 // Auto-create paths
-result, err := json.SetWithAdd(data, "user.profile.city", "NYC")
-if err != nil {
-    // result contains original data if creation failed
-    fmt.Printf("Path creation failed: %v\n", err)
-}
+data := `{}`
+result, err := json.SetWithAdd(data, "user.name", "Alice")
+// result => {"user":{"name":"Alice"}}
 
 // Batch setting
 updates := map[string]any{
@@ -239,6 +181,7 @@ updates := map[string]any{
     "user.active": true,
 }
 result, err := json.SetMultiple(data, updates)
+result, err := json.SetMultipleWithAdd(data, updates) // With auto-create paths
 // Same behavior: success = modified data, failure = original data
 ```
 
@@ -258,14 +201,10 @@ json.Foreach(data, func (key any, item *json.IterableValue) {
     fmt.Printf("Key: %v, Name: %s\n", key, name)
 })
 
-// Path iteration - read-only traversal of JSON subset
-json.ForeachWithPath(data, "data.list.users", func (key any, user *json.IterableValue) {
-    name := user.GetString("name")
-    age := user.GetInt("age")
-
-    // Note: ForeachWithPath is read-only, modifications won't affect original data
-    fmt.Printf("User: %s, Age: %d\n", name, age)
-})
+// Advanced iteration variants
+json.ForeachNested(data, callback)           // Nested-safe iteration
+json.ForeachWithIterator(data, callback)     // With iterator access
+json.ForeachWithPath(data, "users", callback) // Iterate specific path
 
 // Iterate and return modified JSON - supports data modification
 modifiedJson, err := json.ForeachReturn(data, func (key any, item *json.IterableValue) {
@@ -283,6 +222,99 @@ modifiedJson, err := json.ForeachReturn(data, func (key any, item *json.Iterable
         })
     }
 })
+```
+
+### JSON Encoding & Formatting
+
+```go
+// Standard encoding (100% compatible with encoding/json)
+bytes, err := json.Marshal(data)
+err = json.Unmarshal(bytes, &target)
+bytes, err := json.MarshalIndent(data, "", "  ")
+
+// Advanced encoding with configuration
+config := &json.EncodeConfig{
+    Pretty:       true,
+    SortKeys:     true,
+    EscapeHTML:   false,
+}
+jsonStr, err := json.Encode(data, config)
+jsonStr, err := json.EncodePretty(data, config)
+jsonStr, err := json.EncodeCompact(data, config)
+
+// Formatting operations
+pretty, err := json.FormatPretty(jsonStr)
+compact, err := json.FormatCompact(jsonStr)
+
+// Buffer operations (encoding/json compatible)
+json.Compact(dst, src)
+json.Indent(dst, src, prefix, indent)
+json.HTMLEscape(dst, src)
+```
+
+### File Operations
+
+```go
+// Load and save JSON files
+jsonStr, err := json.LoadFromFile("data.json")
+err = json.SaveToFile("output.json", data, true) // pretty format
+
+// Marshal/Unmarshal with files
+err = json.MarshalToFile("user.json", user)
+err = json.MarshalToFile("user_pretty.json", user, true)
+err = json.UnmarshalFromFile("user.json", &loadedUser)
+
+// Stream operations
+data, err := processor.LoadFromReader(reader)
+err = processor.SaveToWriter(writer, data, true)
+```
+
+### Type Conversion & Utilities
+
+```go
+// Safe type conversion
+intVal, ok := json.ConvertToInt(value)
+floatVal, ok := json.ConvertToFloat64(value)
+boolVal, ok := json.ConvertToBool(value)
+strVal := json.ConvertToString(value)
+
+// Generic type conversion
+result, ok := json.UnifiedTypeConversion[int](value)
+result, err := json.TypeSafeConvert[string](value)
+
+// JSON comparison and merging
+equal, err := json.CompareJson(json1, json2)
+merged, err := json.MergeJson(json1, json2)
+copy, err := json.DeepCopy(data)
+```
+
+### Processor Management
+
+```go
+// Create processor with configuration
+config := &json.Config{
+    EnableCache:      true,
+    MaxCacheSize:     5000,
+    MaxJSONSize:      50 * 1024 * 1024,
+    MaxConcurrency:   100,
+    EnableValidation: true,
+}
+processor := json.New(config)
+defer processor.Close()
+
+// Processor operations
+result, err := processor.Get(jsonStr, path)
+stats := processor.GetStats()
+health := processor.GetHealthStatus()
+processor.ClearCache()
+
+// Cache warmup
+paths := []string{"user.name", "user.age", "user.profile"}
+warmupResult, err := processor.WarmupCache(jsonStr, paths)
+
+// Global processor management
+json.SetGlobalProcessor(processor)
+json.ShutdownGlobalProcessor()
 ```
 
 ### Complex Path Examples
@@ -308,15 +340,15 @@ complexData := `{
 }`
 
 // Multi-level nested extraction
-allMembers, _ := json.Get(complexData, "company.departments{teams}{flat:members}")
+allMembers, err := json.Get(complexData, "company.departments{teams}{flat:members}")
 // Result: [Alice's data, Bob's data]
 
 // Extract specific fields
-allNames, _ := json.Get(complexData, "company.departments{teams}{flat:members}{name}")
+allNames, err := json.Get(complexData, "company.departments{teams}{flat:members}{name}")
 // Result: ["Alice", "Bob"]
 
 // Flatten skills extraction
-allSkills, _ := json.Get(complexData, "company.departments{teams}{flat:members}{flat:skills}")
+allSkills, err := json.Get(complexData, "company.departments{teams}{flat:members}{flat:skills}")
 // Result: ["Go", "Python", "Java", "Spring"]
 ```
 
@@ -332,14 +364,14 @@ arrayData := `{
 }`
 
 // Array indexing and slicing
-first, _ := json.GetInt(arrayData, "numbers[0]")       // 1
-last, _ := json.GetInt(arrayData, "numbers[-1]")       // 10 (negative index)
-slice, _ := json.Get(arrayData, "numbers[1:4]")        // [2, 3, 4]
-everyOther, _ := json.Get(arrayData, "numbers[::2]")   // [1, 3, 5, 7, 9]
-everyOther, _ := json.Get(arrayData, "numbers[::-2]")  // [10 8 6 4 2]
+first, err := json.GetInt(arrayData, "numbers[0]")       // 1
+last, err := json.GetInt(arrayData, "numbers[-1]")       // 10 (negative index)
+slice, err := json.Get(arrayData, "numbers[1:4]")        // [2, 3, 4]
+everyOther, err := json.Get(arrayData, "numbers[::2]")   // [1, 3, 5, 7, 9]
+everyOther, err := json.Get(arrayData, "numbers[::-2]")  // [10 8 6 4 2]
 
 // Nested array access
-ages, _ := json.Get(arrayData, "users{age}") // [25, 30]
+ages, err := json.Get(arrayData, "users{age}") // [25, 30]
 ```
 
 ---
@@ -401,7 +433,7 @@ opts := &json.ProcessorOptions{
     MaxDepth:        50,    // Maximum depth
 }
 
-result, _ := json.Get(data, "path", opts)
+result, err := json.Get(data, "path", opts)
 ```
 
 ### Performance Monitoring
@@ -429,11 +461,7 @@ fmt.Printf("System health: %v\n", health.Healthy)
 
 ```go
 // Load JSON from file
-data, err := json.LoadFromFile("config.json")
-if err != nil {
-    log.Printf("File load failed: %v", err)
-    return
-}
+data, err := json.LoadFromFile("example.json")
 
 // Save to file (pretty format)
 err = json.SaveToFile("output_pretty.json", data, true)
@@ -448,11 +476,47 @@ if err != nil {
 }
 defer file.Close()
 
-data, err = json.LoadFromReader(file)
+data, err := json.LoadFromReader(file)
 
 // Save to Writer
 var buffer bytes.Buffer
 err = json.SaveToWriter(&buffer, data, true)
+```
+
+### Marshal/Unmarshal File Operations
+
+```go
+// Marshal data to file (compact format by default)
+user := map[string]any{
+    "name": "Alice",
+    "age":  30,
+    "email": "alice@example.com",
+}
+err := json.MarshalToFile("user.json", user)
+
+// Marshal data to file (pretty format)
+err = json.MarshalToFile("user_pretty.json", user, true)
+
+// Unmarshal data from file
+var loadedUser map[string]any
+err = json.UnmarshalFromFile("user.json", &loadedUser)
+
+// Works with structs too
+type User struct {
+    Name  string `json:"name"`
+    Age   int    `json:"age"`
+    Email string `json:"email"`
+}
+
+var person User
+err = json.UnmarshalFromFile("user.json", &person)
+
+// Using processor for advanced options
+processor := json.New()
+defer processor.Close()
+
+err = processor.MarshalToFile("advanced.json", user, true)
+err = processor.UnmarshalFromFile("advanced.json", &loadedUser, opts...)
 ```
 
 ### Batch File Processing
@@ -482,48 +546,6 @@ err := json.SaveToFile("merged_config.json", allConfigs, true)
 ```
 
 ---
-
-## 🛡️ Data Validation
-
-### JSON Schema Validation
-
-```go
-// Define JSON Schema
-schema := &json.Schema{
-    Type: "object",
-    Properties: map[string]*json.Schema{
-        "name": (&json.Schema{
-            Type: "string",
-        }).SetMinLength(1).SetMaxLength(100),
-        "age": (&json.Schema{
-            Type: "number",
-        }).SetMinimum(0.0).SetMaximum(150.0),
-        "email": {
-            Type:   "string",
-            Format: "email",
-        },
-    },
-    Required: []string{"name", "age", "email"},
-}
-
-// Validate data
-testData := `{
-    "name": "Alice",
-    "age": 25,
-    "email": "alice@example.com"
-}`
-
-processor := json.New(json.DefaultConfig())
-errors, err := processor.ValidateSchema(testData, schema)
-if len(errors) > 0 {
-    fmt.Println("Validation errors:")
-    for _, validationErr := range errors {
-        fmt.Printf("  Path %s: %s\n", validationErr.Path, validationErr.Message)
-    }
-} else {
-    fmt.Println("Data validation passed")
-}
-```
 
 ### Security Configuration
 
@@ -578,26 +600,29 @@ apiResponse := `{
 }`
 
 // Quick extraction of key information
-status, _ := json.GetString(apiResponse, "status")
-code, _ := json.GetInt(apiResponse, "code")
+status, err := json.GetString(apiResponse, "status")
+// Result: success
+
+code, err := json.GetInt(apiResponse, "code")
+// Result: 200
+
+// Get pagination information
+totalUsers, err := json.GetInt(apiResponse, "data.pagination.total")
+// Result: 25
+
+currentPage, err := json.GetInt(apiResponse, "data.pagination.page")
+// Result: 1
 
 // Batch extract user information
-userNames, _ := json.Get(apiResponse, "data.users.profile.name")
+userNames, err := json.Get(apiResponse, "data.users.profile.name")
 // Result: ["Alice Johnson"]
 
-userEmails, _ := json.Get(apiResponse, "data.users.profile.email")
+userEmails, err := json.Get(apiResponse, "data.users.profile.email")
 // Result: ["alice@example.com"]
 
 // Flatten extract all permissions
-allPermissions, _ := json.Get(apiResponse, "data.users{flat:permissions}")
+allPermissions, err := json.Get(apiResponse, "data.users{flat:permissions}")
 // Result: ["read", "write", "admin"]
-
-// Get pagination information
-totalUsers, _ := json.GetInt(apiResponse, "data.pagination.total")
-currentPage, _ := json.GetInt(apiResponse, "data.pagination.page")
-
-fmt.Printf("Status: %s (Code: %d)\n", status, code)
-fmt.Printf("Total users: %d, Current page: %d\n", totalUsers, currentPage)
 ```
 
 ### Example - Configuration File Management
@@ -702,141 +727,7 @@ fmt.Printf("Average response time: %.2f ms\n", avgTime)
 
 ---
 
-## 📋 API Reference
-
-### Core Methods
-
-#### Data Retrieval
-
-```go
-// Basic retrieval
-json.Get(data, path) (any, error)
-json.GetString(data, path) (string, error)
-json.GetInt(data, path) (int, error)
-json.GetBool(data, path) (bool, error)
-json.GetFloat64(data, path) (float64, error)
-json.GetArray(data, path) ([]any, error)
-json.GetObject(data, path) (map[string]any, error)
-
-// Type-safe retrieval
-json.GetTyped[T](data, path) (T, error)
-
-// Retrieval with default values
-json.GetStringWithDefault(data, path, defaultValue) string
-json.GetIntWithDefault(data, path, defaultValue) int
-json.GetBoolWithDefault(data, path, defaultValue) bool
-
-// Batch retrieval
-json.GetMultiple(data, paths) (map[string]any, error)
-```
-
-#### Data Modification
-
-```go
-// Basic setting - improved error handling
-// Returns: (modified_data, nil) on success, (original_data, error) on failure
-json.Set(data, path, value) (string, error)
-json.SetWithAdd(data, path, value) (string, error)
-
-// Batch setting - same improved behavior
-json.SetMultiple(data, updates) (string, error)
-json.SetMultipleWithAdd(data, updates) (string, error)
-```
-
-#### Data Deletion
-
-```go
-json.Delete(data, path) (string, error)
-json.DeleteWithCleanNull(data, path) (string, error)
-```
-
-#### Data Iteration
-
-```go
-// Basic iteration methods
-json.Foreach(data, callback) error
-json.ForeachReturn(data, callback) (string, error)
-
-// Path iteration - read-only traversal of specified path data
-json.ForeachWithPath(data, path, callback) error
-
-// Nested iteration - prevents state conflicts
-json.ForeachNested(data, callback) error
-json.ForeachReturnNested(data, callback) (string, error)
-
-// IterableValue nested methods - used within iteration callbacks
-item.ForeachReturnNested(path, callback) error
-```
-
-**Use case comparison:**
-
-| Method            | Return Value      | Data Modification | Traversal Range | Usage Scenarios                        | 
-|-------------------|-------------------|-------------------|-----------------|----------------------------------------|
-| `Foreach`         | `error`           | Not allow         | Complete JSON   | Read-only traversal of the entire JSON |
-| `ForeachWithPath` | `error`           | Not allow         | Specified path  | Read-only traversal of JSON subset     |
-| `ForeachReturn`   | `(string, error)` | Allow             | Complete JSON   | Data modification, batch update        |
-
-
-### File Operation Methods
-
-```go
-// File read/write
-json.LoadFromFile(filename, ...opts) (string, error)
-json.SaveToFile(filename, data, pretty) error
-
-// Stream operations
-json.LoadFromReader(reader, ...opts) (string, error)
-json.SaveToWriter(writer, data, pretty) error
-```
-
-### Validation Methods
-
-```go
-// Schema validation
-processor.ValidateSchema(data, schema) ([]ValidationError, error)
-
-// Basic validation
-json.Valid(data) bool
-```
-
-### Processor Methods
-
-```go
-// Create processor
-json.New(config) *Processor
-json.DefaultConfig() *Config
-
-// Cache operations
-processor.WarmupCache(data, paths) (*WarmupResult, error)
-processor.ClearCache()
-
-// Statistics
-processor.GetStats() *Stats
-processor.GetHealthStatus() *HealthStatus
-```
-
-### Error Handling Strategy
-
-```go
-// Recommended error handling approach
-result, err := json.GetString(data, "user.name")
-if err != nil {
-    log.Printf("Failed to get username: %v", err)
-    // Use default value or return error
-    return "", err
-}
-
-// Use methods with default values
-name := json.GetStringWithDefault(data, "user.name", "Anonymous")
-```
-
----
-
-## 🛡️ Error Handling Guide
-
-### Understanding Error Behavior
-
-#### Set Operations - Data Safety Guarantee
+## Set Operations - Data Safety Guarantee
 
 All Set operations follow a **safe-by-default** pattern that ensures your data is never corrupted:
 
@@ -862,79 +753,6 @@ if err != nil {
 - 🔒 **Data Integrity**: Original data never corrupted on error
 - ✅ **Safe Fallback**: Always have valid JSON to work with
 - 🎯 **Predictable**: Consistent behavior across all operations
-
-### Error Types and Handling
-
-```go
-// 1. Path Not Found - Use default values
-name := json.GetStringWithDefault(data, "user.name", "Anonymous")
-age := json.GetIntWithDefault(data, "user.age", 0)
-
-// 2. Type Mismatch - Check error type
-value, err := json.GetInt(data, "user.name") // name is string
-if err != nil {
-    if errors.Is(err, json.ErrTypeMismatch) {
-        log.Printf("Type mismatch: %v", err)
-    }
-}
-
-// 3. Invalid JSON - Validate first
-if !json.Valid([]byte(jsonStr)) {
-    return fmt.Errorf("invalid JSON input")
-}
-
-// 4. Size Limits - Configure appropriately
-config := json.DefaultConfig()
-config.MaxJSONSize = 50 * 1024 * 1024 // 50MB
-processor := json.New(config)
-defer processor.Close()
-```
-
-### Common Error Scenarios
-
-#### Scenario 1: Null Value Handling
-```go
-jsonData := `{"user": {"name": "Alice", "age": null}}`
-
-// GetInt on null returns 0 and error
-age, err := json.GetInt(jsonData, "user.age")
-// age = 0, err != nil
-
-// Use Get to check for null explicitly
-value, _ := json.Get(jsonData, "user.age")
-if value == nil {
-    fmt.Println("Age is null")
-}
-```
-
-#### Scenario 2: Missing vs Null
-```go
-jsonData := `{"user": {"name": "Alice"}}`
-
-// Missing field
-email, err := json.GetString(jsonData, "user.email")
-// err = ErrPathNotFound
-
-// Null field
-jsonData2 := `{"user": {"name": "Alice", "email": null}}`
-email2, err2 := json.GetString(jsonData2, "user.email")
-// email2 = "", err2 = nil (null converts to empty string)
-```
-
-#### Scenario 3: Array Index Out of Bounds
-```go
-jsonData := `{"users": [{"name": "Alice"}, {"name": "Bob"}]}`
-
-// Valid index
-user, _ := json.Get(jsonData, "users[0]") // OK
-
-// Invalid index
-user, err := json.Get(jsonData, "users[10]")
-// err = ErrPathNotFound
-
-// Use negative index for last element
-lastUser, _ := json.Get(jsonData, "users[-1]") // Gets Bob
-```
 
 ---
 

@@ -3,61 +3,60 @@ package json
 import "time"
 
 const (
-	// Buffer and Pool Sizes
-	DefaultBufferSize        = 2048
-	MaxPoolBufferSize        = 65536
-	MinPoolBufferSize        = 1024
-	DefaultPathSegmentCap    = 16
-	MaxPathSegmentCap        = 256
-	DefaultStringBuilderSize = 512
+	// Buffer and Pool Sizes - Optimized for production workloads
+	DefaultBufferSize        = 1024
+	MaxPoolBufferSize        = 16384
+	MinPoolBufferSize        = 512
+	DefaultPathSegmentCap    = 8
+	MaxPathSegmentCap        = 128
+	DefaultStringBuilderSize = 256
 
-	// Cache Sizes
-	DefaultCacheSize     = 256
-	MaxCacheEntries      = 1024
-	CacheCleanupKeepSize = 512
+	// Cache Sizes - Balanced for performance and memory
+	DefaultCacheSize     = 128
+	MaxCacheEntries      = 512
+	CacheCleanupKeepSize = 256
 
-	// Operation Limits
+	// Operation Limits - Secure defaults with reasonable headroom
 	InvalidArrayIndex        = -999999
-	DefaultMaxJSONSize       = 10 * 1024 * 1024
+	DefaultMaxJSONSize       = 10 * 1024 * 1024 // 10MB - reasonable for most use cases
 	DefaultMaxSecuritySize   = 10 * 1024 * 1024
-	DefaultMaxNestingDepth   = 50
+	DefaultMaxNestingDepth   = 32
 	DefaultMaxObjectKeys     = 10000
 	DefaultMaxArrayElements  = 10000
-	DefaultMaxPathDepth      = 100
+	DefaultMaxPathDepth      = 50
 	DefaultMaxBatchSize      = 1000
-	DefaultMaxConcurrency    = 100
+	DefaultMaxConcurrency    = 50
 	DefaultParallelThreshold = 10
 
-	// Timing and Intervals
-	MemoryPressureCheckInterval = 50000
-	PoolResetInterval           = 100000
-	PoolResetIntervalPressure   = 50000
+	// Timing and Intervals - Optimized for responsiveness
+	MemoryPressureCheckInterval = 30000
+	PoolResetInterval           = 60000
+	PoolResetIntervalPressure   = 30000
 	CacheCleanupInterval        = 30 * time.Second
 	DeadlockCheckInterval       = 30 * time.Second
 	DeadlockThreshold           = 30 * time.Second
 	SlowOperationThreshold      = 100 * time.Millisecond
 
-	// Retry and Timeout
+	// Retry and Timeout - Production-ready settings
 	MaxRetries              = 3
 	BaseRetryDelay          = 10 * time.Millisecond
 	DefaultOperationTimeout = 30 * time.Second
 	AcquireSlotRetryDelay   = 1 * time.Millisecond
 
-	// Path Validation
-	MaxPathLength          = 10000 // Maximum path length for security
+	// Path Validation - Secure but flexible
+	MaxPathLength          = 5000
 	MaxSegmentLength       = 1024
 	MaxExtractionDepth     = 10
 	MaxConsecutiveColons   = 3
-	MaxConsecutiveBrackets = 5
+	MaxConsecutiveBrackets = 3
 
-	// Security
-	MaxSecurityValidationSize = 10 * 1024 * 1024
-	MaxAllowedNestingDepth    = 50
-	MaxAllowedObjectKeys      = 10000
-	MaxAllowedArrayElements   = 10000
-	PathTraversalMaxLength    = 100
+	// Security constants (aliases for backward compatibility)
+	MaxSecurityValidationSize = DefaultMaxSecuritySize
+	MaxAllowedNestingDepth    = DefaultMaxNestingDepth
+	MaxAllowedObjectKeys      = DefaultMaxObjectKeys
+	MaxAllowedArrayElements   = DefaultMaxArrayElements
 
-	// Cache TTL
+	// Cache TTL - Default cache time-to-live
 	DefaultCacheTTL = 5 * time.Minute
 )
 
@@ -69,8 +68,9 @@ const (
 	ErrCodeSizeLimit         = "ERR_SIZE_LIMIT"
 	ErrCodeDepthLimit        = "ERR_DEPTH_LIMIT"
 	ErrCodeSecurityViolation = "ERR_SECURITY_VIOLATION"
-	ErrCodeRateLimit         = "ERR_RATE_LIMIT"
+	ErrCodeOperationFailed   = "ERR_OPERATION_FAILED"
 	ErrCodeTimeout           = "ERR_TIMEOUT"
 	ErrCodeConcurrencyLimit  = "ERR_CONCURRENCY_LIMIT"
 	ErrCodeProcessorClosed   = "ERR_PROCESSOR_CLOSED"
+	ErrCodeRateLimit         = "ERR_RATE_LIMIT"
 )

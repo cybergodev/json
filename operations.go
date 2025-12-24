@@ -9,13 +9,13 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// handleArrayAccess handles array access with support for negative indices
+// handleArrayAccess handles array access with optimized negative index support
 func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAccessResult {
 	segmentValue := segment.Value
 
 	// Fast bracket position finding
 	bracketStart := strings.IndexByte(segmentValue, '[')
-	bracketEnd := strings.IndexByte(segmentValue, ']')
+	bracketEnd := strings.LastIndexByte(segmentValue, ']')
 
 	if bracketStart == -1 || bracketEnd == -1 || bracketEnd <= bracketStart {
 		return PropertyAccessResult{Value: nil, Exists: false}
@@ -35,50 +35,49 @@ func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAcc
 		arrayResult = PropertyAccessResult{Value: data, Exists: true}
 	}
 
-	// Handle array indexing with optimized parsing (supporting negative indices)
+	// Handle array indexing with optimized parsing
 	if arr, ok := arrayResult.Value.([]any); ok {
-		if index := p.parseArrayIndexFromSegment(indexStr); index != InvalidArrayIndex {
-			// Handle negative indices
+		if index := p.parseArrayIndex(indexStr); index != InvalidArrayIndex {
+			// Handle negative indices efficiently
 			if index < 0 {
 				index = len(arr) + index
 			}
-			// Check bounds after negative index conversion
+			// Bounds check
 			if index >= 0 && index < len(arr) {
 				return PropertyAccessResult{Value: arr[index], Exists: true}
 			}
 		}
-		// Index out of bounds on valid array - boundary case
 		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
-	// Attempting array access on non-array type - this should be treated as a structural error
-	// Return false to indicate this is not a valid array access
 	return PropertyAccessResult{Value: nil, Exists: false}
 }
 
-// handleArrayAccessValue has been removed - use handleArrayAccess instead
+// parseArrayIndex parses array index with improved error handling
+func (p *Processor) parseArrayIndex(indexStr string) int {
+	// Remove any whitespace
+	indexStr = strings.TrimSpace(indexStr)
 
-// parseArrayIndexFromSegment parses array index from segment value
-func (p *Processor) parseArrayIndexFromSegment(segmentValue string) int {
-	// Handle bracket notation
-	if strings.HasPrefix(segmentValue, "[") && strings.HasSuffix(segmentValue, "]") {
-		segmentValue = segmentValue[1 : len(segmentValue)-1]
-	}
-
-	// Try to parse as integer
-	if index, err := strconv.Atoi(segmentValue); err == nil {
+	// Parse as integer
+	if index, err := strconv.Atoi(indexStr); err == nil {
 		return index
 	}
 
 	return InvalidArrayIndex
 }
 
-// handleArraySlice handles array slicing operations
+// handleArrayAccessValue has been removed - use handleArrayAccess instead
+
+// parseArrayIndexFromSegment parses array index from segment value with improved efficiency
+func (p *Processor) parseArrayIndexFromSegment(segmentValue string) int {
+	return p.parseArrayIndex(segmentValue)
+}
+
+// handleArraySlice handles array slicing operations with optimized bounds checking
 func (p *Processor) handleArraySlice(data any, segment PathSegment) PropertyAccessResult {
 	// Get the array
-	var arr []any
-	var ok bool
-	if arr, ok = data.([]any); !ok {
+	arr, ok := data.([]any)
+	if !ok {
 		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
@@ -87,26 +86,25 @@ func (p *Processor) handleArraySlice(data any, segment PathSegment) PropertyAcce
 	return PropertyAccessResult{Value: result, Exists: true}
 }
 
-// performArraySlice performs the actual array slicing
+// performArraySlice performs optimized array slicing
 func (p *Processor) performArraySlice(arr []any, start, end, step *int) []any {
 	if len(arr) == 0 {
 		return []any{}
 	}
 
 	// Set defaults
-	actualStart := 0
-	actualEnd := len(arr)
-	actualStep := 1
+	actualStart, actualEnd, actualStep := 0, len(arr), 1
 
 	if step != nil {
 		actualStep = *step
+		if actualStep == 0 {
+			return []any{} // Invalid step
+		}
 	}
 
 	// Handle negative step (reverse slicing)
 	if actualStep < 0 {
-		// For negative step, default start is end-1, default end is -1
-		actualStart = len(arr) - 1
-		actualEnd = -1
+		actualStart, actualEnd = len(arr)-1, -1
 	}
 
 	if start != nil {
@@ -123,49 +121,47 @@ func (p *Processor) performArraySlice(arr []any, start, end, step *int) []any {
 		}
 	}
 
-	// Bounds checking for positive step
+	// Perform slicing based on step direction
 	if actualStep > 0 {
-		if actualStart < 0 {
-			actualStart = 0
-		}
-		if actualStart >= len(arr) {
-			return []any{}
-		}
-		if actualEnd > len(arr) {
-			actualEnd = len(arr)
-		}
-		if actualEnd <= actualStart {
-			return []any{}
-		}
-
-		// Perform forward slicing
-		result := make([]any, 0)
-		for i := actualStart; i < actualEnd; i += actualStep {
-			result = append(result, arr[i])
-		}
-		return result
+		return p.forwardSlice(arr, actualStart, actualEnd, actualStep)
 	} else {
-		// Bounds checking for negative step
-		if actualStart >= len(arr) {
-			actualStart = len(arr) - 1
-		}
-		if actualStart < 0 {
-			return []any{}
-		}
-		if actualEnd < -1 {
-			actualEnd = -1
-		}
-		if actualEnd >= actualStart {
-			return []any{}
-		}
-
-		// Perform reverse slicing
-		result := make([]any, 0)
-		for i := actualStart; i > actualEnd; i += actualStep {
-			result = append(result, arr[i])
-		}
-		return result
+		return p.reverseSlice(arr, actualStart, actualEnd, actualStep)
 	}
+}
+
+// forwardSlice performs forward array slicing
+func (p *Processor) forwardSlice(arr []any, start, end, step int) []any {
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(arr) || end <= start {
+		return []any{}
+	}
+	if end > len(arr) {
+		end = len(arr)
+	}
+
+	result := make([]any, 0, (end-start+step-1)/step)
+	for i := start; i < end; i += step {
+		result = append(result, arr[i])
+	}
+	return result
+}
+
+// reverseSlice performs reverse array slicing
+func (p *Processor) reverseSlice(arr []any, start, end, step int) []any {
+	if start >= len(arr) {
+		start = len(arr) - 1
+	}
+	if start < 0 || end >= start {
+		return []any{}
+	}
+
+	result := make([]any, 0)
+	for i := start; i > end; i += step { // step is negative
+		result = append(result, arr[i])
+	}
+	return result
 }
 
 // parseSliceParameters parses slice parameters from a string like "1:5:2"

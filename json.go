@@ -39,13 +39,13 @@ import (
 	"sync"
 )
 
-// Global processor instance for convenience functions with proper synchronization
+// Global processor instance for convenience functions with optimized synchronization
 var (
 	defaultProcessor   *Processor
 	defaultProcessorMu sync.RWMutex
 )
 
-// getDefaultProcessor returns the global default processor instance with proper locking
+// getDefaultProcessor returns the global default processor instance with optimized locking
 func getDefaultProcessor() *Processor {
 	// Fast path: read lock for existing processor
 	defaultProcessorMu.RLock()
@@ -61,12 +61,10 @@ func getDefaultProcessor() *Processor {
 	defer defaultProcessorMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if defaultProcessor != nil && !defaultProcessor.IsClosed() {
-		return defaultProcessor
+	if defaultProcessor == nil || defaultProcessor.IsClosed() {
+		defaultProcessor = New()
 	}
 
-	// Create new processor with default config
-	defaultProcessor = New()
 	return defaultProcessor
 }
 
@@ -149,18 +147,22 @@ func GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOp
 
 // GetTypedWithDefault retrieves a typed value with a default fallback
 func GetTypedWithDefault[T any](jsonStr, path string, defaultValue T, opts ...*ProcessorOptions) T {
-	rawValue, err := Get(jsonStr, path, opts...)
-	if err != nil || rawValue == nil {
+	// First get the raw value to check if it was null in JSON
+	rawValue, rawErr := Get(jsonStr, path, opts...)
+	if rawErr != nil || rawValue == nil {
 		return defaultValue
 	}
 
+	// Now get the typed value
 	value, err := GetTyped[T](jsonStr, path, opts...)
 	if err != nil {
 		return defaultValue
 	}
+
 	return value
 }
 
+// Type-specific convenience functions with defaults
 func GetStringWithDefault(jsonStr, path, defaultValue string, opts ...*ProcessorOptions) string {
 	return GetTypedWithDefault(jsonStr, path, defaultValue, opts...)
 }
@@ -452,6 +454,97 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 	}
 
 	dst.WriteString(escaped)
+}
+
+// MarshalToFile converts data to JSON and saves it to the specified file.
+// This is a convenience function that combines Marshal and file writing operations.
+//
+// Parameters:
+//   - path: file path where JSON will be saved (directories are created automatically)
+//   - data: any Go value to be marshaled to JSON
+//   - pretty: optional parameter - true for formatted JSON, false for compact (default: false)
+//
+// Returns error if marshaling fails or file cannot be written.
+//
+// Example:
+//
+//	user := map[string]any{"name": "John", "age": 30}
+//	err := json.MarshalToFile("data/user.json", user, true)
+func MarshalToFile(path string, data any, pretty ...bool) error {
+	// Marshal data to JSON bytes
+	var jsonBytes []byte
+	var err error
+
+	shouldFormat := len(pretty) > 0 && pretty[0]
+	if shouldFormat {
+		jsonBytes, err = MarshalIndent(data, "", "  ")
+	} else {
+		jsonBytes, err = Marshal(data)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to marshal data to JSON: %w", err)
+	}
+
+	// Use the existing SaveToFile functionality through the processor
+	proc := getDefaultProcessor()
+	if err := proc.validateFilePath(path); err != nil {
+		return err
+	}
+
+	if err := createDirectoryIfNotExists(path); err != nil {
+		return fmt.Errorf("failed to create directory for %s: %w", path, err)
+	}
+
+	// Write JSON bytes to file
+	if err := os.WriteFile(path, jsonBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write file %s: %w", path, err)
+	}
+
+	return nil
+}
+
+// UnmarshalFromFile reads JSON data from the specified file and unmarshals it into the provided value.
+// This is a convenience function that combines file reading and Unmarshal operations.
+//
+// Parameters:
+//   - path: file path to read JSON from
+//   - v: pointer to the value where JSON will be unmarshaled
+//
+// Returns error if file cannot be read or JSON unmarshaling fails.
+//
+// Example:
+//
+//	var user map[string]any
+//	err := json.UnmarshalFromFile("data/user.json", &user)
+//
+//	// Or with a struct
+//	var person Person
+//	err := json.UnmarshalFromFile("data/person.json", &person)
+func UnmarshalFromFile(path string, v any) error {
+	// Validate input parameters
+	if v == nil {
+		return fmt.Errorf("unmarshal target cannot be nil")
+	}
+
+	// Use processor for file path validation
+	proc := getDefaultProcessor()
+	if err := proc.validateFilePath(path); err != nil {
+		return err
+	}
+
+	// Read file contents
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", path, err)
+	}
+
+	// Unmarshal JSON data
+	if err := Unmarshal(data, v); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON from file %s: %w", path, err)
+	}
+
+	return nil
 }
 
 // getTypedWithProcessor is an internal helper for type-safe operations

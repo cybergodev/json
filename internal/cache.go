@@ -1,9 +1,10 @@
 package internal
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"fmt"
-	"reflect"
+	"hash/fnv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,70 +12,56 @@ import (
 
 // CacheManager handles all caching operations with performance and memory management
 type CacheManager struct {
-	// Core cache storage with sharding for better concurrency
 	shards []*cacheShard
-
-	// Global statistics (atomic counters)
-	hitCount    int64 // Cache hits
-	missCount   int64 // Cache misses
-	memoryUsage int64 // Estimated memory usage in bytes
-	evictions   int64 // Number of evictions performed
-
-	// Configuration
 	config ConfigInterface
 
-	// Sharding configuration
+	// Global statistics
+	hitCount    int64
+	missCount   int64
+	memoryUsage int64
+	evictions   int64
+
 	shardCount int
 	shardMask  uint64
 }
 
-// cacheShard represents a single cache shard for improved concurrency
+// cacheShard represents a single cache shard with LRU eviction
 type cacheShard struct {
-	data   sync.Map     // Thread-safe map for this shard
-	mu     sync.RWMutex // Read-write mutex for shard-level operations
-	size   int64        // Number of entries in this shard (atomic)
-	memory int64        // Memory usage of this shard (atomic)
-
-	// Enhanced concurrency control
-	lastCleanup    int64 // Last cleanup timestamp (atomic)
-	cleanupRunning int32 // Cleanup operation flag (atomic)
-	accessCount    int64 // Access count for this shard (atomic)
+	items       map[string]*list.Element
+	evictList   *list.List
+	mu          sync.RWMutex
+	size        int64
+	memory      int64
+	maxSize     int
+	lastCleanup int64
 }
 
-// cacheEntry represents a cache entry with memory tracking and access patterns
-type cacheEntry struct {
-	data       any   // The cached data
-	timestamp  int64 // Creation timestamp (Unix nanoseconds, atomic)
-	lastAccess int64 // Last access timestamp (Unix nanoseconds, atomic)
-	hits       int64 // Access count (atomic)
-	size       int32 // Estimated size in bytes
-	frequency  int32 // Access frequency for LFU (atomic)
+// lruEntry represents an entry in the LRU cache
+type lruEntry struct {
+	key        string
+	value      any
+	timestamp  int64
+	accessTime int64
+	size       int32
+	hits       int64
 }
 
 // NewCacheManager creates a new cache manager with sharding
 func NewCacheManager(config ConfigInterface) *CacheManager {
 	if config == nil {
 		return &CacheManager{
-			shards:     []*cacheShard{{}},
+			shards:     []*cacheShard{newCacheShard(100)},
 			shardCount: 1,
 			shardMask:  0,
 		}
 	}
 
-	// Calculate optimal shard count (power of 2)
-	shardCount := 16 // Default shard count
-	maxCacheSize := config.GetMaxCacheSize()
-	if maxCacheSize > 10000 {
-		shardCount = 32
-	} else if maxCacheSize > 1000 {
-		shardCount = 16
-	} else {
-		shardCount = 8
-	}
-
+	shardCount := calculateOptimalShardCount(config.GetMaxCacheSize())
 	shards := make([]*cacheShard, shardCount)
+	shardSize := config.GetMaxCacheSize() / shardCount
+
 	for i := range shards {
-		shards[i] = &cacheShard{}
+		shards[i] = newCacheShard(shardSize)
 	}
 
 	return &CacheManager{
@@ -85,57 +72,82 @@ func NewCacheManager(config ConfigInterface) *CacheManager {
 	}
 }
 
-// getShard returns the appropriate shard for a given key
-func (cm *CacheManager) getShard(key string) *cacheShard {
-	hash := fnv1aHash(key)
-	return cm.shards[hash&cm.shardMask]
+// newCacheShard creates a new cache shard
+func newCacheShard(maxSize int) *cacheShard {
+	return &cacheShard{
+		items:     make(map[string]*list.Element, maxSize),
+		evictList: list.New(),
+		maxSize:   maxSize,
+	}
 }
 
-// Get retrieves a value from cache with enhanced concurrency
+// calculateOptimalShardCount determines optimal shard count based on cache size
+func calculateOptimalShardCount(maxSize int) int {
+	if maxSize > 1000 {
+		return 16
+	} else if maxSize > 100 {
+		return 8
+	}
+	return 4
+}
+
+// Get retrieves a value from cache with O(1) complexity
 func (cm *CacheManager) Get(key string) (any, bool) {
 	if cm.config == nil || !cm.config.IsCacheEnabled() {
-		return nil, false
-	}
-
-	shard := cm.getShard(key)
-
-	// Increment access count for this shard
-	atomic.AddInt64(&shard.accessCount, 1)
-
-	value, exists := shard.data.Load(key)
-	if !exists {
 		atomic.AddInt64(&cm.missCount, 1)
 		return nil, false
 	}
 
-	entry := value.(*cacheEntry)
+	shard := cm.getShard(key)
+	shard.mu.RLock()
 
-	// Fast path: check if expired without creating time objects
-	if cm.config != nil && cm.config.GetCacheTTL() > 0 {
-		timestamp := atomic.LoadInt64(&entry.timestamp)
-		now := time.Now().UnixNano()
-		if now-timestamp > int64(cm.config.GetCacheTTL()) {
-			// Entry is expired, remove it
-			if shard.data.CompareAndDelete(key, value) {
-				atomic.AddInt64(&shard.size, -1)
-				atomic.AddInt64(&shard.memory, -int64(entry.size))
-			}
-			atomic.AddInt64(&cm.missCount, 1)
-			return nil, false
-		}
+	element, exists := shard.items[key]
+	if !exists {
+		shard.mu.RUnlock()
+		atomic.AddInt64(&cm.missCount, 1)
+		return nil, false
 	}
 
-	// Update access statistics atomically for thread safety
-	now := time.Now().UnixNano()
-	atomic.StoreInt64(&entry.lastAccess, now)
-	atomic.AddInt64(&entry.hits, 1)
-	atomic.AddInt32(&entry.frequency, 1)
-	atomic.AddInt64(&cm.hitCount, 1)
+	// Check if element.Value is nil to prevent panic
+	if element.Value == nil {
+		shard.mu.RUnlock()
+		// Remove invalid entry
+		cm.Delete(key)
+		atomic.AddInt64(&cm.missCount, 1)
+		return nil, false
+	}
 
-	return entry.data, true
+	entry, ok := element.Value.(*lruEntry)
+	if !ok || entry == nil {
+		shard.mu.RUnlock()
+		// Remove invalid entry
+		cm.Delete(key)
+		atomic.AddInt64(&cm.missCount, 1)
+		return nil, false
+	}
+
+	// Check TTL
+	now := time.Now().UnixNano()
+	if cm.config.GetCacheTTL() > 0 && now-entry.timestamp > int64(cm.config.GetCacheTTL().Nanoseconds()) {
+		shard.mu.RUnlock()
+		// Remove expired entry
+		cm.Delete(key)
+		atomic.AddInt64(&cm.missCount, 1)
+		return nil, false
+	}
+
+	// Update access time and move to front (LRU)
+	entry.accessTime = now
+	atomic.AddInt64(&entry.hits, 1)
+	shard.evictList.MoveToFront(element)
+	value := entry.value
+
+	shard.mu.RUnlock()
+	atomic.AddInt64(&cm.hitCount, 1)
+	return value, true
 }
 
-// Set stores a value in cache
+// Set stores a value in the cache
 func (cm *CacheManager) Set(key string, value any) {
 	if cm.config == nil || !cm.config.IsCacheEnabled() {
 		return
@@ -143,61 +155,111 @@ func (cm *CacheManager) Set(key string, value any) {
 
 	shard := cm.getShard(key)
 	now := time.Now().UnixNano()
-	size := estimateSize(value)
 
-	entry := &cacheEntry{
-		data:       value,
+	// Estimate entry size
+	entrySize := cm.estimateSize(value)
+
+	entry := &lruEntry{
+		key:        key,
+		value:      value,
 		timestamp:  now,
-		lastAccess: now,
-		hits:       0,
-		size:       int32(size),
-		frequency:  1,
+		accessTime: now,
+		size:       int32(entrySize),
+		hits:       1,
 	}
 
-	// Enhanced eviction logic with memory pressure consideration
-	maxSize := int64(1000) // default
-	if cm.config != nil {
-		maxSize = int64(cm.config.GetMaxCacheSize())
-	}
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	shardMaxSize := maxSize / int64(cm.shardCount)
-	currentSize := atomic.LoadInt64(&shard.size)
-
-	// Trigger eviction earlier if memory usage is high
-	memoryUsage := atomic.LoadInt64(&cm.memoryUsage)
-	if currentSize >= shardMaxSize || (currentSize >= shardMaxSize*3/4 && memoryUsage > maxSize*1024) {
+	// Check if we need to evict entries
+	if int(shard.size) >= shard.maxSize {
 		cm.evictLRU(shard)
 	}
 
-	shard.data.Store(key, entry)
-	atomic.AddInt64(&shard.size, 1)
-	atomic.AddInt64(&shard.memory, int64(size))
-	atomic.AddInt64(&cm.memoryUsage, int64(size))
+	// Store the entry
+	if oldElement, exists := shard.items[key]; exists {
+		// Update existing entry
+		oldEntry := oldElement.Value.(*lruEntry)
+		atomic.AddInt64(&cm.memoryUsage, int64(entry.size-oldEntry.size))
+		oldElement.Value = entry
+		shard.evictList.MoveToFront(oldElement)
+	} else {
+		// New entry
+		element := shard.evictList.PushFront(entry)
+		shard.items[key] = element
+		shard.size++
+		atomic.AddInt64(&cm.memoryUsage, int64(entry.size))
+	}
+
+	// Periodic cleanup
+	if now-shard.lastCleanup > 30 { // Every 30 seconds
+		go cm.cleanupShard(shard)
+		shard.lastCleanup = now
+	}
 }
 
-// ClearCache clears all cached data
-func (cm *CacheManager) ClearCache() {
+// Delete removes a value from the cache
+func (cm *CacheManager) Delete(key string) {
+	shard := cm.getShard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if element, exists := shard.items[key]; exists {
+		if element.Value != nil {
+			if entry, ok := element.Value.(*lruEntry); ok && entry != nil {
+				atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
+			}
+		}
+		delete(shard.items, key)
+		shard.evictList.Remove(element)
+		shard.size--
+	}
+}
+
+// Clear removes all entries from the cache
+func (cm *CacheManager) Clear() {
 	for _, shard := range cm.shards {
 		shard.mu.Lock()
-		shard.data.Range(func(key, value any) bool {
-			shard.data.Delete(key)
-			return true
-		})
-		atomic.StoreInt64(&shard.size, 0)
-		atomic.StoreInt64(&shard.memory, 0)
+		shard.items = make(map[string]*list.Element, shard.maxSize)
+		shard.evictList = list.New()
+		shard.size = 0
+		shard.memory = 0
 		shard.mu.Unlock()
 	}
 	atomic.StoreInt64(&cm.memoryUsage, 0)
+	atomic.StoreInt64(&cm.hitCount, 0)
+	atomic.StoreInt64(&cm.missCount, 0)
+	atomic.StoreInt64(&cm.evictions, 0)
+}
+
+// ClearCache is an alias for Clear for backward compatibility
+func (cm *CacheManager) ClearCache() {
+	cm.Clear()
+}
+
+// CleanExpiredCache removes expired entries from all shards
+func (cm *CacheManager) CleanExpiredCache() {
+	if cm.config.GetCacheTTL() <= 0 {
+		return
+	}
+
+	for _, shard := range cm.shards {
+		go cm.cleanupShard(shard)
+	}
+}
+
+// SecureHash generates a secure hash for cache keys
+func (cm *CacheManager) SecureHash(data string) string {
+	return fmt.Sprintf("%x", cm.hashKey(data))
 }
 
 // GetStats returns cache statistics
-func (cm *CacheManager) GetStats() CacheStats {
-	totalSize := int64(0)
-	totalMemory := int64(0)
-
+func (cm *CacheManager) GetStats() map[string]any {
+	totalEntries := int64(0)
 	for _, shard := range cm.shards {
-		totalSize += atomic.LoadInt64(&shard.size)
-		totalMemory += atomic.LoadInt64(&shard.memory)
+		shard.mu.RLock()
+		totalEntries += shard.size
+		shard.mu.RUnlock()
 	}
 
 	hits := atomic.LoadInt64(&cm.hitCount)
@@ -206,187 +268,141 @@ func (cm *CacheManager) GetStats() CacheStats {
 
 	var hitRatio float64
 	if total > 0 {
-		hitRatio = float64(hits) / float64(total) * 100.0 // Convert to percentage
+		hitRatio = float64(hits) / float64(total)
 	}
 
-	return CacheStats{
-		Size:      totalSize,
-		Memory:    totalMemory,
-		HitCount:  hits,
-		MissCount: misses,
-		HitRatio:  hitRatio,
-		Evictions: atomic.LoadInt64(&cm.evictions),
+	var memoryEfficiency float64
+	memory := atomic.LoadInt64(&cm.memoryUsage)
+	if memory > 0 {
+		memoryMB := float64(memory) / (1024 * 1024)
+		memoryEfficiency = float64(hits) / memoryMB
 	}
+
+	return map[string]any{
+		"hit_count":         hits,
+		"miss_count":        misses,
+		"total_memory":      memory,
+		"hit_ratio":         hitRatio,
+		"memory_efficiency": memoryEfficiency,
+		"evictions":         atomic.LoadInt64(&cm.evictions),
+		"shard_count":       len(cm.shards),
+		"entries":           totalEntries,
+	}
+}
+
+// getShard returns the appropriate shard for a key
+func (cm *CacheManager) getShard(key string) *cacheShard {
+	hash := cm.hashKey(key)
+	return cm.shards[hash&cm.shardMask]
+}
+
+// hashKey generates a hash for the key
+func (cm *CacheManager) hashKey(key string) uint64 {
+	if len(key) > 256 {
+		// Use SHA256 for large keys
+		h := sha256.Sum256([]byte(key))
+		return uint64(h[0])<<56 | uint64(h[1])<<48 | uint64(h[2])<<40 | uint64(h[3])<<32 |
+			uint64(h[4])<<24 | uint64(h[5])<<16 | uint64(h[6])<<8 | uint64(h[7])
+	}
+
+	// Use FNV-1a for small keys (faster)
+	h := fnv.New64a()
+	h.Write([]byte(key))
+	return h.Sum64()
 }
 
 // evictLRU evicts the least recently used entry from a shard
 func (cm *CacheManager) evictLRU(shard *cacheShard) {
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
+	if shard.evictList.Len() == 0 {
+		return
+	}
 
-	var oldestKey any
-	var oldestTime int64
-	var oldestEntry *cacheEntry
-
-	shard.data.Range(func(key, value any) bool {
-		entry := value.(*cacheEntry)
-		lastAccess := atomic.LoadInt64(&entry.lastAccess)
-		if oldestKey == nil || lastAccess < oldestTime {
-			oldestKey = key
-			oldestTime = lastAccess
-			oldestEntry = entry
+	// Remove the least recently used entry (back of the list)
+	element := shard.evictList.Back()
+	if element != nil && element.Value != nil {
+		if entry, ok := element.Value.(*lruEntry); ok && entry != nil {
+			delete(shard.items, entry.key)
+			shard.evictList.Remove(element)
+			shard.size--
+			atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
+			atomic.AddInt64(&cm.evictions, 1)
+		} else {
+			// Remove invalid entry
+			shard.evictList.Remove(element)
 		}
-		return true
-	})
-
-	if oldestKey != nil {
-		shard.data.Delete(oldestKey)
-		atomic.AddInt64(&shard.size, -1)
-		atomic.AddInt64(&shard.memory, -int64(oldestEntry.size))
-		atomic.AddInt64(&cm.evictions, 1)
 	}
 }
 
-// fnv1aHash implements FNV-1a hash algorithm for string keys
-func fnv1aHash(key string) uint64 {
-	const (
-		offset64 = 14695981039346656037
-		prime64  = 1099511628211
-	)
-
-	hash := uint64(offset64)
-	for i := 0; i < len(key); i++ {
-		hash ^= uint64(key[i])
-		hash *= prime64
-	}
-	return hash
-}
-
-// CleanExpiredCache removes expired entries from cache
-func (cm *CacheManager) CleanExpiredCache() {
+// cleanupShard removes expired entries from a shard
+func (cm *CacheManager) cleanupShard(shard *cacheShard) {
 	if cm.config == nil || cm.config.GetCacheTTL() <= 0 {
 		return
 	}
 
-	now := time.Now()
-	ttl := cm.config.GetCacheTTL()
-	for _, shard := range cm.shards {
-		shard.data.Range(func(key, value any) bool {
-			entry := value.(*cacheEntry)
-			creationTime := time.Unix(0, atomic.LoadInt64(&entry.timestamp))
-			if now.Sub(creationTime) > ttl {
-				shard.data.Delete(key)
-				atomic.AddInt64(&shard.size, -1)
-				atomic.AddInt64(&shard.memory, -int64(entry.size))
-			}
-			return true
-		})
+	now := time.Now().UnixNano()
+	ttlNanos := int64(cm.config.GetCacheTTL().Nanoseconds())
+
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	// Iterate through the list and remove expired entries
+	for element := shard.evictList.Back(); element != nil; {
+		// Check if element.Value is nil to prevent panic
+		if element.Value == nil {
+			prev := element.Prev()
+			shard.evictList.Remove(element)
+			element = prev
+			continue
+		}
+
+		entry, ok := element.Value.(*lruEntry)
+		if !ok || entry == nil {
+			// Skip invalid entries
+			prev := element.Prev()
+			shard.evictList.Remove(element)
+			element = prev
+			continue
+		}
+
+		if now-entry.timestamp > ttlNanos {
+			prev := element.Prev()
+			delete(shard.items, entry.key)
+			shard.evictList.Remove(element)
+			shard.size--
+			atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
+			element = prev
+		} else {
+			break // Since entries are ordered by access time, we can stop here
+		}
 	}
 }
 
-// GetCacheSize returns the total number of cached entries
-func (cm *CacheManager) GetCacheSize() int64 {
-	totalSize := int64(0)
-	for _, shard := range cm.shards {
-		totalSize += atomic.LoadInt64(&shard.size)
-	}
-	return totalSize
-}
-
-// SecureHash creates a secure hash for cache keys using SHA-256
-func (cm *CacheManager) SecureHash(input string) string {
-	// Use SHA-256 for cryptographically secure hashing
-	hash := sha256.Sum256([]byte(input))
-	return fmt.Sprintf("%x", hash[:16]) // Use first 16 bytes for performance
-}
-
-// estimateSize estimates the memory size of a value with optimized performance
-func estimateSize(value any) int {
-	if value == nil {
-		return 8 // pointer size
-	}
-
+// estimateSize estimates the memory size of a value
+func (cm *CacheManager) estimateSize(value any) int {
 	switch v := value.(type) {
 	case string:
-		return len(v) + 16 // string header + data
+		return len(v) + 16 // String overhead
 	case []byte:
-		return len(v) + 24 // slice header + data
-	case int, int64, float64:
+		return len(v) + 24 // Slice overhead
+	case map[string]any:
+		size := 48 // Map overhead
+		for key, val := range v {
+			size += len(key) + 16 + cm.estimateSize(val)
+		}
+		return size
+	case []any:
+		size := 24 // Slice overhead
+		for _, val := range v {
+			size += cm.estimateSize(val)
+		}
+		return size
+	case int, int32, int64, uint, uint32, uint64:
 		return 8
-	case int32, float32:
-		return 4
+	case float32, float64:
+		return 8
 	case bool:
 		return 1
-	case []any:
-		// Optimized: use sampling for large slices to avoid performance issues
-		size := 24 // slice header
-		length := len(v)
-		if length == 0 {
-			return size
-		}
-		if length > 100 {
-			// Sample-based estimation for large slices
-			sampleSize := min(10, length)
-			totalSample := 0
-			step := length / sampleSize
-			for i := 0; i < sampleSize; i++ {
-				totalSample += estimateSize(v[i*step])
-			}
-			avgItemSize := totalSample / sampleSize
-			return size + (length * avgItemSize)
-		}
-		// Full calculation for small slices
-		for _, item := range v {
-			size += estimateSize(item)
-		}
-		return size
-	case map[string]any:
-		// Optimized: use sampling for large maps
-		size := 48 // map header estimate
-		length := len(v)
-		if length == 0 {
-			return size
-		}
-		if length > 50 {
-			// Sample-based estimation for large maps
-			sampleSize := min(10, length)
-			totalSample := 0
-			count := 0
-			for k, val := range v {
-				if count >= sampleSize {
-					break
-				}
-				totalSample += len(k) + 16 + estimateSize(val)
-				count++
-			}
-			avgItemSize := totalSample / sampleSize
-			return size + (length * avgItemSize)
-		}
-		// Full calculation for small maps
-		for k, val := range v {
-			size += len(k) + 16 + estimateSize(val)
-		}
-		return size
 	default:
-		// Use reflection for complex types
-		return int(reflect.TypeOf(value).Size())
+		return 64 // Default estimate for unknown types
 	}
-}
-
-// min returns the minimum of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// CacheStats represents cache statistics
-type CacheStats struct {
-	Size      int64   `json:"size"`
-	Memory    int64   `json:"memory"`
-	HitCount  int64   `json:"hit_count"`
-	MissCount int64   `json:"miss_count"`
-	HitRatio  float64 `json:"hit_ratio"`
-	Evictions int64   `json:"evictions"`
 }

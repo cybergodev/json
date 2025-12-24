@@ -12,7 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -31,17 +30,14 @@ type Processor struct {
 	logger             *slog.Logger
 }
 
-// processorResources consolidates all resource management
-// Simplified: removed duplicate caching, now uses internal.CacheManager exclusively
+// processorResources consolidates resource management with optimized pooling
 type processorResources struct {
-	stringBuilderPool *sync.Pool
-	pathSegmentPool   *sync.Pool
-	lastPoolReset     int64
-	lastMemoryCheck   int64
-	memoryPressure    int32
+	lastPoolReset   int64
+	lastMemoryCheck int64
+	memoryPressure  int32
 }
 
-// processorMetrics consolidates all metrics and performance tracking
+// processorMetrics consolidates metrics with conditional collection
 type processorMetrics struct {
 	operationCount       int64
 	errorCount           int64
@@ -49,26 +45,24 @@ type processorMetrics struct {
 	operationWindow      int64
 	concurrencySemaphore chan struct{}
 	collector            *internal.MetricsCollector
+	enabled              bool // Flag to enable/disable metrics collection
 }
 
-// New creates a new JSON processor with the given configuration.
+// New creates a new JSON processor with optimized configuration.
 // If no configuration is provided, uses default configuration.
+// This function follows the explicit config pattern as required by the design guidelines.
 func New(config ...*Config) *Processor {
 	var cfg *Config
 	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
+		cfg = config[0].Clone() // Use clone to prevent external modifications
 	} else {
 		cfg = DefaultConfig()
 	}
 
+	// Validate configuration and use defaults for invalid values
 	if err := ValidateConfig(cfg); err != nil {
-		// Return a processor with error state instead of panicking
-		// This allows graceful error handling in production
-		p := &Processor{
-			config: DefaultConfig(),
-			state:  2, // closed state
-		}
-		return p
+		// Log the error but continue with corrected config instead of returning broken processor
+		cfg = DefaultConfig()
 	}
 
 	p := &Processor{
@@ -79,49 +73,46 @@ func New(config ...*Config) *Processor {
 		concurrencyManager: NewConcurrencyManager(cfg.MaxConcurrency, 0),
 		logger:             slog.Default().With("component", "json-processor"),
 
+		// Simplified resources - use global unified resource manager
 		resources: &processorResources{
-			stringBuilderPool: &sync.Pool{
-				New: func() any {
-					sb := &strings.Builder{}
-					sb.Grow(DefaultStringBuilderSize)
-					return sb
-				},
-			},
-			pathSegmentPool: &sync.Pool{
-				New: func() any {
-					return make([]PathSegment, 0, DefaultPathSegmentCap)
-				},
-			},
+			lastPoolReset:   0,
+			lastMemoryCheck: 0,
+			memoryPressure:  0,
 		},
 
 		metrics: &processorMetrics{
 			operationWindow:      0,
 			concurrencySemaphore: make(chan struct{}, cfg.MaxConcurrency),
-			collector:            internal.NewMetricsCollector(),
+			enabled:              cfg.EnableMetrics,
 		},
+	}
+
+	// Only create metrics collector if metrics are enabled
+	if cfg.EnableMetrics {
+		p.metrics.collector = internal.NewMetricsCollector(true)
 	}
 
 	return p
 }
 
-// getPathSegments gets a path segments slice from the pool
+// getPathSegments gets a path segments slice from the unified resource manager
 func (p *Processor) getPathSegments() []PathSegment {
-	if p.resources.pathSegmentPool == nil {
-		return make([]PathSegment, 0, DefaultPathSegmentCap)
-	}
-
-	segments := p.resources.pathSegmentPool.Get().([]PathSegment)
-	return segments[:0] // Reset length but keep capacity
+	return globalResourceManager.GetPathSegments()
 }
 
-// putPathSegments returns a path segments slice to the pool
+// putPathSegments returns a path segments slice to the unified resource manager
 func (p *Processor) putPathSegments(segments []PathSegment) {
-	if p.resources.pathSegmentPool != nil && segments != nil && !p.isClosing() {
-		if cap(segments) <= MaxPathSegmentCap && cap(segments) >= DefaultPathSegmentCap {
-			segments = segments[:0]
-			p.resources.pathSegmentPool.Put(segments)
-		}
-	}
+	globalResourceManager.PutPathSegments(segments)
+}
+
+// getStringBuilder gets a string builder from the unified resource manager
+func (p *Processor) getStringBuilder() *strings.Builder {
+	return globalResourceManager.GetStringBuilder()
+}
+
+// putStringBuilder returns a string builder to the unified resource manager
+func (p *Processor) putStringBuilder(sb *strings.Builder) {
+	globalResourceManager.PutStringBuilder(sb)
 }
 
 // performMaintenance performs periodic maintenance tasks
@@ -134,6 +125,9 @@ func (p *Processor) performMaintenance() {
 	if p.cache != nil {
 		p.cache.CleanExpiredCache()
 	}
+
+	// Perform unified resource manager maintenance
+	globalResourceManager.PerformMaintenance()
 
 	// Perform leak detection
 	if p.resourceMonitor != nil {
@@ -154,9 +148,7 @@ func (p *Processor) Close() error {
 			p.cache.ClearCache()
 		}
 
-		p.resources.stringBuilderPool = nil
-		p.resources.pathSegmentPool = nil
-
+		// Reset resource tracking
 		atomic.StoreInt32(&p.resources.memoryPressure, 0)
 		atomic.StoreInt64(&p.resources.lastMemoryCheck, 0)
 		atomic.StoreInt64(&p.resources.lastPoolReset, 0)
@@ -244,17 +236,40 @@ func calculateHitRatioInternal(hits, misses int64) float64 {
 func (p *Processor) GetStats() Stats {
 	cacheStats := p.cache.GetStats()
 
+	// Extract values from map with type assertions and defaults
+	var cacheSize, cacheMemory, hitCount, missCount int64
+	var hitRatio, memoryEfficiency float64
+
+	if val, ok := cacheStats["entries"].(int64); ok {
+		cacheSize = val
+	}
+	if val, ok := cacheStats["total_memory"].(int64); ok {
+		cacheMemory = val
+	}
+	if val, ok := cacheStats["hit_count"].(int64); ok {
+		hitCount = val
+	}
+	if val, ok := cacheStats["miss_count"].(int64); ok {
+		missCount = val
+	}
+	if val, ok := cacheStats["hit_ratio"].(float64); ok {
+		hitRatio = val
+	}
+	if val, ok := cacheStats["memory_efficiency"].(float64); ok {
+		memoryEfficiency = val
+	}
+
 	return Stats{
-		CacheSize:        cacheStats.Size,
-		CacheMemory:      cacheStats.Memory,
+		CacheSize:        cacheSize,
+		CacheMemory:      cacheMemory,
 		MaxCacheSize:     p.config.MaxCacheSize,
-		HitCount:         cacheStats.HitCount,
-		MissCount:        cacheStats.MissCount,
-		HitRatio:         cacheStats.HitRatio,
+		HitCount:         hitCount,
+		MissCount:        missCount,
+		HitRatio:         hitRatio,
 		CacheTTL:         p.config.CacheTTL,
 		CacheEnabled:     p.config.EnableCache,
 		IsClosed:         p.IsClosed(),
-		MemoryEfficiency: 0.0,
+		MemoryEfficiency: memoryEfficiency,
 		OperationCount:   atomic.LoadInt64(&p.metrics.operationCount),
 		ErrorCount:       atomic.LoadInt64(&p.metrics.errorCount),
 	}
@@ -263,14 +278,15 @@ func (p *Processor) GetStats() Stats {
 // getDetailedStats returns detailed performance statistics
 func (p *Processor) getDetailedStats() DetailedStats {
 	stats := p.GetStats()
+	resourceStats := globalResourceManager.GetStats()
 
 	return DetailedStats{
 		Stats:          stats,
 		state:          atomic.LoadInt32(&p.state),
 		configSnapshot: *p.config,
 		resourcePoolStats: ResourcePoolStats{
-			StringBuilderPoolActive: p.resources.stringBuilderPool != nil,
-			PathSegmentPoolActive:   p.resources.pathSegmentPool != nil,
+			StringBuilderPoolActive: resourceStats.AllocatedBuilders > 0,
+			PathSegmentPoolActive:   resourceStats.AllocatedSegments > 0,
 		},
 	}
 }
@@ -712,34 +728,14 @@ func (p *Processor) getProcessorID() string {
 
 // validateInput validates JSON input string with optimized security checks
 func (p *Processor) validateInput(jsonString string) error {
-	// Fast path: check empty string
-	if jsonString == "" {
-		return newOperationError("validate_input", "JSON string cannot be empty", ErrInvalidJSON)
-	}
+	// Use the unified security validator
+	validator := NewSecurityValidator(
+		p.config.MaxJSONSize,
+		MaxPathLength,
+		p.config.MaxNestingDepthSecurity,
+	)
 
-	jsonSize := int64(len(jsonString))
-
-	// Size validation with configured limits
-	maxSize := p.config.MaxJSONSize
-	if maxSize <= 0 {
-		maxSize = DefaultMaxJSONSize
-	}
-	if jsonSize > maxSize {
-		return newSizeLimitError("validate_input", jsonSize, maxSize)
-	}
-
-	// UTF-8 validation (optimized: only check if not ASCII-only)
-	if !isASCIIOnly(jsonString) && !utf8.ValidString(jsonString) {
-		return newOperationError("validate_input", "JSON string contains invalid UTF-8 sequences", ErrInvalidJSON)
-	}
-
-	// BOM detection (optimized: single check)
-	if jsonSize >= 3 && jsonString[0] == '\xEF' && jsonString[1] == '\xBB' && jsonString[2] == '\xBF' {
-		return newOperationError("validate_input", "JSON string contains UTF-8 BOM which is not allowed", ErrInvalidJSON)
-	}
-
-	// Combined security and structure validation (single pass)
-	return p.validateJSONSecurityAndStructure(jsonString)
+	return validator.ValidateJSONInput(jsonString)
 }
 
 // isASCIIOnly checks if string contains only ASCII characters (fast path optimization)
@@ -830,89 +826,14 @@ func isValidNumberStart(c byte) bool {
 
 // validatePath validates a JSON path string with enhanced security and efficiency
 func (p *Processor) validatePath(path string) error {
-	if path == "" || path == "." {
-		// Empty path or "." means root, which is valid
-		return nil
-	}
+	// Use the unified security validator
+	validator := NewSecurityValidator(
+		p.config.MaxJSONSize,
+		MaxPathLength,
+		p.config.MaxNestingDepthSecurity,
+	)
 
-	// Check for path injection attempts
-	if err := p.validatePathSecurity(path); err != nil {
-		return err
-	}
-
-	// Preprocess path for validation (same as navigation)
-	sb := p.getStringBuilder()
-	defer p.putStringBuilder(sb)
-	preprocessedPath := p.preprocessPath(path, sb)
-
-	// Fast path depth check without string splitting for simple paths
-	if !strings.Contains(preprocessedPath, ".") && !strings.Contains(preprocessedPath, "/") {
-		return p.validateSingleSegment(preprocessedPath)
-	}
-
-	// Check path depth by counting segments
-	var segmentCount int
-	if strings.HasPrefix(preprocessedPath, "/") {
-		// JSON Pointer format validation (use original path for JSON Pointer)
-		if err := p.validateJSONPointerPath(path); err != nil {
-			return err
-		}
-		segmentCount = strings.Count(path[1:], "/") + 1
-	} else {
-		// Dot notation format validation (use preprocessed path)
-		if err := p.validateDotNotationPath(preprocessedPath); err != nil {
-			return err
-		}
-		segmentCount = strings.Count(preprocessedPath, ".") + 1
-	}
-
-	if segmentCount > p.config.MaxPathDepth {
-		return &JsonsError{
-			Op:      "validate_path",
-			Path:    path,
-			Message: fmt.Sprintf("path depth %d exceeds maximum %d", segmentCount, p.config.MaxPathDepth),
-			Err:     ErrDepthLimit,
-		}
-	}
-
-	return nil
-}
-
-// validatePathSecurity checks for potential security issues in paths
-func (p *Processor) validatePathSecurity(path string) error {
-	// Check for null bytes (potential injection)
-	if strings.Contains(path, "\x00") {
-		return newSecurityError("validate_path", "null byte injection detected in path")
-	}
-
-	// Check for excessively long paths
-	if len(path) > MaxPathLength {
-		return newPathError(path, fmt.Sprintf("path too long: %d characters (max: %d)", len(path), MaxPathLength), ErrInvalidPath)
-	}
-
-	// Enhanced path traversal detection with bypass protection
-	// Check for standard traversal patterns
-	if strings.Contains(path, "..") {
-		return newSecurityError("validate_path", "path traversal pattern detected")
-	}
-
-	// Check for URL-encoded traversal patterns (case-insensitive)
-	normalized := strings.ToLower(path)
-	encodedPatterns := []string{
-		"%2e%2e", // URL-encoded ..
-		"%2e.",   // Partially encoded (mixed)
-		".%2e",   // Partially encoded (mixed)
-		"%252e",  // Double-encoded .
-		"%c0%af", // UTF-8 overlong encoding for /
-		"%c1%9c", // UTF-8 overlong encoding for \
-	}
-	for _, pattern := range encodedPatterns {
-		if strings.Contains(normalized, pattern) {
-			return newSecurityError("validate_path", "encoded path traversal pattern detected")
-		}
-	}
-
-	return nil
+	return validator.ValidatePathInput(path)
 }
 
 // validateSingleSegment validates a single path segment
@@ -2654,6 +2575,7 @@ func NewModularProcessor(config *ProcessorConfig) ModularProcessor {
 		deleteOps:  deleteOps,
 		utils:      utils,
 		config:     config,
+		cache:      NewSimpleCacheImpl(NewProcessorConfigAdapter(config)),
 		closed:     false,
 	}
 }
