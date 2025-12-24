@@ -39,13 +39,13 @@ import (
 	"sync"
 )
 
-// Global processor instance for convenience functions with proper synchronization
+// Global processor instance for convenience functions with optimized synchronization
 var (
 	defaultProcessor   *Processor
 	defaultProcessorMu sync.RWMutex
 )
 
-// getDefaultProcessor returns the global default processor instance with proper locking
+// getDefaultProcessor returns the global default processor instance with optimized locking
 func getDefaultProcessor() *Processor {
 	// Fast path: read lock for existing processor
 	defaultProcessorMu.RLock()
@@ -61,12 +61,10 @@ func getDefaultProcessor() *Processor {
 	defer defaultProcessorMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if defaultProcessor != nil && !defaultProcessor.IsClosed() {
-		return defaultProcessor
+	if defaultProcessor == nil || defaultProcessor.IsClosed() {
+		defaultProcessor = New()
 	}
 
-	// Create new processor with default config
-	defaultProcessor = New()
 	return defaultProcessor
 }
 
@@ -149,18 +147,22 @@ func GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOp
 
 // GetTypedWithDefault retrieves a typed value with a default fallback
 func GetTypedWithDefault[T any](jsonStr, path string, defaultValue T, opts ...*ProcessorOptions) T {
-	rawValue, err := Get(jsonStr, path, opts...)
-	if err != nil || rawValue == nil {
+	// First get the raw value to check if it was null in JSON
+	rawValue, rawErr := Get(jsonStr, path, opts...)
+	if rawErr != nil || rawValue == nil {
 		return defaultValue
 	}
 
+	// Now get the typed value
 	value, err := GetTyped[T](jsonStr, path, opts...)
 	if err != nil {
 		return defaultValue
 	}
+
 	return value
 }
 
+// Type-specific convenience functions with defaults
 func GetStringWithDefault(jsonStr, path, defaultValue string, opts ...*ProcessorOptions) string {
 	return GetTypedWithDefault(jsonStr, path, defaultValue, opts...)
 }

@@ -1733,8 +1733,8 @@ func (p *Processor) handlePropertyAccessValue(data any, property string) any {
 	return nil
 }
 
-// parseArrayIndex parses a string as an array index, returns -1 if invalid
-func (p *Processor) parseArrayIndex(property string) int {
+// parseArrayIndexFromPath parses a string as an array index, returns -1 if invalid
+func (p *Processor) parseArrayIndexFromPath(property string) int {
 	if index, err := strconv.Atoi(property); err == nil && index >= 0 {
 		return index
 	}
@@ -2405,40 +2405,4 @@ func (p *Processor) wrapError(err error, context string) error {
 // createPathError creates a path-specific error
 func (p *Processor) createPathError(path string, operation string, err error) error {
 	return fmt.Errorf("failed to %s at path '%s': %w", operation, path, err)
-}
-
-// Memory management utilities
-
-// getStringBuilder gets a string builder from the pool (optimized for performance)
-func (p *Processor) getStringBuilder() *strings.Builder {
-	// Fast path: direct pool access without closing check (checked once at operation start)
-	if pool := p.resources.stringBuilderPool; pool != nil {
-		if builder := pool.Get(); builder != nil {
-			sb := builder.(*strings.Builder)
-			sb.Reset()
-			return sb
-		}
-	}
-
-	// Fallback: create new builder with optimized capacity
-	sb := &strings.Builder{}
-	sb.Grow(DefaultStringBuilderSize)
-	return sb
-}
-
-// putStringBuilder returns a string builder to the pool (optimized for performance)
-func (p *Processor) putStringBuilder(builder *strings.Builder) {
-	if builder == nil {
-		return
-	}
-
-	// Fast path: check capacity and return to pool
-	capacity := builder.Cap()
-	if capacity >= MinPoolBufferSize && capacity <= MaxPoolBufferSize {
-		if pool := p.resources.stringBuilderPool; pool != nil {
-			builder.Reset()
-			pool.Put(builder)
-		}
-	}
-	// Oversized/undersized builders are simply discarded (GC will handle them)
 }

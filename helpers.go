@@ -19,8 +19,8 @@ type (
 	// Numeric represents all numeric types
 	Numeric interface {
 		~int | ~int8 | ~int16 | ~int32 | ~int64 |
-		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
-		~float32 | ~float64
+			~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
+			~float32 | ~float64
 	}
 
 	// Ordered represents types that can be ordered
@@ -49,7 +49,7 @@ type (
 	}
 )
 
-// GetTypedWithProcessor retrieves a typed value from JSON using a specific processor
+// GetTypedWithProcessor retrieves a typed value from JSON using a specific processor with optimized conversion
 func GetTypedWithProcessor[T any](processor *Processor, jsonStr, path string, opts ...*ProcessorOptions) (T, error) {
 	var zero T
 
@@ -64,31 +64,13 @@ func GetTypedWithProcessor[T any](processor *Processor, jsonStr, path string, op
 		return handleNullValue[T](path)
 	}
 
-	// Try direct type assertion first
-	if typedValue, ok := value.(T); ok {
-		return typedValue, nil
-	}
-
-	// Special handling for numeric types with large numbers
-	convResult, handled := handleLargeNumberConversion[T](value, path)
-	if handled {
-		return convResult.value, convResult.err
-	}
-
-	// Use unified type conversion from type_conversion.go
+	// Use unified type conversion for better performance
 	if converted, ok := UnifiedTypeConversion[T](value); ok {
 		return converted, nil
 	}
 
-	// Last resort: JSON marshaling/unmarshaling for complex types only
-	// Use custom encoder to preserve number formats
-	config := NewPrettyConfig()
-	config.PreserveNumbers = true
-
-	encoder := NewCustomEncoder(config)
-	defer encoder.Close()
-
-	encodedJson, err := encoder.Encode(value)
+	// Fallback: JSON marshaling/unmarshaling for complex types
+	jsonBytes, err := json.Marshal(value)
 	if err != nil {
 		return zero, &JsonsError{
 			Op:      "get_typed",
@@ -99,8 +81,7 @@ func GetTypedWithProcessor[T any](processor *Processor, jsonStr, path string, op
 	}
 
 	var finalResult T
-	// Use number-preserving unmarshal for better type conversion
-	if err := PreservingUnmarshal([]byte(encodedJson), &finalResult, true); err != nil {
+	if err := json.Unmarshal(jsonBytes, &finalResult); err != nil {
 		return zero, &JsonsError{
 			Op:      "get_typed",
 			Path:    path,
@@ -515,7 +496,7 @@ func (cm *ConcurrencyManager) ExecuteWithConcurrencyControl(
 			return &JsonsError{
 				Op:      "concurrency_control",
 				Message: "circuit breaker is open",
-				Err:     ErrCircuitOpen,
+				Err:     ErrOperationFailed,
 			}
 		}
 	}
@@ -622,7 +603,7 @@ func (cm *ConcurrencyManager) checkRateLimit() error {
 		return &JsonsError{
 			Op:      "rate_limit",
 			Message: "rate limit exceeded",
-			Err:     ErrRateLimitExceeded,
+			Err:     ErrOperationTimeout,
 		}
 	}
 
@@ -722,15 +703,15 @@ func (cm *ConcurrencyManager) DetectDeadlocks() []DeadlockInfo {
 }
 
 // cleanupStaleTimeouts removes stale entries from operationTimeouts map
-// CRITICAL FIX: Prevents unbounded memory growth with strict limits
+// OPTIMIZED: Prevents unbounded memory growth with aggressive cleanup
 func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 	cm.timeoutMutex.Lock()
 	defer cm.timeoutMutex.Unlock()
 
 	now := time.Now().UnixNano()
 	threshold := int64(60 * time.Second)
-	const maxMapSize = 1000 // CRITICAL FIX: Reduced from 5000 to prevent memory bloat
-	const targetSize = 500  // CRITICAL FIX: Reduced from 2000
+	const maxMapSize = 200 // OPTIMIZED: Reduced from 500 to prevent memory bloat
+	const targetSize = 100 // OPTIMIZED: Reduced from 250
 
 	currentSize := len(cm.operationTimeouts)
 
@@ -739,23 +720,13 @@ func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 		return
 	}
 
-	// CRITICAL: If map exceeds max size, recreate with proper capacity
+	// CRITICAL: If map exceeds max size, recreate immediately
 	if currentSize > maxMapSize {
 		cm.operationTimeouts = make(map[uint64]int64, targetSize)
 		return
 	}
 
-	// If map is small, just delete stale entries
-	if currentSize < targetSize/2 {
-		for gid, startTime := range cm.operationTimeouts {
-			if now-startTime > threshold {
-				delete(cm.operationTimeouts, gid)
-			}
-		}
-		return
-	}
-
-	// If map is large, recreate with only fresh entries
+	// Aggressive cleanup: recreate map with only fresh entries
 	newMap := make(map[uint64]int64, targetSize)
 	count := 0
 	for gid, startTime := range cm.operationTimeouts {
@@ -823,11 +794,11 @@ const (
 
 // Nested call tracking to prevent state conflicts with optimized memory management
 var (
-	nestedCallTracker = make(map[uint64]int, 50) // Pre-allocated with reasonable capacity
+	nestedCallTracker = make(map[uint64]int, 15) // OPTIMIZED: Reduced from 25 to prevent memory bloat
 	nestedCallMutex   sync.RWMutex
 	lastCleanupTime   int64      // Unix timestamp of last cleanup
-	maxTrackerSize    = 50       // CRITICAL FIX: Reduced from 100 to prevent memory bloat
-	cleanupInterval   = int64(5) // CRITICAL FIX: More frequent cleanup every 5 seconds
+	maxTrackerSize    = 15       // OPTIMIZED: Reduced from 25 to prevent memory bloat
+	cleanupInterval   = int64(2) // OPTIMIZED: More frequent cleanup every 2 seconds
 )
 
 // getGoroutineID returns the current goroutine ID (optimized version)
@@ -926,29 +897,26 @@ func exitNestedCall() {
 }
 
 // cleanupDeadGoroutines removes entries for goroutines that no longer exist
-// CRITICAL FIX: Prevents unbounded memory growth from dead goroutines
+// OPTIMIZED: Prevents unbounded memory growth from dead goroutines
 func cleanupDeadGoroutines() {
 	trackerSize := len(nestedCallTracker)
 
 	// CRITICAL: If tracker exceeds limit, clear everything immediately
 	if trackerSize > maxTrackerSize {
-		nestedCallTracker = make(map[uint64]int, maxTrackerSize/2)
+		clear(nestedCallTracker) // Use Go 1.21+ clear() for efficiency
 		return
 	}
 
-	// If tracker is more than 60% full, start aggressive cleanup
-	if trackerSize > maxTrackerSize*3/5 {
-		// Remove all zero-level entries (goroutines that finished)
-		for gid, level := range nestedCallTracker {
-			if level <= 0 {
-				delete(nestedCallTracker, gid)
-			}
+	// Aggressive cleanup: remove all zero-level entries
+	for gid, level := range nestedCallTracker {
+		if level <= 0 {
+			delete(nestedCallTracker, gid)
 		}
 	}
 
-	// Final check: if still more than 80% full, clear everything
+	// Final check: if still too large, clear everything
 	if len(nestedCallTracker) > maxTrackerSize*4/5 {
-		nestedCallTracker = make(map[uint64]int, maxTrackerSize/2)
+		clear(nestedCallTracker)
 	}
 }
 
@@ -1882,10 +1850,7 @@ func convertToString(value any) string {
 	if value == nil {
 		return ""
 	}
-	if result, ok := ConvertToString(value); ok {
-		return result
-	}
-	return fmt.Sprintf("%v", value)
+	return ConvertToString(value)
 }
 
 func convertToBool(value any) (bool, error) {

@@ -355,8 +355,8 @@ func getEncoderBuffer() *bytes.Buffer {
 // putEncoderBuffer returns a bytes.Buffer to the encoder pool
 // PERFORMANCE FIX: Stricter size limits prevent memory bloat
 func putEncoderBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 16 * 1024 // CRITICAL FIX: Reduced from 32KB to 16KB
-	const minPoolBufferSize = 512       // CRITICAL FIX: Reduced from 1024 to 512
+	const maxPoolBufferSize = 8 * 1024 // CRITICAL FIX: Reduced from 16KB to 8KB
+	const minPoolBufferSize = 256      // CRITICAL FIX: Reduced from 512 to 256
 	if buf != nil {
 		c := buf.Cap()
 		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
@@ -989,8 +989,8 @@ func getBytesBuffer() *bytes.Buffer {
 // putBytesBuffer returns a bytes.Buffer to the pool with strict size limits
 // PERFORMANCE FIX: Prevents memory bloat from oversized buffers
 func putBytesBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 16 * 1024 // CRITICAL FIX: Reduced from 32KB to 16KB
-	const minPoolBufferSize = 512       // CRITICAL FIX: Reduced from 1024 to 512
+	const maxPoolBufferSize = 8 * 1024 // CRITICAL FIX: Reduced from 16KB to 8KB
+	const minPoolBufferSize = 256      // CRITICAL FIX: Reduced from 512 to 256
 	if buf != nil {
 		c := buf.Cap()
 		if c >= minPoolBufferSize && c <= maxPoolBufferSize {

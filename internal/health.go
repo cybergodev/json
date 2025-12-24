@@ -3,17 +3,18 @@ package internal
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 )
 
 // HealthChecker provides health checking functionality for the JSON processor
 type HealthChecker struct {
-	processor interface{} // Reference to processor (using interface to avoid circular dependency)
+	processor any // Reference to processor (using any to avoid circular dependency)
 	metrics   *MetricsCollector
 }
 
 // NewHealthChecker creates a new health checker
-func NewHealthChecker(processor interface{}, metrics *MetricsCollector) *HealthChecker {
+func NewHealthChecker(processor any, metrics *MetricsCollector) *HealthChecker {
 	return &HealthChecker{
 		processor: processor,
 		metrics:   metrics,
@@ -286,17 +287,18 @@ func (hs *HealthStatus) GetSummary() string {
 		status = "UNHEALTHY"
 	}
 
-	summary := fmt.Sprintf("Health Status: %s (checked at %s)\n", status, hs.Timestamp.Format(time.RFC3339))
+	var summary strings.Builder
+	summary.WriteString(fmt.Sprintf("Health Status: %s (checked at %s)\n", status, hs.Timestamp.Format(time.RFC3339)))
 
 	for checkName, result := range hs.Checks {
 		checkStatus := "✓"
 		if !result.Healthy {
 			checkStatus = "✗"
 		}
-		summary += fmt.Sprintf("  %s %s: %s\n", checkStatus, checkName, result.Message)
+		summary.WriteString(fmt.Sprintf("  %s %s: %s\n", checkStatus, checkName, result.Message))
 	}
 
-	return summary
+	return summary.String()
 }
 
 // IsHealthy returns true if all health checks passed

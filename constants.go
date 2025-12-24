@@ -3,62 +3,61 @@ package json
 import "time"
 
 const (
-	// Buffer and Pool Sizes - OPTIMIZED for better memory management
-	DefaultBufferSize        = 1024  // Reduced from 2048
-	MaxPoolBufferSize        = 16384 // Reduced from 65536
-	MinPoolBufferSize        = 512   // Reduced from 1024
-	DefaultPathSegmentCap    = 8     // Reduced from 16
-	MaxPathSegmentCap        = 128   // Reduced from 256
-	DefaultStringBuilderSize = 256   // Reduced from 512
+	// Buffer and Pool Sizes - Optimized for production workloads
+	DefaultBufferSize        = 1024
+	MaxPoolBufferSize        = 16384
+	MinPoolBufferSize        = 512
+	DefaultPathSegmentCap    = 8
+	MaxPathSegmentCap        = 128
+	DefaultStringBuilderSize = 256
 
-	// Cache Sizes - OPTIMIZED for better performance/memory balance
-	DefaultCacheSize     = 128 // Reduced from 256
-	MaxCacheEntries      = 512 // Reduced from 1024
-	CacheCleanupKeepSize = 256 // Reduced from 512
+	// Cache Sizes - Balanced for performance and memory
+	DefaultCacheSize     = 128
+	MaxCacheEntries      = 512
+	CacheCleanupKeepSize = 256
 
-	// Operation Limits - TIGHTENED for better security
+	// Operation Limits - Secure defaults with reasonable headroom
 	InvalidArrayIndex        = -999999
-	DefaultMaxJSONSize       = 5 * 1024 * 1024 // Reduced from 10MB to 5MB
-	DefaultMaxSecuritySize   = 5 * 1024 * 1024 // Reduced from 10MB to 5MB
-	DefaultMaxNestingDepth   = 32              // Reduced from 50
-	DefaultMaxObjectKeys     = 5000            // Reduced from 10000
-	DefaultMaxArrayElements  = 5000            // Reduced from 10000
-	DefaultMaxPathDepth      = 50              // Reduced from 100
-	DefaultMaxBatchSize      = 500             // Reduced from 1000
-	DefaultMaxConcurrency    = 50              // Reduced from 100
-	DefaultParallelThreshold = 5               // Reduced from 10
+	DefaultMaxJSONSize       = 10 * 1024 * 1024 // 10MB - reasonable for most use cases
+	DefaultMaxSecuritySize   = 10 * 1024 * 1024
+	DefaultMaxNestingDepth   = 32
+	DefaultMaxObjectKeys     = 10000
+	DefaultMaxArrayElements  = 10000
+	DefaultMaxPathDepth      = 50
+	DefaultMaxBatchSize      = 1000
+	DefaultMaxConcurrency    = 50
+	DefaultParallelThreshold = 10
 
-	// Timing and Intervals - OPTIMIZED for better responsiveness
-	MemoryPressureCheckInterval = 25000                 // Reduced from 50000
-	PoolResetInterval           = 50000                 // Reduced from 100000
-	PoolResetIntervalPressure   = 25000                 // Reduced from 50000
-	CacheCleanupInterval        = 15 * time.Second      // Reduced from 30s
-	DeadlockCheckInterval       = 15 * time.Second      // Reduced from 30s
-	DeadlockThreshold           = 15 * time.Second      // Reduced from 30s
-	SlowOperationThreshold      = 50 * time.Millisecond // Reduced from 100ms
+	// Timing and Intervals - Optimized for responsiveness
+	MemoryPressureCheckInterval = 30000
+	PoolResetInterval           = 60000
+	PoolResetIntervalPressure   = 30000
+	CacheCleanupInterval        = 30 * time.Second
+	DeadlockCheckInterval       = 30 * time.Second
+	DeadlockThreshold           = 30 * time.Second
+	SlowOperationThreshold      = 100 * time.Millisecond
 
-	// Retry and Timeout - OPTIMIZED for better user experience
-	MaxRetries              = 2                      // Reduced from 3
-	BaseRetryDelay          = 5 * time.Millisecond   // Reduced from 10ms
-	DefaultOperationTimeout = 15 * time.Second       // Reduced from 30s
-	AcquireSlotRetryDelay   = 500 * time.Microsecond // Reduced from 1ms
+	// Retry and Timeout - Production-ready settings
+	MaxRetries              = 3
+	BaseRetryDelay          = 10 * time.Millisecond
+	DefaultOperationTimeout = 30 * time.Second
+	AcquireSlotRetryDelay   = 1 * time.Millisecond
 
-	// Path Validation - TIGHTENED for better security
-	MaxPathLength          = 5000 // Reduced from 10000
-	MaxSegmentLength       = 512  // Reduced from 1024
-	MaxExtractionDepth     = 5    // Reduced from 10
-	MaxConsecutiveColons   = 2    // Reduced from 3
-	MaxConsecutiveBrackets = 3    // Reduced from 5
+	// Path Validation - Secure but flexible
+	MaxPathLength          = 5000
+	MaxSegmentLength       = 1024
+	MaxExtractionDepth     = 10
+	MaxConsecutiveColons   = 3
+	MaxConsecutiveBrackets = 3
 
-	// Security - ENHANCED limits
-	MaxSecurityValidationSize = 5 * 1024 * 1024 // Reduced from 10MB
-	MaxAllowedNestingDepth    = 32              // Reduced from 50
-	MaxAllowedObjectKeys      = 5000            // Reduced from 10000
-	MaxAllowedArrayElements   = 5000            // Reduced from 10000
-	PathTraversalMaxLength    = 50              // Reduced from 100
+	// Security constants (aliases for backward compatibility)
+	MaxSecurityValidationSize = DefaultMaxSecuritySize
+	MaxAllowedNestingDepth    = DefaultMaxNestingDepth
+	MaxAllowedObjectKeys      = DefaultMaxObjectKeys
+	MaxAllowedArrayElements   = DefaultMaxArrayElements
 
-	// Cache TTL - OPTIMIZED for better cache efficiency
-	DefaultCacheTTL = 2 * time.Minute // Reduced from 5 minutes
+	// Cache TTL - Default cache time-to-live
+	DefaultCacheTTL = 5 * time.Minute
 )
 
 // Error codes for machine-readable error identification
@@ -69,8 +68,9 @@ const (
 	ErrCodeSizeLimit         = "ERR_SIZE_LIMIT"
 	ErrCodeDepthLimit        = "ERR_DEPTH_LIMIT"
 	ErrCodeSecurityViolation = "ERR_SECURITY_VIOLATION"
-	ErrCodeRateLimit         = "ERR_RATE_LIMIT"
+	ErrCodeOperationFailed   = "ERR_OPERATION_FAILED"
 	ErrCodeTimeout           = "ERR_TIMEOUT"
 	ErrCodeConcurrencyLimit  = "ERR_CONCURRENCY_LIMIT"
 	ErrCodeProcessorClosed   = "ERR_PROCESSOR_CLOSED"
+	ErrCodeRateLimit         = "ERR_RATE_LIMIT"
 )

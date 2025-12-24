@@ -210,10 +210,10 @@ type PathPatterns struct {
 func NewPathPatterns() *PathPatterns {
 	return &PathPatterns{
 		dotNotation:    regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
-		arrayIndex:     regexp.MustCompile(`^\[(-?\d+)]$`),
+		arrayIndex:     regexp.MustCompile(`^\[(-?\d+)\]$`),
 		jsonPointer:    regexp.MustCompile(`^/([^/]*)$`),
-		extractSyntax:  regexp.MustCompile(`^\{([^}]+)}$`),
-		rangeSyntax:    regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?]$`),
+		extractSyntax:  regexp.MustCompile(`^\{(flat:)?([a-zA-Z_][a-zA-Z0-9_]*)\}$`),
+		rangeSyntax:    regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?\]$`),
 		SimpleProperty: regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
 		NumericIndex:   regexp.MustCompile(`^-?\d+$`),
 	}
@@ -392,249 +392,8 @@ func (pp *PathParser) parsePropertyWithArray(part string) ([]PathSegment, error)
 	return segments, nil
 }
 
-// isExtractionFollowedByArrayOp checks if the part contains extraction followed by array operation
-func (pp *PathParser) isExtractionFollowedByArrayOp(part string) bool {
-	// Look for ANY extraction followed by array operation, not just the last one
-	// This handles patterns like {teams}[0]{members}{name}
-
-	// Find all extraction positions
-	pos := 0
-	for {
-		extractStart := strings.Index(part[pos:], "{")
-		if extractStart == -1 {
-			break
-		}
-		extractStart += pos
-
-		extractEnd := strings.Index(part[extractStart:], "}")
-		if extractEnd == -1 {
-			break
-		}
-		extractEnd += extractStart
-
-		// Check what follows this extraction
-		remaining := part[extractEnd+1:]
-		if strings.HasPrefix(remaining, "[") && strings.Contains(remaining, "]") {
-			// Found extraction followed by array operation
-			return true
-		}
-
-		pos = extractEnd + 1
-	}
-
-	return false
-}
-
-// parseDistributedArrayOperation parses extraction followed by array operation as distributed operation
-func (pp *PathParser) parseDistributedArrayOperation(part string) ([]PathSegment, error) {
-	var segments []PathSegment
-
-	// Find the FIRST extraction that is followed by array operation
-	pos := 0
-	var extractionEnd int = -1
-	for {
-		extractStart := strings.Index(part[pos:], "{")
-		if extractStart == -1 {
-			break
-		}
-		extractStart += pos
-
-		extractEnd := strings.Index(part[extractStart:], "}")
-		if extractEnd == -1 {
-			break
-		}
-		extractEnd += extractStart
-
-		// Check what follows this extraction
-		remaining := part[extractEnd+1:]
-		if strings.HasPrefix(remaining, "[") && strings.Contains(remaining, "]") {
-			// Found the extraction followed by array operation
-			extractionEnd = extractEnd
-			break
-		}
-
-		pos = extractEnd + 1
-	}
-
-	if extractionEnd == -1 {
-		return nil, fmt.Errorf("no extraction followed by array operation found in '%s'", part)
-	}
-
-	// Split into prefix (everything up to and including the extraction) and the array operation
-	prefix := part[:extractionEnd+1]
-	arrayPart := part[extractionEnd+1:]
-
-	// Parse all segments before the distributed operation
-	if prefix != "" {
-		// Find the last extraction in the prefix
-		lastExtractStart := strings.LastIndex(prefix, "{")
-		if lastExtractStart == -1 {
-			return nil, fmt.Errorf("invalid extraction syntax in prefix '%s'", prefix)
-		}
-
-		// Parse everything before the last extraction as regular segments
-		beforeLastExtract := part[:lastExtractStart]
-		if beforeLastExtract != "" {
-			beforeSegments, err := pp.parseComplexSegmentRecursive(beforeLastExtract)
-			if err != nil {
-				return nil, err
-			}
-			segments = append(segments, beforeSegments...)
-		}
-
-		// Parse the last extraction
-		lastExtractPart := prefix[lastExtractStart:]
-		if strings.HasPrefix(lastExtractPart, "{") && strings.HasSuffix(lastExtractPart, "}") {
-			extract := lastExtractPart[1 : len(lastExtractPart)-1]
-
-			// Check if this is a flat extraction
-			isFlat := strings.HasPrefix(extract, "flat:")
-			actualExtract := extract
-			if isFlat {
-				actualExtract = strings.TrimPrefix(extract, "flat:")
-			}
-
-			segments = append(segments, PathSegment{
-				Type:    ExtractSegment,
-				Key:     actualExtract,
-				Extract: actualExtract,
-				IsFlat:  isFlat,
-				Value:   lastExtractPart,
-			})
-		}
-	}
-
-	// Parse array operation segment and mark as distributed
-	if strings.HasPrefix(arrayPart, "[") {
-		// Find the end of the array operation
-		bracketEnd := strings.Index(arrayPart, "]")
-		if bracketEnd == -1 {
-			return nil, fmt.Errorf("missing closing bracket in '%s'", arrayPart)
-		}
-
-		arrayOpPart := arrayPart[:bracketEnd+1]
-		arrayContent := arrayOpPart[1 : len(arrayOpPart)-1]
-
-		segment, err := pp.parseArrayAccess(arrayContent)
-		if err != nil {
-			return nil, fmt.Errorf("invalid array access '%s': %w", arrayContent, err)
-		}
-
-		// Mark as distributed operation
-		segment.IsDistributed = true
-		segment.Value = arrayOpPart
-
-		segments = append(segments, segment)
-
-		// Parse remaining parts after the array operation
-		remaining := arrayPart[bracketEnd+1:]
-		if remaining != "" {
-			remainingSegments, err := pp.parseComplexSegmentRecursive(remaining)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse remaining part '%s': %w", remaining, err)
-			}
-			segments = append(segments, remainingSegments...)
-		}
-	}
-
-	return segments, nil
-}
-
-// parseComplexSegmentRecursive parses complex segments recursively without distributed operation detection
-func (pp *PathParser) parseComplexSegmentRecursive(part string) ([]PathSegment, error) {
-	var segments []PathSegment
-	remaining := part
-
-	for len(remaining) > 0 {
-		// Check for extraction syntax
-		if strings.HasPrefix(remaining, "{") {
-			braceEnd := strings.Index(remaining, "}")
-			if braceEnd == -1 {
-				return nil, fmt.Errorf("missing closing brace in '%s'", remaining)
-			}
-
-			extractPart := remaining[:braceEnd+1]
-			extract := extractPart[1 : len(extractPart)-1]
-
-			// Check if this is a flat extraction
-			isFlat := strings.HasPrefix(extract, "flat:")
-			actualExtract := extract
-			if isFlat {
-				actualExtract = strings.TrimPrefix(extract, "flat:")
-			}
-
-			segments = append(segments, PathSegment{
-				Type:    ExtractSegment,
-				Key:     actualExtract,
-				Extract: actualExtract,
-				IsFlat:  isFlat,
-				Value:   extractPart,
-			})
-
-			remaining = remaining[braceEnd+1:]
-			continue
-		}
-
-		// Check for array access
-		if strings.HasPrefix(remaining, "[") {
-			bracketEnd := strings.Index(remaining, "]")
-			if bracketEnd == -1 {
-				return nil, fmt.Errorf("missing closing bracket in '%s'", remaining)
-			}
-
-			arrayPart := remaining[1:bracketEnd]
-			segment, err := pp.parseArrayAccess(arrayPart)
-			if err != nil {
-				return nil, fmt.Errorf("invalid array access '%s': %w", arrayPart, err)
-			}
-
-			// Check if this array operation follows an extraction - if so, mark as distributed
-			if len(segments) > 0 && segments[len(segments)-1].Type == ExtractSegment {
-				segment.IsDistributed = true
-			}
-
-			// Set Value field for backward compatibility
-			segment.Value = remaining[:bracketEnd+1]
-			segments = append(segments, segment)
-			remaining = remaining[bracketEnd+1:]
-			continue
-		}
-
-		// Check for property name before any special syntax
-		nextSpecial := len(remaining)
-		if bracketPos := strings.Index(remaining, "["); bracketPos != -1 && bracketPos < nextSpecial {
-			nextSpecial = bracketPos
-		}
-		if bracePos := strings.Index(remaining, "{"); bracePos != -1 && bracePos < nextSpecial {
-			nextSpecial = bracePos
-		}
-
-		if nextSpecial > 0 {
-			// There's a property name before special syntax
-			propertyName := remaining[:nextSpecial]
-			segments = append(segments, PathSegment{
-				Type:  PropertySegment,
-				Key:   propertyName,
-				Value: propertyName,
-			})
-			remaining = remaining[nextSpecial:]
-			continue
-		}
-
-		// If we get here, there's an error in parsing
-		return nil, fmt.Errorf("unable to parse remaining part: '%s'", remaining)
-	}
-
-	return segments, nil
-}
-
 // parseComplexSegment parses complex segments that may contain mixed syntax like {field}[slice]
 func (pp *PathParser) parseComplexSegment(part string) ([]PathSegment, error) {
-	// Check if this is extraction followed by array operation (distributed operation)
-	if pp.isExtractionFollowedByArrayOp(part) {
-		return pp.parseDistributedArrayOperation(part)
-	}
-
 	var segments []PathSegment
 	remaining := part
 
@@ -838,7 +597,7 @@ func (pp *PathParser) parseJSONPointer(path string) ([]PathSegment, error) {
 		part = strings.ReplaceAll(part, "~1", "/")
 		part = strings.ReplaceAll(part, "~0", "~")
 
-		// Optimized: Check if it's a numeric index without regex
+		// Check if it's a numeric index without regex
 		if isNumericIndex(part) {
 			index, err := strconv.Atoi(part)
 			if err != nil {

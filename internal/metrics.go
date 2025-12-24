@@ -10,7 +10,9 @@ import (
 
 // MetricsCollector collects and provides performance metrics for the JSON processor
 type MetricsCollector struct {
-	// Operation counters (atomic)
+	enabled bool // Flag to enable/disable metrics collection
+
+	// Core metrics (atomic for thread safety)
 	totalOperations int64
 	successfulOps   int64
 	failedOps       int64
@@ -38,17 +40,22 @@ type MetricsCollector struct {
 	startTime time.Time
 }
 
-// NewMetricsCollector creates a new metrics collector
-func NewMetricsCollector() *MetricsCollector {
+// NewMetricsCollector creates a new metrics collector with conditional collection
+func NewMetricsCollector(enabled bool) *MetricsCollector {
 	return &MetricsCollector{
+		enabled:           enabled,
 		errorsByType:      sync.Map{},
 		startTime:         time.Now(),
 		minProcessingTime: int64(^uint64(0) >> 1), // Max int64 value
 	}
 }
 
-// RecordOperation records a completed operation
+// RecordOperation records a completed operation only if metrics are enabled
 func (mc *MetricsCollector) RecordOperation(duration time.Duration, success bool, memoryUsed int64) {
+	if !mc.enabled {
+		return
+	}
+
 	atomic.AddInt64(&mc.totalOperations, 1)
 
 	if success {
@@ -95,16 +102,41 @@ func (mc *MetricsCollector) RecordOperation(duration time.Duration, success bool
 
 // RecordCacheHit records a cache hit
 func (mc *MetricsCollector) RecordCacheHit() {
-	atomic.AddInt64(&mc.cacheHits, 1)
+	if mc.enabled {
+		atomic.AddInt64(&mc.cacheHits, 1)
+	}
 }
 
 // RecordCacheMiss records a cache miss
 func (mc *MetricsCollector) RecordCacheMiss() {
-	atomic.AddInt64(&mc.cacheMisses, 1)
+	if mc.enabled {
+		atomic.AddInt64(&mc.cacheMisses, 1)
+	}
+}
+
+// UpdateMemoryUsage updates memory usage metrics
+func (mc *MetricsCollector) UpdateMemoryUsage(current int64) {
+	if !mc.enabled {
+		return
+	}
+
+	atomic.StoreInt64(&mc.currentMemoryUsage, current)
+
+	// Update peak memory usage
+	for {
+		peak := atomic.LoadInt64(&mc.peakMemoryUsage)
+		if current <= peak || atomic.CompareAndSwapInt64(&mc.peakMemoryUsage, peak, current) {
+			break
+		}
+	}
 }
 
 // StartConcurrentOperation records the start of a concurrent operation
 func (mc *MetricsCollector) StartConcurrentOperation() {
+	if !mc.enabled {
+		return
+	}
+
 	current := atomic.AddInt64(&mc.activeConcurrentOps, 1)
 
 	// Update max concurrent operations
@@ -118,11 +150,17 @@ func (mc *MetricsCollector) StartConcurrentOperation() {
 
 // EndConcurrentOperation records the end of a concurrent operation
 func (mc *MetricsCollector) EndConcurrentOperation() {
-	atomic.AddInt64(&mc.activeConcurrentOps, -1)
+	if mc.enabled {
+		atomic.AddInt64(&mc.activeConcurrentOps, -1)
+	}
 }
 
 // RecordError records an error by type (thread-safe)
 func (mc *MetricsCollector) RecordError(errorType string) {
+	if !mc.enabled {
+		return
+	}
+
 	// Use sync.Map for thread-safe error tracking
 	if value, ok := mc.errorsByType.Load(errorType); ok {
 		if count, ok := value.(int64); ok {
@@ -135,6 +173,12 @@ func (mc *MetricsCollector) RecordError(errorType string) {
 
 // GetMetrics returns current metrics
 func (mc *MetricsCollector) GetMetrics() Metrics {
+	if !mc.enabled {
+		return Metrics{
+			Uptime: time.Since(mc.startTime),
+		}
+	}
+
 	totalOps := atomic.LoadInt64(&mc.totalOperations)
 	totalTime := atomic.LoadInt64(&mc.totalProcessingTime)
 
@@ -178,6 +222,10 @@ func (mc *MetricsCollector) GetMetrics() Metrics {
 
 // Reset resets all metrics
 func (mc *MetricsCollector) Reset() {
+	if !mc.enabled {
+		return
+	}
+
 	atomic.StoreInt64(&mc.totalOperations, 0)
 	atomic.StoreInt64(&mc.successfulOps, 0)
 	atomic.StoreInt64(&mc.failedOps, 0)
@@ -275,4 +323,51 @@ type Metrics struct {
 	RuntimeMemStats runtime.MemStats `json:"runtime_mem_stats"`
 	Uptime          time.Duration    `json:"uptime"`
 	ErrorsByType    map[string]int64 `json:"errors_by_type"`
+}
+
+// GetBasicMetrics returns essential metrics for performance monitoring
+func (mc *MetricsCollector) GetBasicMetrics() BasicMetrics {
+	if !mc.enabled {
+		return BasicMetrics{
+			Uptime:  time.Since(mc.startTime),
+			Enabled: false,
+		}
+	}
+
+	totalOps := atomic.LoadInt64(&mc.totalOperations)
+	totalTime := atomic.LoadInt64(&mc.totalProcessingTime)
+
+	var avgProcessingTime time.Duration
+	if totalOps > 0 {
+		avgProcessingTime = time.Duration(totalTime / totalOps)
+	}
+
+	return BasicMetrics{
+		TotalOperations:    totalOps,
+		SuccessfulOps:      atomic.LoadInt64(&mc.successfulOps),
+		FailedOps:          atomic.LoadInt64(&mc.failedOps),
+		CacheHits:          atomic.LoadInt64(&mc.cacheHits),
+		CacheMisses:        atomic.LoadInt64(&mc.cacheMisses),
+		AvgProcessingTime:  avgProcessingTime,
+		MaxProcessingTime:  time.Duration(atomic.LoadInt64(&mc.maxProcessingTime)),
+		CurrentMemoryUsage: atomic.LoadInt64(&mc.currentMemoryUsage),
+		PeakMemoryUsage:    atomic.LoadInt64(&mc.peakMemoryUsage),
+		Uptime:             time.Since(mc.startTime),
+		Enabled:            mc.enabled,
+	}
+}
+
+// BasicMetrics represents essential performance metrics
+type BasicMetrics struct {
+	TotalOperations    int64         `json:"total_operations"`
+	SuccessfulOps      int64         `json:"successful_ops"`
+	FailedOps          int64         `json:"failed_ops"`
+	CacheHits          int64         `json:"cache_hits"`
+	CacheMisses        int64         `json:"cache_misses"`
+	AvgProcessingTime  time.Duration `json:"avg_processing_time"`
+	MaxProcessingTime  time.Duration `json:"max_processing_time"`
+	CurrentMemoryUsage int64         `json:"current_memory_usage"`
+	PeakMemoryUsage    int64         `json:"peak_memory_usage"`
+	Uptime             time.Duration `json:"uptime"`
+	Enabled            bool          `json:"enabled"`
 }

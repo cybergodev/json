@@ -2,7 +2,6 @@ package json
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -10,31 +9,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cybergodev/json/internal"
-)
-
-// Error definitions - using sentinel errors for better performance and type safety
-var (
-	ErrInvalidJSON       = errors.New("invalid JSON format")
-	ErrPathNotFound      = errors.New("path not found")
-	ErrTypeMismatch      = errors.New("type mismatch")
-	ErrSizeLimit         = errors.New("size limit exceeded")
-	ErrOperationFailed   = errors.New("operation failed")
-	ErrInvalidPath       = errors.New("invalid path format")
-	ErrUnsupportedPath   = errors.New("unsupported path operation")
-	ErrProcessorClosed   = errors.New("processor is closed")
-	ErrCacheFull         = errors.New("cache is full")
-	ErrCacheDisabled     = errors.New("cache is disabled")
-	ErrDepthLimit        = errors.New("depth limit exceeded")
-	ErrConcurrencyLimit  = errors.New("concurrency limit exceeded")
-	ErrSecurityViolation = errors.New("security violation detected")
-	ErrRateLimitExceeded = errors.New("rate limit exceeded")
-	ErrOperationTimeout  = errors.New("operation timeout")
-	ErrCircuitOpen       = errors.New("circuit breaker is open")
-	ErrDeadlockDetected  = errors.New("potential deadlock detected")
-	ErrResourceExhausted = errors.New("system resources exhausted")
-	ErrIteratorControl   = errors.New("iterator control signal")
 )
 
 // PropertyAccessResult represents the result of a property access operation
@@ -82,130 +59,6 @@ type PathInfo struct {
 	Segments     []PathSegment `json:"segments"`
 	IsPointer    bool          `json:"is_pointer"`
 	OriginalPath string        `json:"original_path"`
-}
-
-// JsonsError represents a JSON processing error with enhanced context
-type JsonsError struct {
-	Op          string         `json:"op"`          // Operation that failed
-	Path        string         `json:"path"`        // JSON path where error occurred
-	Message     string         `json:"message"`     // Human-readable error message
-	Err         error          `json:"err"`         // Underlying error
-	Context     map[string]any `json:"context"`     // Additional context information
-	Suggestions []string       `json:"suggestions"` // Helpful suggestions for fixing the error
-	ErrorCode   string         `json:"error_code"`  // Machine-readable error code
-}
-
-func (e *JsonsError) Error() string {
-	var msg string
-	if e.Path != "" {
-		msg = fmt.Sprintf("JSON %s failed at path '%s': %s", e.Op, e.Path, e.Message)
-	} else {
-		msg = fmt.Sprintf("JSON %s failed: %s", e.Op, e.Message)
-	}
-
-	// Add error code if available
-	if e.ErrorCode != "" {
-		msg = fmt.Sprintf("[%s] %s", e.ErrorCode, msg)
-	}
-
-	return msg
-}
-
-// ErrorWithSuggestion returns the error message with helpful suggestions
-func (e *JsonsError) ErrorWithSuggestion() string {
-	baseMsg := e.Error()
-
-	// Use explicit suggestions if available
-	if len(e.Suggestions) > 0 {
-		suggestions := strings.Join(e.Suggestions, "; ")
-		return fmt.Sprintf("%s\nSuggestions: %s", baseMsg, suggestions)
-	}
-
-	// Fallback to legacy suggestion logic
-	if e.Err != nil {
-		switch e.Err {
-		case ErrPathNotFound:
-			return baseMsg + " (suggestion: check if the path exists or use a default value)"
-		case ErrInvalidJSON:
-			return baseMsg + " (suggestion: validate JSON format using json.Valid())"
-		case ErrTypeMismatch:
-			return baseMsg + " (suggestion: use appropriate getter method like GetString(), GetInt(), etc.)"
-		case ErrSizeLimit:
-			return baseMsg + " (suggestion: increase MaxJSONSize in configuration)"
-		case ErrDepthLimit:
-			return baseMsg + " (suggestion: increase MaxPathDepth in configuration)"
-		case ErrConcurrencyLimit:
-			return baseMsg + " (suggestion: increase MaxConcurrency or reduce concurrent operations)"
-		case ErrCacheDisabled:
-			return baseMsg + " (suggestion: enable cache by setting EnableCache to true in configuration)"
-		case ErrRateLimitExceeded:
-			return baseMsg + " (suggestion: reduce operation frequency or increase rate limits)"
-		}
-	}
-
-	return baseMsg
-}
-
-// WithContext adds context information to the error
-func (e *JsonsError) WithContext(key string, value any) *JsonsError {
-	if e.Context == nil {
-		e.Context = make(map[string]any)
-	}
-	e.Context[key] = value
-	return e
-}
-
-// WithSuggestion adds a helpful suggestion to the error
-func (e *JsonsError) WithSuggestion(suggestion string) *JsonsError {
-	e.Suggestions = append(e.Suggestions, suggestion)
-	return e
-}
-
-// WithErrorCode sets a machine-readable error code
-func (e *JsonsError) WithErrorCode(code string) *JsonsError {
-	e.ErrorCode = code
-	return e
-}
-
-// GetDetailedInfo returns detailed error information including context
-func (e *JsonsError) GetDetailedInfo() map[string]any {
-	info := map[string]any{
-		"operation":   e.Op,
-		"path":        e.Path,
-		"message":     e.Message,
-		"error_code":  e.ErrorCode,
-		"suggestions": e.Suggestions,
-	}
-
-	if e.Context != nil {
-		info["context"] = e.Context
-	}
-
-	if e.Err != nil {
-		info["underlying_error"] = e.Err.Error()
-	}
-
-	return info
-}
-
-// Unwrap returns the underlying error for error wrapping support
-func (e *JsonsError) Unwrap() error {
-	return e.Err
-}
-
-// Is implements error comparison for modern error handling
-func (e *JsonsError) Is(target error) bool {
-	if target == nil {
-		return false
-	}
-
-	// Check if target is the same type
-	if targetErr, ok := target.(*JsonsError); ok {
-		return e.Op == targetErr.Op && e.Err == targetErr.Err
-	}
-
-	// Check if the underlying error matches
-	return e.Err != nil && errors.Is(e.Err, target)
 }
 
 // InvalidUnmarshalError describes an invalid argument passed to Unmarshal.
@@ -713,26 +566,6 @@ func (c *EncodeConfig) Clone() *EncodeConfig {
 	return &clone
 }
 
-// ConfigInterface implementation methods
-
-func (c *Config) IsCacheEnabled() bool         { return c.EnableCache }
-func (c *Config) GetMaxCacheSize() int         { return c.MaxCacheSize }
-func (c *Config) GetCacheTTL() time.Duration   { return c.CacheTTL }
-func (c *Config) GetMaxJSONSize() int64        { return c.MaxJSONSize }
-func (c *Config) GetMaxPathDepth() int         { return c.MaxPathDepth }
-func (c *Config) GetMaxConcurrency() int       { return c.MaxConcurrency }
-func (c *Config) IsMetricsEnabled() bool       { return c.EnableMetrics }
-func (c *Config) IsHealthCheckEnabled() bool   { return c.EnableHealthCheck }
-func (c *Config) IsStrictMode() bool           { return c.StrictMode }
-func (c *Config) AllowComments() bool          { return c.AllowCommentsFlag }
-func (c *Config) PreserveNumbers() bool        { return c.PreserveNumbersFlag }
-func (c *Config) ShouldCreatePaths() bool      { return c.CreatePaths }
-func (c *Config) ShouldCleanupNulls() bool     { return c.CleanupNulls }
-func (c *Config) ShouldCompactArrays() bool    { return c.CompactArrays }
-func (c *Config) ShouldValidateInput() bool    { return c.ValidateInput }
-func (c *Config) GetMaxNestingDepth() int      { return c.MaxNestingDepth }
-func (c *Config) ShouldValidateFilePath() bool { return c.ValidateFilePath }
-
 // Operation represents the type of operation being performed
 type Operation int
 
@@ -945,6 +778,86 @@ type ProcessorCache interface {
 	Size() int
 }
 
+// SimpleCacheImpl implements ProcessorCache using internal.CacheManager
+type SimpleCacheImpl struct {
+	manager *internal.CacheManager
+}
+
+// NewSimpleCacheImpl creates a new simple cache implementation
+func NewSimpleCacheImpl(config internal.ConfigInterface) *SimpleCacheImpl {
+	return &SimpleCacheImpl{
+		manager: internal.NewCacheManager(config),
+	}
+}
+
+// Get retrieves a value from cache using CacheKey
+func (sc *SimpleCacheImpl) Get(key CacheKey) (any, bool) {
+	cacheKey := sc.keyToString(key)
+	return sc.manager.Get(cacheKey)
+}
+
+// Set stores a value in cache using CacheKey (ttl parameter is ignored as TTL is configured globally)
+func (sc *SimpleCacheImpl) Set(key CacheKey, value any, ttl time.Duration) {
+	cacheKey := sc.keyToString(key)
+	sc.manager.Set(cacheKey, value)
+}
+
+// Clear removes all entries from cache
+func (sc *SimpleCacheImpl) Clear() {
+	sc.manager.Clear()
+}
+
+// Size returns the number of entries in cache
+func (sc *SimpleCacheImpl) Size() int {
+	stats := sc.manager.GetStats()
+	if entries, ok := stats["entries"].(int64); ok {
+		return int(entries)
+	}
+	return 0
+}
+
+// keyToString converts CacheKey to string
+func (sc *SimpleCacheImpl) keyToString(key CacheKey) string {
+	return fmt.Sprintf("%s:%s:%s:%s", key.Operation, key.JSONStr, key.Path, key.Options)
+}
+
+// ProcessorConfigAdapter adapts ProcessorConfig to implement internal.ConfigInterface
+type ProcessorConfigAdapter struct {
+	config *ProcessorConfig
+}
+
+// NewProcessorConfigAdapter creates a new adapter
+func NewProcessorConfigAdapter(config *ProcessorConfig) *ProcessorConfigAdapter {
+	return &ProcessorConfigAdapter{config: config}
+}
+
+// Cache configuration
+func (pca *ProcessorConfigAdapter) IsCacheEnabled() bool       { return pca.config.EnableCache }
+func (pca *ProcessorConfigAdapter) GetMaxCacheSize() int       { return 100 } // Default cache size
+func (pca *ProcessorConfigAdapter) GetCacheTTL() time.Duration { return pca.config.Timeout }
+
+// Performance configuration
+func (pca *ProcessorConfigAdapter) GetMaxJSONSize() int64      { return 5 * 1024 * 1024 } // 5MB default
+func (pca *ProcessorConfigAdapter) GetMaxPathDepth() int       { return pca.config.MaxPathLength }
+func (pca *ProcessorConfigAdapter) GetMaxConcurrency() int     { return pca.config.MaxConcurrency }
+func (pca *ProcessorConfigAdapter) IsMetricsEnabled() bool     { return pca.config.EnableMetrics }
+func (pca *ProcessorConfigAdapter) IsHealthCheckEnabled() bool { return false }
+
+// Parsing configuration
+func (pca *ProcessorConfigAdapter) IsStrictMode() bool    { return false }
+func (pca *ProcessorConfigAdapter) AllowComments() bool   { return false }
+func (pca *ProcessorConfigAdapter) PreserveNumbers() bool { return false }
+
+// Operation configuration
+func (pca *ProcessorConfigAdapter) ShouldCreatePaths() bool   { return false }
+func (pca *ProcessorConfigAdapter) ShouldCleanupNulls() bool  { return false }
+func (pca *ProcessorConfigAdapter) ShouldCompactArrays() bool { return false }
+
+// Security configuration
+func (pca *ProcessorConfigAdapter) ShouldValidateInput() bool    { return true }
+func (pca *ProcessorConfigAdapter) GetMaxNestingDepth() int      { return pca.config.MaxDepth }
+func (pca *ProcessorConfigAdapter) ShouldValidateFilePath() bool { return true }
+
 // RateLimiter interface for rate limiting
 type RateLimiter interface {
 	Allow() bool
@@ -999,35 +912,6 @@ var (
 )
 
 // DefaultConfig moved to config.go
-
-// HighSecurityConfig returns a configuration with enhanced security settings
-func HighSecurityConfig() *Config {
-	config := DefaultConfig()
-	// More restrictive security settings
-	config.MaxNestingDepthSecurity = 20                 // Very restrictive nesting
-	config.MaxSecurityValidationSize = 10 * 1024 * 1024 // 10MB limit
-	config.MaxObjectKeys = 1000                         // Fewer keys allowed
-	config.MaxArrayElements = 1000                      // Fewer array elements
-	config.MaxJSONSize = 5 * 1024 * 1024                // 5MB JSON limit
-	config.MaxPathDepth = 20                            // Shallow path depth
-	config.EnableValidation = true                      // Force validation
-	config.StrictMode = true                            // Enable strict mode
-	return config
-}
-
-// LargeDataConfig returns a configuration optimized for processing large JSON datasets
-// Use with caution in production environments and ensure adequate system resources
-func LargeDataConfig() *Config {
-	config := DefaultConfig()
-	// Optimized settings for large data processing
-	config.MaxNestingDepthSecurity = 100                 // Allow deeper nesting for complex data
-	config.MaxSecurityValidationSize = 500 * 1024 * 1024 // 500MB validation limit
-	config.MaxObjectKeys = 50000                         // Support large objects
-	config.MaxArrayElements = 50000                      // Support large arrays
-	config.MaxJSONSize = 100 * 1024 * 1024               // 100MB JSON processing limit
-	config.MaxPathDepth = 200                            // Support deep path traversal
-	return config
-}
 
 // DefaultOptions returns default processor options
 func DefaultOptions() *ProcessorOptions {
@@ -1475,3 +1359,264 @@ func newLimitError(op string, current, max int64, limitType string) *JsonsError 
 }
 
 // Error helper functions moved to errors.go
+// Enhanced validation functions integrated into core.go
+
+// Validator provides streamlined input validation with enhanced security
+type Validator struct {
+	maxJSONSize     int64
+	maxPathLength   int
+	maxNestingDepth int
+}
+
+// NewValidator creates a new validator with the given limits
+func NewValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int) *Validator {
+	return &Validator{
+		maxJSONSize:     maxJSONSize,
+		maxPathLength:   maxPathLength,
+		maxNestingDepth: maxNestingDepth,
+	}
+}
+
+// ValidateJSONInput performs comprehensive JSON input validation
+func (v *Validator) ValidateJSONInput(jsonStr string) error {
+	// Size validation
+	if int64(len(jsonStr)) > v.maxJSONSize {
+		return newSizeLimitError("validate_json_input", int64(len(jsonStr)), v.maxJSONSize)
+	}
+
+	// Empty input check
+	if len(jsonStr) == 0 {
+		return newOperationError("validate_json_input", "JSON string cannot be empty", ErrInvalidJSON)
+	}
+
+	// UTF-8 validation with BOM detection
+	if !utf8.ValidString(jsonStr) {
+		return newOperationError("validate_json_input", "JSON contains invalid UTF-8 sequences", ErrInvalidJSON)
+	}
+
+	// Remove BOM if present
+	jsonStr = strings.TrimPrefix(jsonStr, "\uFEFF")
+
+	// Basic structure validation (fast pre-check)
+	if err := v.validateJSONStructure(jsonStr); err != nil {
+		return err
+	}
+
+	// Nesting depth validation
+	if err := v.validateNestingDepth(jsonStr); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ValidatePathInput performs comprehensive path validation
+func (v *Validator) ValidatePathInput(path string) error {
+	// Length validation
+	if len(path) > v.maxPathLength {
+		return newPathError(path, fmt.Sprintf("path length %d exceeds maximum %d", len(path), v.maxPathLength), ErrInvalidPath)
+	}
+
+	// Empty path is valid (root access)
+	if path == "" || path == "." {
+		return nil
+	}
+
+	// Security validation - enhanced path traversal detection
+	if err := v.validatePathSecurity(path); err != nil {
+		return err
+	}
+
+	// Bracket/brace matching validation
+	if err := v.validateBracketMatching(path); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateJSONStructure performs fast structural validation
+func (v *Validator) validateJSONStructure(jsonStr string) error {
+	trimmed := strings.TrimSpace(jsonStr)
+	if len(trimmed) == 0 {
+		return newOperationError("validate_json_structure", "JSON string is empty after trimming", ErrInvalidJSON)
+	}
+
+	first := trimmed[0]
+	last := trimmed[len(trimmed)-1]
+
+	// Check for valid JSON start/end characters
+	switch first {
+	case '{':
+		if last != '}' {
+			return newOperationError("validate_json_structure", "JSON object not properly closed", ErrInvalidJSON)
+		}
+	case '[':
+		if last != ']' {
+			return newOperationError("validate_json_structure", "JSON array not properly closed", ErrInvalidJSON)
+		}
+	case '"':
+		if last != '"' || len(trimmed) < 2 {
+			return newOperationError("validate_json_structure", "JSON string not properly closed", ErrInvalidJSON)
+		}
+	case 't', 'f':
+		// Boolean values
+		if !strings.HasPrefix(trimmed, "true") && !strings.HasPrefix(trimmed, "false") {
+			return newOperationError("validate_json_structure", "invalid boolean value", ErrInvalidJSON)
+		}
+	case 'n':
+		// Null value
+		if !strings.HasPrefix(trimmed, "null") {
+			return newOperationError("validate_json_structure", "invalid null value", ErrInvalidJSON)
+		}
+	default:
+		// Should be a number
+		if !v.isValidNumberStart(rune(first)) {
+			return newOperationError("validate_json_structure", "JSON starts with invalid character", ErrInvalidJSON)
+		}
+	}
+
+	return nil
+}
+
+// validateNestingDepth validates JSON nesting depth efficiently
+func (v *Validator) validateNestingDepth(jsonStr string) error {
+	depth := 0
+	maxDepth := 0
+	inString := false
+	escaped := false
+
+	for i, r := range jsonStr {
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if inString {
+			if r == '\\' {
+				escaped = true
+			} else if r == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch r {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > maxDepth {
+				maxDepth = depth
+			}
+			if depth > v.maxNestingDepth {
+				return newDepthLimitError("validate_nesting_depth", depth, v.maxNestingDepth)
+			}
+		case '}', ']':
+			depth--
+			if depth < 0 {
+				return newOperationError("validate_nesting_depth", fmt.Sprintf("unmatched closing bracket at position %d", i), ErrInvalidJSON)
+			}
+		}
+	}
+
+	if depth != 0 {
+		return newOperationError("validate_nesting_depth", "unmatched brackets in JSON", ErrInvalidJSON)
+	}
+
+	return nil
+}
+
+// validatePathSecurity performs enhanced security validation
+func (v *Validator) validatePathSecurity(path string) error {
+	// Convert to lowercase for case-insensitive detection
+	lowerPath := strings.ToLower(path)
+
+	// Enhanced path traversal patterns
+	dangerousPatterns := []string{
+		"..",
+		"%2e%2e",
+		"%2E%2E",
+		"..%2f",
+		"..%2F",
+		"%2e%2e%2f",
+		"%2E%2E%2F",
+		"..\\",
+		"%2e%2e%5c",
+		"%2E%2E%5C",
+	}
+
+	for _, pattern := range dangerousPatterns {
+		if strings.Contains(lowerPath, pattern) {
+			return newSecurityError("validate_path_security", fmt.Sprintf("path traversal pattern detected: %s", pattern))
+		}
+	}
+
+	// Check for null bytes (both literal and encoded)
+	if strings.Contains(path, "\x00") || strings.Contains(lowerPath, "%00") {
+		return newSecurityError("validate_path_security", "null byte injection detected")
+	}
+
+	// Check for excessive consecutive special characters
+	if strings.Contains(path, ":::") || strings.Contains(path, "[[[") || strings.Contains(path, "}}}") {
+		return newSecurityError("validate_path_security", "excessive consecutive special characters detected")
+	}
+
+	return nil
+}
+
+// validateBracketMatching validates bracket and brace matching
+func (v *Validator) validateBracketMatching(path string) error {
+	var braceDepth, bracketDepth int
+	inString := false
+	escaped := false
+
+	for i, r := range path {
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if inString {
+			if r == '\\' {
+				escaped = true
+			} else if r == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch r {
+		case '"':
+			inString = true
+		case '{':
+			braceDepth++
+		case '}':
+			braceDepth--
+			if braceDepth < 0 {
+				return newPathError(path, fmt.Sprintf("unmatched closing brace at position %d", i), ErrInvalidPath)
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			bracketDepth--
+			if bracketDepth < 0 {
+				return newPathError(path, fmt.Sprintf("unmatched closing bracket at position %d", i), ErrInvalidPath)
+			}
+		}
+	}
+
+	if braceDepth > 0 {
+		return newPathError(path, "unmatched opening brace", ErrInvalidPath)
+	}
+	if bracketDepth > 0 {
+		return newPathError(path, "unmatched opening bracket", ErrInvalidPath)
+	}
+
+	return nil
+}
+
+// isValidNumberStart checks if a character can start a valid JSON number
+func (v *Validator) isValidNumberStart(r rune) bool {
+	return (r >= '0' && r <= '9') || r == '-'
+}

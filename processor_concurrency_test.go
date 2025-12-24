@@ -5,13 +5,134 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
-// TestConcurrency consolidates all concurrency and thread safety tests
-// Replaces: concurrency_test.go (keeping existing comprehensive tests)
-func TestConcurrency(t *testing.T) {
+// TestProcessorConcurrency consolidates processor functionality and concurrency tests
+// Replaces: processor_test.go, concurrency_test.go
+func TestProcessorConcurrency(t *testing.T) {
 	helper := NewTestHelper(t)
 	generator := NewTestDataGenerator()
+
+	t.Run("ProcessorBasics", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		testData := `{
+			"user": {"name": "John", "age": 30, "email": "john@example.com"},
+			"items": [1, 2, 3, 4, 5],
+			"active": true
+		}`
+
+		// GetMultiple
+		paths := []string{"user.name", "user.age", "active", "items[0]"}
+		results, err := processor.GetMultiple(testData, paths)
+		helper.AssertNoError(err)
+		helper.AssertEqual(4, len(results))
+		helper.AssertEqual("John", results["user.name"])
+		helper.AssertEqual(float64(30), results["user.age"])
+		helper.AssertEqual(true, results["active"])
+		helper.AssertEqual(float64(1), results["items[0]"])
+
+		// SetMultiple
+		result := testData
+		result, err = processor.Set(result, "user.name", "Jane")
+		helper.AssertNoError(err)
+		result, err = processor.Set(result, "user.age", 25)
+		helper.AssertNoError(err)
+		result, err = processor.Set(result, "items[0]", 10)
+		helper.AssertNoError(err)
+
+		name, _ := processor.Get(result, "user.name")
+		helper.AssertEqual("Jane", name)
+		age, _ := processor.Get(result, "user.age")
+		helper.AssertEqual(float64(25), age)
+		item, _ := processor.Get(result, "items[0]")
+		helper.AssertEqual(float64(10), item)
+
+		// ProcessBatch
+		operations := []BatchOperation{
+			{Type: "get", JSONStr: `{"name": "John", "age": 30}`, Path: "name", ID: "op1"},
+			{Type: "set", JSONStr: `{"name": "John", "age": 30}`, Path: "age", Value: 35, ID: "op2"},
+			{Type: "delete", JSONStr: `{"name": "John", "age": 30, "city": "NYC"}`, Path: "city", ID: "op3"},
+		}
+
+		batchResults, err := processor.ProcessBatch(operations)
+		helper.AssertNoError(err)
+		helper.AssertEqual(3, len(batchResults))
+		helper.AssertEqual("John", batchResults[0].Result)
+	})
+
+	t.Run("ProcessorConfiguration", func(t *testing.T) {
+		config := DefaultConfig()
+		config.MaxJSONSize = 1024 * 1024
+		processor := New(config)
+		defer processor.Close()
+
+		testData := `{"test": "value"}`
+		result, err := processor.Get(testData, "test")
+		helper.AssertNoError(err)
+		helper.AssertEqual("value", result)
+
+		// Test configuration access
+		retrievedConfig := processor.GetConfig()
+		helper.AssertNotNil(retrievedConfig)
+		helper.AssertEqual(config.MaxJSONSize, retrievedConfig.MaxJSONSize)
+	})
+
+	t.Run("ProcessorStats", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		testData := `{"test": "value"}`
+		_, _ = processor.Get(testData, "test")
+		_, _ = processor.Set(testData, "new", "value")
+
+		stats := processor.GetStats()
+		helper.AssertTrue(stats.OperationCount > 0)
+		helper.AssertNotNil(stats)
+	})
+
+	t.Run("ProcessorHealthStatus", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		health := processor.GetHealthStatus()
+		helper.AssertNotNil(health)
+		helper.AssertTrue(len(health.Checks) > 0)
+
+		timeDiff := time.Since(health.Timestamp)
+		helper.AssertTrue(timeDiff < time.Minute)
+	})
+
+	t.Run("ProcessorCacheOperations", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		testData := `{"test": "value", "number": 42}`
+		_, _ = processor.Get(testData, "test")
+		_, _ = processor.Get(testData, "number")
+
+		processor.ClearCache()
+
+		samplePaths := []string{"test", "number"}
+		_, _ = processor.WarmupCache(testData, samplePaths)
+
+		result, err := processor.Get(testData, "test")
+		helper.AssertNoError(err)
+		helper.AssertEqual("value", result)
+	})
+
+	t.Run("ProcessorLifecycle", func(t *testing.T) {
+		processor := New()
+		helper.AssertFalse(processor.IsClosed())
+
+		processor.Close()
+		helper.AssertTrue(processor.IsClosed())
+
+		_, err := processor.Get(`{"test": "value"}`, "test")
+		helper.AssertError(err)
+	})
 
 	t.Run("ConcurrentReads", func(t *testing.T) {
 		jsonStr := generator.GenerateComplexJSON()
@@ -220,5 +341,22 @@ func TestConcurrency(t *testing.T) {
 
 		wg.Wait()
 		helper.AssertEqual(int64(numWorkers*100), atomic.LoadInt64(&consistentReads))
+	})
+
+	t.Run("ProcessorMemoryManagement", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		testData := `{"test": "value"}`
+		for i := 0; i < 1000; i++ {
+			_, _ = processor.Get(testData, "test")
+			if i%100 == 0 {
+				processor.ClearCache()
+			}
+		}
+
+		result, err := processor.Get(testData, "test")
+		helper.AssertNoError(err)
+		helper.AssertEqual("value", result)
 	})
 }

@@ -1,12 +1,13 @@
 package json
 
 import (
+	"strings"
 	"testing"
 )
 
-// TestCore consolidates basic JSON operations (Get/Set/Delete) and type conversions
-// Replaces: operations_test.go, type_operations_test.go
-func TestCore(t *testing.T) {
+// TestCoreOperations consolidates all basic JSON operations (Get/Set/Delete) and type conversions
+// Replaces: core_test.go, operations_coverage_test.go, coverage_boost_test.go
+func TestCoreOperations(t *testing.T) {
 	helper := NewTestHelper(t)
 
 	t.Run("BasicGet", func(t *testing.T) {
@@ -179,8 +180,7 @@ func TestCore(t *testing.T) {
 			}
 
 			for _, tt := range tests {
-				result, ok := ConvertToString(tt.input)
-				helper.AssertTrue(ok)
+				result := ConvertToString(tt.input)
 				helper.AssertEqual(tt.want, result)
 			}
 		})
@@ -243,5 +243,72 @@ func TestCore(t *testing.T) {
 		obj, err := GetTyped[map[string]any](testJSON, "object")
 		helper.AssertNoError(err)
 		helper.AssertEqual("value", obj["key"])
+	})
+
+	t.Run("ConvenienceFunctions", func(t *testing.T) {
+		jsonStr := `{"items":[1,2,3],"user":{"name":"test"},"value":"test","missing":null}`
+
+		// GetArray
+		arr, err := GetArray(jsonStr, "items")
+		helper.AssertNoError(err)
+		helper.AssertEqual(3, len(arr))
+
+		// GetObject
+		obj, err := GetObject(jsonStr, "user")
+		helper.AssertNoError(err)
+		helper.AssertNotNil(obj)
+
+		// GetWithDefault
+		val := GetWithDefault(jsonStr, "missing", "default")
+		helper.AssertEqual("default", val)
+
+		// GetTypedWithDefault
+		typedVal := GetTypedWithDefault[int](jsonStr, "missing", 99)
+		helper.AssertEqual(99, typedVal)
+
+		// Type-specific defaults
+		strVal := GetStringWithDefault(jsonStr, "missing", "default")
+		helper.AssertEqual("default", strVal)
+
+		intVal := GetIntWithDefault(jsonStr, "missing", 99)
+		helper.AssertEqual(99, intVal)
+
+		floatVal := GetFloat64WithDefault(jsonStr, "missing", 9.99)
+		helper.AssertEqual(9.99, floatVal)
+
+		boolVal := GetBoolWithDefault(jsonStr, "missing", true)
+		helper.AssertTrue(boolVal)
+
+		arrVal := GetArrayWithDefault(jsonStr, "missing", []any{99})
+		helper.AssertEqual(1, len(arrVal))
+
+		objVal := GetObjectWithDefault(jsonStr, "missing", map[string]any{"default": true})
+		helper.AssertEqual(true, objVal["default"])
+	})
+
+	t.Run("MultipleOperations", func(t *testing.T) {
+		jsonStr := `{"name":"test","age":30,"city":"NYC"}`
+
+		// GetMultiple
+		paths := []string{"name", "age", "city"}
+		results, err := GetMultiple(jsonStr, paths)
+		helper.AssertNoError(err)
+		helper.AssertEqual(3, len(results))
+
+		// SetMultiple
+		updates := map[string]any{"age": 31, "country": "USA"}
+		result, err := SetMultiple(jsonStr, updates)
+		helper.AssertNoError(err)
+		helper.AssertTrue(len(result) > 0)
+
+		// SetMultipleWithAdd
+		result2, err := SetMultipleWithAdd(jsonStr, map[string]any{"items[0]": "first"})
+		helper.AssertNoError(err)
+		helper.AssertTrue(len(result2) > 0)
+
+		// DeleteWithCleanNull
+		result3, err := DeleteWithCleanNull(jsonStr, "age")
+		helper.AssertNoError(err)
+		helper.AssertFalse(strings.Contains(result3, "age"))
 	})
 }
