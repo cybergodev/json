@@ -258,7 +258,7 @@ func (p *Processor) validateFilePathSecure(filePath string) error {
 }
 
 // containsPathTraversal checks for path traversal patterns comprehensively
-// SECURITY FIX: Enhanced detection with more bypass patterns
+// SECURITY FIX: Enhanced detection with comprehensive bypass patterns
 func containsPathTraversal(path string) bool {
 	// Check for various path traversal patterns including bypass attempts
 	patterns := []string{
@@ -271,6 +271,17 @@ func containsPathTraversal(path string) bool {
 		"..%c1%9c",   // UTF-8 overlong encoding variant
 		".%2e",       // Partial encoding
 		"%2e.",       // Partial encoding variant
+		"%2e%2e%2f",  // Full URL encoded traversal
+		"%2e%2e%5c",  // Windows variant
+		"..\\",       // Windows backslash
+		"..\\/",      // Mixed separators
+		"..%00",      // Null byte injection
+		"..%0a",      // Newline injection
+		"..%0d",      // Carriage return injection
+		"..%09",      // Tab injection
+		"..%20",      // Space injection
+		"....//",     // Double dot with double slash
+		"....\\\\",   // Double dot with double backslash
 	}
 
 	lowerPath := strings.ToLower(path)
@@ -281,8 +292,16 @@ func containsPathTraversal(path string) bool {
 	}
 
 	// Additional check: consecutive dots in any form
-	if strings.Contains(path, "...") {
+	if strings.Contains(path, "...") || strings.Contains(path, "....") {
 		return true
+	}
+
+	// Check for encoded null bytes and control characters
+	encodedNulls := []string{"%00", "%0a", "%0d", "%09", "%20"}
+	for _, encoded := range encodedNulls {
+		if strings.Contains(lowerPath, encoded) {
+			return true
+		}
 	}
 
 	return false
@@ -300,13 +319,27 @@ func validateUnixPath(absPath string) error {
 		"/etc/passwd",
 		"/etc/shadow",
 		"/etc/sudoers",
+		"/etc/hosts",
+		"/etc/fstab",
+		"/etc/crontab",
 		"/root/",
+		"/boot/",
+		"/var/log/",
+		"/usr/bin/",
+		"/usr/sbin/",
+		"/sbin/",
+		"/bin/",
 	}
 
 	for _, dir := range criticalDirs {
 		if strings.HasPrefix(lowerPath, dir) {
 			return newSecurityError("validate_unix_path", "access to system directory not allowed")
 		}
+	}
+
+	// Additional security checks for Unix systems
+	if strings.Contains(absPath, "/..") || strings.Contains(absPath, "../") {
+		return newSecurityError("validate_unix_path", "path traversal detected")
 	}
 
 	return nil
@@ -338,7 +371,7 @@ func validateWindowsPath(absPath string) error {
 		return newSecurityError("validate_windows_path", "alternate data streams not allowed")
 	}
 
-	// Check COM1-9 and LPT1-9 (COM0/LPT0 are technically valid but we block them for safety)
+	// Check COM1-9 and LPT1-9 (COM0/LPT0 are technically valid, but we block them for safety)
 	if len(filename) == 4 && filename[3] >= '0' && filename[3] <= '9' {
 		prefix := filename[:3]
 		if prefix == "COM" || prefix == "LPT" {
@@ -357,6 +390,96 @@ func validateWindowsPath(absPath string) error {
 		if strings.Contains(pathToCheck, char) {
 			return newSecurityError("validate_windows_path", "invalid character in path")
 		}
+	}
+
+	return nil
+}
+
+// MarshalToFile converts data to JSON and saves it to the specified file.
+// This method provides the same functionality as the package-level MarshalToFile but with processor-specific configuration.
+//
+// Parameters:
+//   - path: file path where JSON will be saved (directories are created automatically)
+//   - data: any Go value to be marshaled to JSON
+//   - pretty: optional parameter - true for formatted JSON, false for compact (default: false)
+//
+// Returns error if marshaling fails or file cannot be written.
+func (p *Processor) MarshalToFile(path string, data any, pretty ...bool) error {
+	if err := p.checkClosed(); err != nil {
+		return err
+	}
+
+	// Validate file path for security
+	if err := p.validateFilePath(path); err != nil {
+		return err
+	}
+
+	// Create directory if it doesn't exist
+	if err := p.createDirectoryIfNotExists(path); err != nil {
+		return fmt.Errorf("failed to create directory for %s: %w", path, err)
+	}
+
+	// Marshal data to JSON bytes
+	var jsonBytes []byte
+	var err error
+
+	shouldFormat := len(pretty) > 0 && pretty[0]
+	if shouldFormat {
+		jsonBytes, err = p.MarshalIndent(data, "", "  ")
+	} else {
+		jsonBytes, err = p.Marshal(data)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to marshal data to JSON: %w", err)
+	}
+
+	// Write JSON bytes to file
+	if err := os.WriteFile(path, jsonBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write file %s: %w", path, err)
+	}
+
+	return nil
+}
+
+// UnmarshalFromFile reads JSON data from the specified file and unmarshals it into the provided value.
+// This method provides the same functionality as the package-level UnmarshalFromFile but with processor-specific configuration.
+//
+// Parameters:
+//   - path: file path to read JSON from
+//   - v: pointer to the value where JSON will be unmarshaled
+//   - opts: optional processor options for unmarshaling
+//
+// Returns error if file cannot be read or JSON unmarshaling fails.
+func (p *Processor) UnmarshalFromFile(path string, v any, opts ...*ProcessorOptions) error {
+	if err := p.checkClosed(); err != nil {
+		return err
+	}
+
+	// Validate input parameters
+	if v == nil {
+		return fmt.Errorf("unmarshal target cannot be nil")
+	}
+
+	// Validate file path for security
+	if err := p.validateFilePath(path); err != nil {
+		return err
+	}
+
+	// Read file contents with size validation
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", path, err)
+	}
+
+	// Check file size against processor limits
+	if int64(len(data)) > p.config.MaxJSONSize {
+		return fmt.Errorf("file size %d exceeds maximum allowed size %d", len(data), p.config.MaxJSONSize)
+	}
+
+	// Unmarshal JSON data using processor's Unmarshal method
+	if err := p.Unmarshal(data, v, opts...); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON from file %s: %w", path, err)
 	}
 
 	return nil

@@ -19,8 +19,8 @@ type (
 	// Numeric represents all numeric types
 	Numeric interface {
 		~int | ~int8 | ~int16 | ~int32 | ~int64 |
-			~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
-			~float32 | ~float64
+		~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64 |
+		~float32 | ~float64
 	}
 
 	// Ordered represents types that can be ordered
@@ -462,56 +462,6 @@ func convertStringToType[T any](str, targetType string) (T, error) {
 	return zero, fmt.Errorf("cannot convert string %q to %s", str, targetType)
 }
 
-// getJsonSize returns the size of JSON string in bytes (internal use)
-func getJsonSize(jsonStr string) int64 {
-	return int64(len(jsonStr))
-}
-
-// estimateMemoryUsage estimates the memory usage of parsed JSON data (internal use)
-func estimateMemoryUsage(data any) int64 {
-	return estimateSize(data)
-}
-
-// estimateSize estimates the memory size of data with improved accuracy
-func estimateSize(data any) int64 {
-	if data == nil {
-		return 8 // Size of a pointer
-	}
-
-	switch v := data.(type) {
-	case string:
-		return int64(len(v) + 16) // String header overhead
-	case []byte:
-		return int64(len(v) + 24) // Slice header overhead
-	case bool:
-		return 1
-	case int8, uint8:
-		return 1
-	case int16, uint16:
-		return 2
-	case int32, uint32, float32:
-		return 4
-	case int, int64, uint64, float64:
-		return 8
-	case map[string]any:
-		size := int64(48) // Map header overhead
-		for key, value := range v {
-			size += int64(len(key)+16) + estimateSize(value)
-		}
-		return size
-	case []any:
-		size := int64(24) // Slice header overhead
-		for _, item := range v {
-			size += estimateSize(item)
-		}
-		return size
-	default:
-		return 64 // Default size for unknown types
-	}
-}
-
-// tryArrayConversion is now replaced by convertArray in type_conversion_unified.go
-
 // ConcurrencyManager manages concurrent operations with enhanced safety
 type ConcurrencyManager struct {
 	// Concurrency limits
@@ -779,8 +729,8 @@ func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 
 	now := time.Now().UnixNano()
 	threshold := int64(60 * time.Second)
-	const maxMapSize = 5000 // Reduced from 10000
-	const targetSize = 2000 // Reduced from 5000
+	const maxMapSize = 1000 // CRITICAL FIX: Reduced from 5000 to prevent memory bloat
+	const targetSize = 500  // CRITICAL FIX: Reduced from 2000
 
 	currentSize := len(cm.operationTimeouts)
 
@@ -796,7 +746,7 @@ func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 	}
 
 	// If map is small, just delete stale entries
-	if currentSize < targetSize {
+	if currentSize < targetSize/2 {
 		for gid, startTime := range cm.operationTimeouts {
 			if now-startTime > threshold {
 				delete(cm.operationTimeouts, gid)
@@ -873,11 +823,11 @@ const (
 
 // Nested call tracking to prevent state conflicts with optimized memory management
 var (
-	nestedCallTracker = make(map[uint64]int) // goroutine ID -> nesting level
+	nestedCallTracker = make(map[uint64]int, 50) // Pre-allocated with reasonable capacity
 	nestedCallMutex   sync.RWMutex
-	lastCleanupTime   int64       // Unix timestamp of last cleanup
-	maxTrackerSize    = 100       // Strict limit to prevent memory bloat
-	cleanupInterval   = int64(10) // Frequent cleanup every 10 seconds
+	lastCleanupTime   int64      // Unix timestamp of last cleanup
+	maxTrackerSize    = 50       // CRITICAL FIX: Reduced from 100 to prevent memory bloat
+	cleanupInterval   = int64(5) // CRITICAL FIX: More frequent cleanup every 5 seconds
 )
 
 // getGoroutineID returns the current goroutine ID (optimized version)
@@ -986,8 +936,8 @@ func cleanupDeadGoroutines() {
 		return
 	}
 
-	// If tracker is more than 20% full, start aggressive cleanup
-	if trackerSize > maxTrackerSize/5 {
+	// If tracker is more than 60% full, start aggressive cleanup
+	if trackerSize > maxTrackerSize*3/5 {
 		// Remove all zero-level entries (goroutines that finished)
 		for gid, level := range nestedCallTracker {
 			if level <= 0 {
@@ -996,8 +946,8 @@ func cleanupDeadGoroutines() {
 		}
 	}
 
-	// Final check: if still more than 40% full, clear everything
-	if len(nestedCallTracker) > maxTrackerSize*2/5 {
+	// Final check: if still more than 80% full, clear everything
+	if len(nestedCallTracker) > maxTrackerSize*4/5 {
 		nestedCallTracker = make(map[uint64]int, maxTrackerSize/2)
 	}
 }
@@ -3009,43 +2959,6 @@ func (p *Processor) handlePostExtractionSliceWithStructureAwareness(data any, sl
 		slicedResults := p.applySliceToArrayWithContext(arr, start, end, step, sliceSegment.Value)
 		return slicedResults
 	}
-}
-
-// applySliceToArray applies slice operation to an array with proper bounds checking
-func (p *Processor) applySliceToArray(arr []any, start, end, step int) []any {
-	// Handle negative indices
-	if start < 0 {
-		start = len(arr) + start
-	}
-	// Handle negative end index
-	if end < 0 {
-		end = len(arr) + end
-	}
-
-	// Normalize bounds
-	if start < 0 {
-		start = 0
-	}
-	if end > len(arr) {
-		end = len(arr)
-	}
-	if start > end {
-		return []any{}
-	}
-
-	// Apply step if specified
-	if step <= 1 {
-		return arr[start:end]
-	}
-
-	// Handle step > 1
-	var result []any
-	for i := start; i < end; i += step {
-		if i < len(arr) {
-			result = append(result, arr[i])
-		}
-	}
-	return result
 }
 
 // applySliceToArrayWithContext applies slice operation with segment context to distinguish open vs explicit negative slices

@@ -5,7 +5,6 @@ All notable changes to the cybergodev/json library will be documented in this fi
 [//]: # (The format is based on [Keep a Changelog]&#40;https://keepachangelog.com/en/1.0.0/&#41;,)
 [//]: # (and this project adheres to [Semantic Versioning]&#40;https://semver.org/spec/v2.0.0.html&#41;.)
 
-
 ---
 
 ## v1.0.5 - Security hardening and performance optimization (2025-12-01)

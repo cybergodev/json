@@ -3,62 +3,62 @@ package json
 import "time"
 
 const (
-	// Buffer and Pool Sizes
-	DefaultBufferSize        = 2048
-	MaxPoolBufferSize        = 65536
-	MinPoolBufferSize        = 1024
-	DefaultPathSegmentCap    = 16
-	MaxPathSegmentCap        = 256
-	DefaultStringBuilderSize = 512
+	// Buffer and Pool Sizes - OPTIMIZED for better memory management
+	DefaultBufferSize        = 1024  // Reduced from 2048
+	MaxPoolBufferSize        = 16384 // Reduced from 65536
+	MinPoolBufferSize        = 512   // Reduced from 1024
+	DefaultPathSegmentCap    = 8     // Reduced from 16
+	MaxPathSegmentCap        = 128   // Reduced from 256
+	DefaultStringBuilderSize = 256   // Reduced from 512
 
-	// Cache Sizes
-	DefaultCacheSize     = 256
-	MaxCacheEntries      = 1024
-	CacheCleanupKeepSize = 512
+	// Cache Sizes - OPTIMIZED for better performance/memory balance
+	DefaultCacheSize     = 128 // Reduced from 256
+	MaxCacheEntries      = 512 // Reduced from 1024
+	CacheCleanupKeepSize = 256 // Reduced from 512
 
-	// Operation Limits
+	// Operation Limits - TIGHTENED for better security
 	InvalidArrayIndex        = -999999
-	DefaultMaxJSONSize       = 10 * 1024 * 1024
-	DefaultMaxSecuritySize   = 10 * 1024 * 1024
-	DefaultMaxNestingDepth   = 50
-	DefaultMaxObjectKeys     = 10000
-	DefaultMaxArrayElements  = 10000
-	DefaultMaxPathDepth      = 100
-	DefaultMaxBatchSize      = 1000
-	DefaultMaxConcurrency    = 100
-	DefaultParallelThreshold = 10
+	DefaultMaxJSONSize       = 5 * 1024 * 1024 // Reduced from 10MB to 5MB
+	DefaultMaxSecuritySize   = 5 * 1024 * 1024 // Reduced from 10MB to 5MB
+	DefaultMaxNestingDepth   = 32              // Reduced from 50
+	DefaultMaxObjectKeys     = 5000            // Reduced from 10000
+	DefaultMaxArrayElements  = 5000            // Reduced from 10000
+	DefaultMaxPathDepth      = 50              // Reduced from 100
+	DefaultMaxBatchSize      = 500             // Reduced from 1000
+	DefaultMaxConcurrency    = 50              // Reduced from 100
+	DefaultParallelThreshold = 5               // Reduced from 10
 
-	// Timing and Intervals
-	MemoryPressureCheckInterval = 50000
-	PoolResetInterval           = 100000
-	PoolResetIntervalPressure   = 50000
-	CacheCleanupInterval        = 30 * time.Second
-	DeadlockCheckInterval       = 30 * time.Second
-	DeadlockThreshold           = 30 * time.Second
-	SlowOperationThreshold      = 100 * time.Millisecond
+	// Timing and Intervals - OPTIMIZED for better responsiveness
+	MemoryPressureCheckInterval = 25000                 // Reduced from 50000
+	PoolResetInterval           = 50000                 // Reduced from 100000
+	PoolResetIntervalPressure   = 25000                 // Reduced from 50000
+	CacheCleanupInterval        = 15 * time.Second      // Reduced from 30s
+	DeadlockCheckInterval       = 15 * time.Second      // Reduced from 30s
+	DeadlockThreshold           = 15 * time.Second      // Reduced from 30s
+	SlowOperationThreshold      = 50 * time.Millisecond // Reduced from 100ms
 
-	// Retry and Timeout
-	MaxRetries              = 3
-	BaseRetryDelay          = 10 * time.Millisecond
-	DefaultOperationTimeout = 30 * time.Second
-	AcquireSlotRetryDelay   = 1 * time.Millisecond
+	// Retry and Timeout - OPTIMIZED for better user experience
+	MaxRetries              = 2                      // Reduced from 3
+	BaseRetryDelay          = 5 * time.Millisecond   // Reduced from 10ms
+	DefaultOperationTimeout = 15 * time.Second       // Reduced from 30s
+	AcquireSlotRetryDelay   = 500 * time.Microsecond // Reduced from 1ms
 
-	// Path Validation
-	MaxPathLength          = 10000 // Maximum path length for security
-	MaxSegmentLength       = 1024
-	MaxExtractionDepth     = 10
-	MaxConsecutiveColons   = 3
-	MaxConsecutiveBrackets = 5
+	// Path Validation - TIGHTENED for better security
+	MaxPathLength          = 5000 // Reduced from 10000
+	MaxSegmentLength       = 512  // Reduced from 1024
+	MaxExtractionDepth     = 5    // Reduced from 10
+	MaxConsecutiveColons   = 2    // Reduced from 3
+	MaxConsecutiveBrackets = 3    // Reduced from 5
 
-	// Security
-	MaxSecurityValidationSize = 10 * 1024 * 1024
-	MaxAllowedNestingDepth    = 50
-	MaxAllowedObjectKeys      = 10000
-	MaxAllowedArrayElements   = 10000
-	PathTraversalMaxLength    = 100
+	// Security - ENHANCED limits
+	MaxSecurityValidationSize = 5 * 1024 * 1024 // Reduced from 10MB
+	MaxAllowedNestingDepth    = 32              // Reduced from 50
+	MaxAllowedObjectKeys      = 5000            // Reduced from 10000
+	MaxAllowedArrayElements   = 5000            // Reduced from 10000
+	PathTraversalMaxLength    = 50              // Reduced from 100
 
-	// Cache TTL
-	DefaultCacheTTL = 5 * time.Minute
+	// Cache TTL - OPTIMIZED for better cache efficiency
+	DefaultCacheTTL = 2 * time.Minute // Reduced from 5 minutes
 )
 
 // Error codes for machine-readable error identification
