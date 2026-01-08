@@ -39,15 +39,13 @@ import (
 	"sync"
 )
 
-// Global processor instance for convenience functions with optimized synchronization
 var (
 	defaultProcessor   *Processor
 	defaultProcessorMu sync.RWMutex
 )
 
-// getDefaultProcessor returns the global default processor instance with optimized locking
+// getDefaultProcessor returns the global default processor with double-checked locking
 func getDefaultProcessor() *Processor {
-	// Fast path: read lock for existing processor
 	defaultProcessorMu.RLock()
 	if defaultProcessor != nil && !defaultProcessor.IsClosed() {
 		p := defaultProcessor
@@ -56,11 +54,9 @@ func getDefaultProcessor() *Processor {
 	}
 	defaultProcessorMu.RUnlock()
 
-	// Slow path: write lock for initialization
 	defaultProcessorMu.Lock()
 	defer defaultProcessorMu.Unlock()
 
-	// Double-check after acquiring write lock
 	if defaultProcessor == nil || defaultProcessor.IsClosed() {
 		defaultProcessor = New()
 	}
@@ -68,7 +64,7 @@ func getDefaultProcessor() *Processor {
 	return defaultProcessor
 }
 
-// SetGlobalProcessor allows setting a custom global processor (thread-safe)
+// SetGlobalProcessor sets a custom global processor (thread-safe)
 func SetGlobalProcessor(processor *Processor) {
 	if processor == nil {
 		return
@@ -77,7 +73,6 @@ func SetGlobalProcessor(processor *Processor) {
 	defaultProcessorMu.Lock()
 	defer defaultProcessorMu.Unlock()
 
-	// Close old processor if it exists
 	if defaultProcessor != nil {
 		defaultProcessor.Close()
 	}
@@ -85,7 +80,7 @@ func SetGlobalProcessor(processor *Processor) {
 	defaultProcessor = processor
 }
 
-// ShutdownGlobalProcessor gracefully shuts down the global processor
+// ShutdownGlobalProcessor shuts down the global processor
 func ShutdownGlobalProcessor() {
 	defaultProcessorMu.Lock()
 	defer defaultProcessorMu.Unlock()
@@ -216,24 +211,9 @@ func SetMultiple(jsonStr string, updates map[string]any, opts ...*ProcessorOptio
 
 // SetMultipleWithAdd sets multiple values with automatic path creation
 func SetMultipleWithAdd(jsonStr string, updates map[string]any, opts ...*ProcessorOptions) (string, error) {
-	// Create options with path creation enabled
-	createOpts := &ProcessorOptions{
-		CreatePaths: true,
-	}
-
-	// Merge with provided options
-	if len(opts) > 0 && opts[0] != nil {
-		createOpts.StrictMode = opts[0].StrictMode
-		createOpts.CacheResults = opts[0].CacheResults
-		createOpts.MaxDepth = opts[0].MaxDepth
-		createOpts.AllowComments = opts[0].AllowComments
-		createOpts.PreserveNumbers = opts[0].PreserveNumbers
-		createOpts.CleanupNulls = opts[0].CleanupNulls
-		createOpts.CompactArrays = opts[0].CompactArrays
-		createOpts.ContinueOnError = opts[0].ContinueOnError
-		// Keep CreatePaths as true
-	}
-
+	createOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
+		o.CreatePaths = true
+	})
 	return getDefaultProcessor().SetMultiple(jsonStr, updates, createOpts)
 }
 
@@ -244,26 +224,11 @@ func Delete(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
 
 // DeleteWithCleanNull removes a value from JSON and cleans up null values
 func DeleteWithCleanNull(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
-	// Create options with cleanup enabled
-	cleanupOpts := &ProcessorOptions{
-		CleanupNulls:  true,
-		CompactArrays: true,
-	}
-
-	// Merge with provided options
-	if len(opts) > 0 && opts[0] != nil {
-		cleanupOpts.StrictMode = opts[0].StrictMode
-		cleanupOpts.CacheResults = opts[0].CacheResults
-		cleanupOpts.MaxDepth = opts[0].MaxDepth
-		cleanupOpts.AllowComments = opts[0].AllowComments
-		cleanupOpts.PreserveNumbers = opts[0].PreserveNumbers
-		cleanupOpts.CreatePaths = opts[0].CreatePaths
-		cleanupOpts.ContinueOnError = opts[0].ContinueOnError
-		// Keep cleanup settings as true
-	}
-
-	processor := getDefaultProcessor()
-	return processor.Delete(jsonStr, path, cleanupOpts)
+	cleanupOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
+		o.CleanupNulls = true
+		o.CompactArrays = true
+	})
+	return getDefaultProcessor().Delete(jsonStr, path, cleanupOpts)
 }
 
 // LoadFromFile loads JSON data from a file
@@ -287,25 +252,30 @@ func SaveToFile(filePath string, data any, pretty ...bool) error {
 	}
 
 	shouldFormat := len(pretty) > 0 && pretty[0]
-
 	var jsonBytes []byte
 	var err error
 
+	// Parse string/byte inputs to ensure valid JSON
 	switch v := data.(type) {
 	case string:
 		var parsed any
 		if err := stdJSON.Unmarshal([]byte(v), &parsed); err != nil {
 			return fmt.Errorf("invalid JSON string: %w", err)
 		}
-		jsonBytes, err = marshalWithFormat(parsed, shouldFormat)
+		data = parsed
 	case []byte:
 		var parsed any
 		if err := stdJSON.Unmarshal(v, &parsed); err != nil {
 			return fmt.Errorf("invalid JSON bytes: %w", err)
 		}
-		jsonBytes, err = marshalWithFormat(parsed, shouldFormat)
-	default:
-		jsonBytes, err = marshalWithFormat(data, shouldFormat)
+		data = parsed
+	}
+
+	// Marshal with formatting
+	if shouldFormat {
+		jsonBytes, err = stdJSON.MarshalIndent(data, "", "  ")
+	} else {
+		jsonBytes, err = stdJSON.Marshal(data)
 	}
 
 	if err != nil {
@@ -319,26 +289,15 @@ func SaveToFile(filePath string, data any, pretty ...bool) error {
 	return nil
 }
 
-func marshalWithFormat(data any, pretty bool) ([]byte, error) {
-	if pretty {
-		return stdJSON.MarshalIndent(data, "", "  ")
-	}
-	return stdJSON.Marshal(data)
-}
-
 // createDirectoryIfNotExists creates the directory structure for a file path if it doesn't exist
 func createDirectoryIfNotExists(filePath string) error {
 	dir := filepath.Dir(filePath)
 	if dir == "." || dir == "/" {
-		return nil // No directory to create
+		return nil
 	}
 
-	// Check if directory already exists
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		// Create directory with appropriate permissions
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
+		return os.MkdirAll(dir, 0755)
 	}
 	return nil
 }
@@ -471,11 +430,19 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 //	user := map[string]any{"name": "John", "age": 30}
 //	err := json.MarshalToFile("data/user.json", user, true)
 func MarshalToFile(path string, data any, pretty ...bool) error {
-	// Marshal data to JSON bytes
+	proc := getDefaultProcessor()
+	if err := proc.validateFilePath(path); err != nil {
+		return err
+	}
+
+	if err := createDirectoryIfNotExists(path); err != nil {
+		return fmt.Errorf("failed to create directory for %s: %w", path, err)
+	}
+
+	shouldFormat := len(pretty) > 0 && pretty[0]
 	var jsonBytes []byte
 	var err error
 
-	shouldFormat := len(pretty) > 0 && pretty[0]
 	if shouldFormat {
 		jsonBytes, err = MarshalIndent(data, "", "  ")
 	} else {
@@ -486,17 +453,6 @@ func MarshalToFile(path string, data any, pretty ...bool) error {
 		return fmt.Errorf("failed to marshal data to JSON: %w", err)
 	}
 
-	// Use the existing SaveToFile functionality through the processor
-	proc := getDefaultProcessor()
-	if err := proc.validateFilePath(path); err != nil {
-		return err
-	}
-
-	if err := createDirectoryIfNotExists(path); err != nil {
-		return fmt.Errorf("failed to create directory for %s: %w", path, err)
-	}
-
-	// Write JSON bytes to file
 	if err := os.WriteFile(path, jsonBytes, 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", path, err)
 	}
@@ -545,6 +501,18 @@ func UnmarshalFromFile(path string, v any) error {
 	}
 
 	return nil
+}
+
+// mergeOptionsWithOverride merges processor options with custom overrides
+func mergeOptionsWithOverride(opts []*ProcessorOptions, override func(*ProcessorOptions)) *ProcessorOptions {
+	var result *ProcessorOptions
+	if len(opts) > 0 && opts[0] != nil {
+		result = opts[0].Clone()
+	} else {
+		result = &ProcessorOptions{}
+	}
+	override(result)
+	return result
 }
 
 // getTypedWithProcessor is an internal helper for type-safe operations

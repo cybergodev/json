@@ -2,53 +2,21 @@ package internal
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 )
 
 // PathSegment represents a single segment in a JSON path
 type PathSegment struct {
-	// New structured fields
-	Type       PathSegmentType `json:"type"`
-	Key        string          `json:"key"`
-	Index      int             `json:"index"`
-	Start      *int            `json:"start,omitempty"`
-	End        *int            `json:"end,omitempty"`
-	Step       *int            `json:"step,omitempty"`
-	IsNegative bool            `json:"is_negative"`
-	IsSlice    bool            `json:"is_slice"`
-	IsWildcard bool            `json:"is_wildcard"`
-	IsFlat     bool            `json:"is_flat"` // Whether this is a flat extraction operation
-
-	// Distributed operation support
-	IsDistributed    bool              `json:"is_distributed"`    // Whether this is a distributed operation
-	OperationContext *OperationContext `json:"operation_context"` // Operation context for distributed operations
-	MappingInfo      *MappingInfo      `json:"mapping_info"`      // Reverse mapping information
-
-	Value   string `json:"value"`   // The actual segment value
-	Extract string `json:"extract"` // For extract operations: the property to extract
-}
-
-// OperationContext holds context information for distributed operations
-type OperationContext struct {
-	ExtractionPath string          `json:"extraction_path"` // Path used for extraction
-	TargetArrays   []ArrayLocation `json:"target_arrays"`   // Target array locations
-	OperationType  string          `json:"operation_type"`  // "get", "set", "delete"
-}
-
-// ArrayLocation represents the location of an array in the data structure
-type ArrayLocation struct {
-	ContainerPath  string `json:"container_path"`   // Path to the container
-	ArrayFieldName string `json:"array_field_name"` // Name of the array field
-	ContainerRef   any    `json:"-"`                // Reference to the container (not serialized)
-}
-
-// MappingInfo holds information for reverse mapping operations
-type MappingInfo struct {
-	OriginalContainers []any  `json:"-"`                // Original container references
-	ArrayFieldName     string `json:"array_field_name"` // Array field name
-	TargetIndices      []int  `json:"target_indices"`   // Target indices for each container
+	Type       PathSegmentType
+	Key        string // Used for PropertySegment and ExtractSegment
+	Index      int    // Used for ArrayIndexSegment
+	Start      *int   // Used for ArraySliceSegment
+	End        *int   // Used for ArraySliceSegment
+	Step       *int   // Used for ArraySliceSegment
+	IsNegative bool   // True if Index is negative
+	IsWildcard bool   // True for WildcardSegment
+	IsFlat     bool   // True for flat extraction
 }
 
 // PathSegmentType represents the type of path segment
@@ -105,8 +73,9 @@ func NewPropertySegment(key string) PathSegment {
 // NewArrayIndexSegment creates an array index access segment
 func NewArrayIndexSegment(index int) PathSegment {
 	return PathSegment{
-		Type:  ArrayIndexSegment,
-		Index: index,
+		Type:       ArrayIndexSegment,
+		Index:      index,
+		IsNegative: index < 0,
 	}
 }
 
@@ -130,132 +99,39 @@ func NewExtractSegment(extract string) PathSegment {
 	}
 
 	return PathSegment{
-		Type:    ExtractSegment,
-		Key:     actualExtract,
-		Extract: actualExtract, // For backward compatibility
-		IsFlat:  isFlat,
+		Type:   ExtractSegment,
+		Key:    actualExtract,
+		IsFlat: isFlat,
 	}
 }
 
-// NewLegacyPathSegment creates a PathSegment from legacy string type
-// Simplified implementation - most type inference is now handled by the parser
-func NewLegacyPathSegment(typeStr, value string) PathSegment {
-	segment := PathSegment{
-		Value: value,
-		Key:   value,
-	}
 
-	// Map legacy type strings to PathSegmentType
-	switch typeStr {
-	case "property", "pointer":
-		segment.Type = PropertySegment
-	case "array":
-		segment.Type = ArrayIndexSegment
-		// Parse index if in bracket notation
-		if idx := parseIndexFromBrackets(value); idx != -1 {
-			segment.Index = idx
-		}
-	case "slice":
-		segment.Type = ArraySliceSegment
-	case "extract":
-		segment.Type = ExtractSegment
-		if extract := parseExtractField(value); extract != "" {
-			segment.Extract = extract
-			segment.Key = extract
-			segment.IsFlat = strings.HasPrefix(value, "{flat:")
-		}
-	default:
-		segment.Type = PropertySegment
-	}
-
-	return segment
-}
-
-// parseIndexFromBrackets extracts index from bracket notation like "[5]"
-func parseIndexFromBrackets(value string) int {
-	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
-		if indexStr := value[1 : len(value)-1]; indexStr != "" {
-			if index, err := strconv.Atoi(indexStr); err == nil {
-				return index
-			}
-		}
-	}
-	return -1
-}
-
-// parseExtractField extracts field name from extraction syntax like "{name}"
-func parseExtractField(value string) string {
-	if strings.HasPrefix(value, "{") && strings.HasSuffix(value, "}") {
-		extract := value[1 : len(value)-1]
-		// Remove "flat:" prefix if present
-		return strings.TrimPrefix(extract, "flat:")
-	}
-	return ""
-}
-
-// PathPatterns holds compiled regex patterns for path parsing
-type PathPatterns struct {
-	dotNotation   *regexp.Regexp
-	arrayIndex    *regexp.Regexp
-	jsonPointer   *regexp.Regexp
-	extractSyntax *regexp.Regexp
-	rangeSyntax   *regexp.Regexp
-
-	// Compiled patterns for common operations
-	SimpleProperty *regexp.Regexp
-	NumericIndex   *regexp.Regexp
-}
-
-// NewPathPatterns creates and compiles all path parsing patterns
-func NewPathPatterns() *PathPatterns {
-	return &PathPatterns{
-		dotNotation:    regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
-		arrayIndex:     regexp.MustCompile(`^\[(-?\d+)\]$`),
-		jsonPointer:    regexp.MustCompile(`^/([^/]*)$`),
-		extractSyntax:  regexp.MustCompile(`^\{(flat:)?([a-zA-Z_][a-zA-Z0-9_]*)\}$`),
-		rangeSyntax:    regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?\]$`),
-		SimpleProperty: regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
-		NumericIndex:   regexp.MustCompile(`^-?\d+$`),
-	}
-}
-
-// PathParser handles parsing of JSON paths
-type PathParser struct {
-	patterns *PathPatterns
-}
-
-// NewPathParser creates a new path parser
-func NewPathParser() *PathParser {
-	return &PathParser{
-		patterns: NewPathPatterns(),
-	}
-}
-
-// ParseComplexSegment parses a complex segment that may contain mixed syntax
-func (pp *PathParser) ParseComplexSegment(part string) ([]PathSegment, error) {
-	return pp.parseComplexSegment(part)
-}
 
 // ParsePath parses a JSON path string into segments
-func (pp *PathParser) ParsePath(path string) ([]PathSegment, error) {
+func ParsePath(path string) ([]PathSegment, error) {
 	if path == "" {
 		return []PathSegment{}, nil
 	}
 
 	// Handle different path formats
 	if strings.HasPrefix(path, "/") {
-		return pp.parseJSONPointer(path)
+		return parseJSONPointer(path)
 	}
 
-	return pp.parseDotNotation(path)
+	return parseDotNotation(path)
+}
+
+// ParseComplexSegment parses a complex segment that may contain mixed syntax
+func ParseComplexSegment(part string) ([]PathSegment, error) {
+	return parseComplexSegment(part)
 }
 
 // parseDotNotation parses dot notation paths like "user.name" or "users[0].name"
-func (pp *PathParser) parseDotNotation(path string) ([]PathSegment, error) {
+func parseDotNotation(path string) ([]PathSegment, error) {
 	var segments []PathSegment
 
 	// Smart split that respects extraction and array operation boundaries
-	parts := pp.smartSplitPath(path)
+	parts := smartSplitPath(path)
 
 	for _, part := range parts {
 		if part == "" {
@@ -265,41 +141,36 @@ func (pp *PathParser) parseDotNotation(path string) ([]PathSegment, error) {
 		// Check for complex mixed syntax like {field}[slice] or property[index]{extract}
 		if (strings.Contains(part, "[") && strings.Contains(part, "{")) ||
 			(strings.Contains(part, "{") && strings.Contains(part, "}")) {
-			propSegments, err := pp.parseComplexSegment(part)
+			propSegments, err := parseComplexSegment(part)
 			if err != nil {
 				return nil, fmt.Errorf("invalid complex segment '%s': %w", part, err)
 			}
 			segments = append(segments, propSegments...)
 		} else if strings.Contains(part, "[") {
 			// Traditional array access patterns
-			propSegments, err := pp.parsePropertyWithArray(part)
+			propSegments, err := parsePropertyWithArray(part)
 			if err != nil {
 				return nil, fmt.Errorf("invalid array access in '%s': %w", part, err)
 			}
 			segments = append(segments, propSegments...)
 		} else if strings.Contains(part, "{") {
 			// Pure extraction syntax
-			propSegments, err := pp.parseComplexSegment(part)
+			propSegments, err := parseComplexSegment(part)
 			if err != nil {
 				return nil, fmt.Errorf("invalid extraction syntax in '%s': %w", part, err)
 			}
 			segments = append(segments, propSegments...)
 		} else {
-			// Check if this is a numeric property that should be treated as array index
 			if index, err := strconv.Atoi(part); err == nil {
-				// This is a numeric property, treat as array index for dot notation
 				segments = append(segments, PathSegment{
 					Type:       ArrayIndexSegment,
 					Index:      index,
 					IsNegative: index < 0,
-					Value:      part, // Set Value for backward compatibility
 				})
 			} else {
-				// Simple property access
 				segments = append(segments, PathSegment{
-					Type:  PropertySegment,
-					Key:   part,
-					Value: part, // Set Value for backward compatibility
+					Type: PropertySegment,
+					Key:  part,
 				})
 			}
 		}
@@ -309,7 +180,7 @@ func (pp *PathParser) parseDotNotation(path string) ([]PathSegment, error) {
 }
 
 // smartSplitPath splits path by dots while respecting extraction and array operation boundaries
-func (pp *PathParser) smartSplitPath(path string) []string {
+func smartSplitPath(path string) []string {
 	var parts []string
 	var current strings.Builder
 	var braceDepth int
@@ -353,17 +224,15 @@ func (pp *PathParser) smartSplitPath(path string) []string {
 }
 
 // parsePropertyWithArray parses property access with array notation like "users[0]" or "data[1:3]"
-func (pp *PathParser) parsePropertyWithArray(part string) ([]PathSegment, error) {
+func parsePropertyWithArray(part string) ([]PathSegment, error) {
 	var segments []PathSegment
 
-	// Find the property name before the first bracket
 	bracketIndex := strings.Index(part, "[")
 	if bracketIndex > 0 {
 		propertyName := part[:bracketIndex]
 		segments = append(segments, PathSegment{
-			Type:  PropertySegment,
-			Key:   propertyName,
-			Value: propertyName, // Set Value for backward compatibility
+			Type: PropertySegment,
+			Key:  propertyName,
 		})
 	}
 
@@ -380,7 +249,7 @@ func (pp *PathParser) parsePropertyWithArray(part string) ([]PathSegment, error)
 		}
 
 		arrayPart := remaining[1:closeBracket]
-		segment, err := pp.parseArrayAccess(arrayPart)
+		segment, err := parseArrayAccess(arrayPart)
 		if err != nil {
 			return nil, fmt.Errorf("invalid array access '%s': %w", arrayPart, err)
 		}
@@ -393,7 +262,7 @@ func (pp *PathParser) parsePropertyWithArray(part string) ([]PathSegment, error)
 }
 
 // parseComplexSegment parses complex segments that may contain mixed syntax like {field}[slice]
-func (pp *PathParser) parseComplexSegment(part string) ([]PathSegment, error) {
+func parseComplexSegment(part string) ([]PathSegment, error) {
 	var segments []PathSegment
 	remaining := part
 
@@ -420,11 +289,9 @@ func (pp *PathParser) parseComplexSegment(part string) ([]PathSegment, error) {
 			}
 
 			segments = append(segments, PathSegment{
-				Type:    ExtractSegment,
-				Extract: actualExtract,
-				Key:     actualExtract,
-				IsFlat:  isFlat,
-				Value:   remaining[:braceEnd+1], // Set Value for backward compatibility
+				Type:   ExtractSegment,
+				Key:    actualExtract,
+				IsFlat: isFlat,
 			})
 
 			remaining = remaining[braceEnd+1:]
@@ -445,12 +312,10 @@ func (pp *PathParser) parseComplexSegment(part string) ([]PathSegment, error) {
 				return nil, fmt.Errorf("empty array access in '%s'", remaining[:bracketEnd+1])
 			}
 
-			segment, err := pp.parseArrayAccess(arrayPart)
+			segment, err := parseArrayAccess(arrayPart)
 			if err != nil {
 				return nil, fmt.Errorf("invalid array access '%s': %w", arrayPart, err)
 			}
-
-			segment.Value = remaining[:bracketEnd+1]
 
 			segments = append(segments, segment)
 			remaining = remaining[bracketEnd+1:]
@@ -490,10 +355,10 @@ func (pp *PathParser) parseComplexSegment(part string) ([]PathSegment, error) {
 }
 
 // parseArrayAccess parses array access patterns like "0", "-1", "1:3", "::2"
-func (pp *PathParser) parseArrayAccess(arrayPart string) (PathSegment, error) {
+func parseArrayAccess(arrayPart string) (PathSegment, error) {
 	// Check for slice notation
 	if strings.Contains(arrayPart, ":") {
-		return pp.parseSliceAccess(arrayPart)
+		return parseSliceAccess(arrayPart)
 	}
 
 	// Check for wildcard
@@ -514,12 +379,11 @@ func (pp *PathParser) parseArrayAccess(arrayPart string) (PathSegment, error) {
 		Type:       ArrayIndexSegment,
 		Index:      index,
 		IsNegative: index < 0,
-		Value:      fmt.Sprintf("[%d]", index), // Set Value for backward compatibility
 	}, nil
 }
 
 // parseSliceAccess parses slice notation like "1:3", "::2", "::-1"
-func (pp *PathParser) parseSliceAccess(slicePart string) (PathSegment, error) {
+func parseSliceAccess(slicePart string) (PathSegment, error) {
 	parts := strings.Split(slicePart, ":")
 	if len(parts) < 2 || len(parts) > 3 {
 		return PathSegment{}, fmt.Errorf("invalid slice syntax '%s'", slicePart)
@@ -559,116 +423,93 @@ func (pp *PathParser) parseSliceAccess(slicePart string) (PathSegment, error) {
 		segment.Step = &step
 	}
 
-	// Set Value field for backward compatibility
-	if segment.Type == ArrayIndexSegment {
-		segment.Value = fmt.Sprintf("[%d]", segment.Index)
-	} else if segment.Type == ArraySliceSegment {
-		startStr := ""
-		endStr := ""
-		stepStr := ""
-		if segment.Start != nil {
-			startStr = fmt.Sprintf("%d", *segment.Start)
-		}
-		if segment.End != nil {
-			endStr = fmt.Sprintf("%d", *segment.End)
-		}
-		if segment.Step != nil && *segment.Step > 1 {
-			stepStr = fmt.Sprintf(":%d", *segment.Step)
-		}
-		segment.Value = fmt.Sprintf("[%s:%s%s]", startStr, endStr, stepStr)
-	}
-
 	return segment, nil
 }
 
 // parseJSONPointer parses JSON Pointer format paths like "/users/0/name"
-func (pp *PathParser) parseJSONPointer(path string) ([]PathSegment, error) {
+func parseJSONPointer(path string) ([]PathSegment, error) {
 	if path == "/" {
 		return []PathSegment{{Type: PropertySegment, Key: ""}}, nil
 	}
 
-	// Remove leading slash and split
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.Split(path, "/")
 
-	var segments []PathSegment
+	segments := make([]PathSegment, 0, len(parts))
 	for _, part := range parts {
 		// Unescape JSON Pointer special characters
 		part = strings.ReplaceAll(part, "~1", "/")
 		part = strings.ReplaceAll(part, "~0", "~")
 
-		// Check if it's a numeric index without regex
-		if isNumericIndex(part) {
-			index, err := strconv.Atoi(part)
-			if err != nil {
-				return nil, fmt.Errorf("invalid numeric index '%s': %w", part, err)
-			}
+		// Try to parse as numeric index
+		if index, err := strconv.Atoi(part); err == nil {
 			segments = append(segments, PathSegment{
 				Type:       ArrayIndexSegment,
 				Index:      index,
 				IsNegative: index < 0,
 			})
-		} else {
-			// Property access
-			segments = append(segments, PathSegment{
-				Type: PropertySegment,
-				Key:  part,
-			})
+			continue
 		}
+
+		// Property access
+		segments = append(segments, PathSegment{
+			Type: PropertySegment,
+			Key:  part,
+		})
 	}
 
 	return segments, nil
 }
 
-// isNumericIndex checks if a string represents a numeric index without using regex
-func isNumericIndex(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-
-	start := 0
-	if s[0] == '-' {
-		if len(s) == 1 {
-			return false
-		}
-		start = 1
-	}
-
-	for i := start; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-	}
-
-	return true
-}
-
 // ValidatePath validates a path string for security and correctness
-func (pp *PathParser) ValidatePath(path string) error {
-	if len(path) > 1000 {
-		return fmt.Errorf("path too long: %d characters (max 1000)", len(path))
+func ValidatePath(path string) error {
+	pathLen := len(path)
+	if pathLen > 1000 {
+		return fmt.Errorf("path too long: %d characters (max 1000)", pathLen)
 	}
 
-	// Check for null bytes
-	if strings.Contains(path, "\x00") {
-		return fmt.Errorf("path contains null bytes")
+	if pathLen == 0 {
+		return nil
 	}
 
-	// Check for suspicious patterns
-	suspiciousPatterns := []string{
-		"../", "./", "//", "\\", "\\\\",
-		"<script", "javascript:", "data:", "vbscript:",
-		"file://", "ftp://", "http://", "https://",
-		"eval(", "exec(", "system(", "cmd(",
-		"${", "#{", "%{", "{{",
-		"\r", "\n", "\t",
-	}
+	// Single-pass validation for control characters and dangerous patterns
+	var prevChar byte
+	for i := 0; i < pathLen; i++ {
+		c := path[i]
 
-	lowerPath := strings.ToLower(path)
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(lowerPath, pattern) {
-			return fmt.Errorf("suspicious pattern detected: %s", pattern)
+		// Check for null bytes and control characters
+		if c == 0 || c < 32 {
+			return fmt.Errorf("path contains invalid control characters")
 		}
+
+		// Check for path traversal patterns (optimized)
+		if c == '.' && i+1 < pathLen && path[i+1] == '.' {
+			if i+2 < pathLen && path[i+2] == '/' {
+				return fmt.Errorf("path contains traversal patterns")
+			}
+		}
+
+		// Check for double slashes
+		if c == '/' && prevChar == '/' {
+			return fmt.Errorf("path contains traversal patterns")
+		}
+
+		// Check for backslashes
+		if c == '\\' {
+			return fmt.Errorf("path contains traversal patterns")
+		}
+
+		// Check for template injection patterns
+		if c == '$' || c == '#' {
+			if i+1 < pathLen && path[i+1] == '{' {
+				return fmt.Errorf("path contains template injection patterns")
+			}
+		}
+		if c == '{' && prevChar == '{' {
+			return fmt.Errorf("path contains template injection patterns")
+		}
+
+		prevChar = c
 	}
 
 	return nil
@@ -699,9 +540,21 @@ func (ps PathSegment) String() string {
 		return fmt.Sprintf("[%s:%s%s]", start, end, step)
 	case WildcardSegment:
 		return "[*]"
+	case ExtractSegment:
+		if ps.IsFlat {
+			return fmt.Sprintf("{flat:%s}", ps.Key)
+		}
+		return fmt.Sprintf("{%s}", ps.Key)
 	default:
 		return fmt.Sprintf("[unknown:%v]", ps.Type)
 	}
+}
+
+
+
+// GetValue returns the value representation for backward compatibility
+func (ps PathSegment) GetValue() string {
+	return ps.String()
 }
 
 // IsArrayAccess returns true if this segment accesses an array

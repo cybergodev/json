@@ -7,6 +7,7 @@ import (
 )
 
 // SecurityValidator provides comprehensive security validation for JSON processing
+// This consolidates all validation logic in one place for better maintainability
 type SecurityValidator struct {
 	maxJSONSize     int64
 	maxPathLength   int
@@ -20,6 +21,21 @@ func NewSecurityValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int)
 		maxPathLength:   maxPathLength,
 		maxNestingDepth: maxNestingDepth,
 	}
+}
+
+// ValidateAll performs comprehensive validation of both JSON and path inputs
+func (sv *SecurityValidator) ValidateAll(jsonStr, path string) error {
+	// Validate JSON input first
+	if err := sv.ValidateJSONInput(jsonStr); err != nil {
+		return err
+	}
+
+	// Validate path input
+	if err := sv.ValidatePathInput(path); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // ValidateJSONInput performs comprehensive JSON input validation with enhanced security
@@ -40,7 +56,7 @@ func (sv *SecurityValidator) ValidateJSONInput(jsonStr string) error {
 	}
 
 	// Remove BOM if present and validate
-	cleanJSON := strings.TrimPrefix(jsonStr, "\uFEFF")
+	cleanJSON := strings.TrimPrefix(jsonStr, ValidationBOMPrefix)
 	if len(cleanJSON) != len(jsonStr) {
 		return newOperationError("validate_json_input", "JSON contains BOM which is not allowed", ErrInvalidJSON)
 	}
@@ -93,320 +109,210 @@ func (sv *SecurityValidator) ValidatePathInput(path string) error {
 	return nil
 }
 
-// validateJSONSecurity performs enhanced security validation for JSON input
+// validateJSONSecurity performs optimized security validation for JSON input
 func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
-	// Check for null bytes (both literal and encoded)
-	if strings.Contains(jsonStr, "\x00") {
+	// Fast path: check for null bytes first (most critical)
+	if strings.IndexByte(jsonStr, 0) != -1 {
 		return newSecurityError("validate_json_security", "null byte injection detected")
 	}
 
-	// Check for excessive control characters
-	controlCharCount := 0
-	for _, r := range jsonStr {
-		if r < 32 && r != '\t' && r != '\n' && r != '\r' {
-			controlCharCount++
-			if controlCharCount > 10 { // Allow some control chars but not excessive
-				return newSecurityError("validate_json_security", "excessive control characters detected")
-			}
-		}
-	}
-
-	// Check for potential JSON injection patterns
-	suspiciousPatterns := []string{
-		"__proto__",
-		"constructor",
-		"prototype",
-		"eval(",
-		"Function(",
-		"setTimeout(",
-		"setInterval(",
-	}
-
+	// Optimize: single pass for multiple checks using byte scanning
 	lowerJSON := strings.ToLower(jsonStr)
-	for _, pattern := range suspiciousPatterns {
-		if strings.Contains(lowerJSON, pattern) {
-			return newSecurityError("validate_json_security", fmt.Sprintf("suspicious pattern detected: %s", pattern))
-		}
-	}
 
-	return nil
-}
-
-// validatePathSecurity performs enhanced security validation for paths
-func (sv *SecurityValidator) validatePathSecurity(path string) error {
-	// Convert to lowercase for case-insensitive detection
-	lowerPath := strings.ToLower(path)
-
-	// Enhanced path traversal patterns with comprehensive bypass detection
+	// Check dangerous patterns in single pass
 	dangerousPatterns := []string{
-		"..",
-		"%2e%2e", "%2E%2E", // URL-encoded ..
-		"..%2f", "..%2F", // .. with encoded /
-		"%2e%2e%2f", "%2E%2E%2F", // Fully encoded ../
-		"..\\", "%2e%2e%5c", "%2E%2E%5C", // Windows-style with \
-		"%252e", "%252E", // Double-encoded .
-		"%c0%af", "%c1%9c", // UTF-8 overlong encoding
-		"....//", "....\\\\", // Multiple dots with separators
-		".%2e", "%2e.", // Mixed encoding
+		"__proto__", "constructor", "prototype",
+		"<script", "javascript:", "vbscript:",
+		"eval(", "function(",
 	}
 
 	for _, pattern := range dangerousPatterns {
-		if strings.Contains(lowerPath, pattern) {
-			return newSecurityError("validate_path_security", fmt.Sprintf("path traversal pattern detected: %s", pattern))
+		if strings.Contains(lowerJSON, pattern) {
+			return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", pattern))
 		}
 	}
 
-	// Check for null bytes (both literal and encoded)
-	if strings.Contains(path, "\x00") || strings.Contains(lowerPath, "%00") {
-		return newSecurityError("validate_path_security", "null byte injection detected")
-	}
-
-	// Check for excessive consecutive special characters
-	if strings.Contains(path, ":::") || strings.Contains(path, "[[[") || strings.Contains(path, "}}}") {
-		return newSecurityError("validate_path_security", "excessive consecutive special characters detected")
-	}
-
-	// Check for Windows reserved device names
-	windowsReserved := []string{
-		"con", "prn", "aux", "nul",
-		"com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-		"lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-	}
-
-	pathParts := strings.FieldsFunc(lowerPath, func(r rune) bool {
-		return r == '.' || r == '/' || r == '[' || r == ']' || r == '{' || r == '}'
-	})
-
-	for _, part := range pathParts {
-		for _, reserved := range windowsReserved {
-			if part == reserved {
-				return newSecurityError("validate_path_security", fmt.Sprintf("Windows reserved device name detected: %s", reserved))
-			}
-		}
+	// Path traversal check (simplified)
+	if strings.Contains(jsonStr, "..") {
+		return newSecurityError("validate_json_security", "path traversal pattern detected")
 	}
 
 	return nil
 }
 
-// validateJSONStructure performs fast structural validation
+// validatePathSecurity performs optimized security validation for paths
+func (sv *SecurityValidator) validatePathSecurity(path string) error {
+	// Fast path: check for null bytes
+	if strings.IndexByte(path, 0) != -1 {
+		return newPathError(path, "null byte injection detected", ErrSecurityViolation)
+	}
+
+	lowerPath := strings.ToLower(path)
+
+	// Check path traversal patterns
+	if strings.Contains(path, "..") {
+		return newPathError(path, "path traversal detected", ErrSecurityViolation)
+	}
+
+	// Check URL encoding bypass (including double encoding)
+	if strings.Contains(lowerPath, "%2e") || strings.Contains(lowerPath, "%2f") ||
+	   strings.Contains(lowerPath, "%5c") || strings.Contains(lowerPath, "%00") ||
+	   strings.Contains(lowerPath, "%252e") || strings.Contains(lowerPath, "%252f") {
+		return newPathError(path, "path traversal via URL encoding detected", ErrSecurityViolation)
+	}
+
+	// Check UTF-8 overlong encoding
+	if strings.Contains(lowerPath, "%c0%af") || strings.Contains(lowerPath, "%c1%9c") {
+		return newPathError(path, "path traversal via UTF-8 overlong encoding detected", ErrSecurityViolation)
+	}
+
+	// Check excessive special characters
+	if strings.Contains(path, ":::") || strings.Contains(path, "[[[") || strings.Contains(path, "}}}") {
+		return newPathError(path, "excessive special characters", ErrSecurityViolation)
+	}
+
+	return nil
+}
+
+// validateJSONStructure performs basic JSON structure validation
 func (sv *SecurityValidator) validateJSONStructure(jsonStr string) error {
+	// Trim whitespace for validation
 	trimmed := strings.TrimSpace(jsonStr)
 	if len(trimmed) == 0 {
 		return newOperationError("validate_json_structure", "JSON string is empty after trimming", ErrInvalidJSON)
 	}
 
-	first := trimmed[0]
-	last := trimmed[len(trimmed)-1]
-
 	// Check for valid JSON start/end characters
-	switch first {
-	case '{':
-		if last != '}' {
-			return newOperationError("validate_json_structure", "JSON object not properly closed", ErrInvalidJSON)
-		}
-	case '[':
-		if last != ']' {
-			return newOperationError("validate_json_structure", "JSON array not properly closed", ErrInvalidJSON)
-		}
-	case '"':
-		if last != '"' || len(trimmed) < 2 {
-			return newOperationError("validate_json_structure", "JSON string not properly closed", ErrInvalidJSON)
-		}
-	case 't', 'f':
-		// Boolean values
-		if !strings.HasPrefix(trimmed, "true") && !strings.HasPrefix(trimmed, "false") {
-			return newOperationError("validate_json_structure", "invalid boolean value", ErrInvalidJSON)
-		}
-	case 'n':
-		// Null value
-		if !strings.HasPrefix(trimmed, "null") {
-			return newOperationError("validate_json_structure", "invalid null value", ErrInvalidJSON)
-		}
-	default:
-		// Should be a number
-		if !sv.isValidNumberStart(rune(first)) {
-			return newOperationError("validate_json_structure", "JSON starts with invalid character", ErrInvalidJSON)
-		}
+	firstChar := trimmed[0]
+	lastChar := trimmed[len(trimmed)-1]
+
+	if !((firstChar == '{' && lastChar == '}') || (firstChar == '[' && lastChar == ']') ||
+		(firstChar == '"' && lastChar == '"') || isValidJSONPrimitive(trimmed)) {
+		return newOperationError("validate_json_structure", "invalid JSON structure", ErrInvalidJSON)
 	}
 
 	return nil
 }
 
-// validateNestingDepth validates JSON nesting depth efficiently
+// validateNestingDepth validates JSON nesting depth (optimized)
 func (sv *SecurityValidator) validateNestingDepth(jsonStr string) error {
 	depth := 0
-	maxDepth := 0
 	inString := false
 	escaped := false
 
-	for i, r := range jsonStr {
+	for _, char := range jsonStr {
 		if escaped {
 			escaped = false
 			continue
 		}
 
-		if inString {
-			if r == '\\' {
+		switch char {
+		case '\\':
+			if inString {
 				escaped = true
-			} else if r == '"' {
-				inString = false
 			}
-			continue
-		}
-
-		switch r {
 		case '"':
-			inString = true
+			inString = !inString
 		case '{', '[':
-			depth++
-			if depth > maxDepth {
-				maxDepth = depth
-			}
-			if depth > sv.maxNestingDepth {
-				return newDepthLimitError("validate_nesting_depth", depth, sv.maxNestingDepth)
+			if !inString {
+				depth++
+				if depth > sv.maxNestingDepth {
+					return newOperationError("validate_nesting_depth",
+						fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, sv.maxNestingDepth), ErrDepthLimit)
+				}
 			}
 		case '}', ']':
-			depth--
-			if depth < 0 {
-				return newOperationError("validate_nesting_depth", fmt.Sprintf("unmatched closing bracket at position %d", i), ErrInvalidJSON)
+			if !inString {
+				depth--
 			}
 		}
-	}
-
-	if depth != 0 {
-		return newOperationError("validate_nesting_depth", "unmatched brackets in JSON", ErrInvalidJSON)
 	}
 
 	return nil
 }
 
-// validateBracketMatching validates bracket and brace matching
+// validateBracketMatching validates bracket and brace matching in paths
 func (sv *SecurityValidator) validateBracketMatching(path string) error {
-	var braceDepth, bracketDepth int
+	brackets := 0
+	braces := 0
 	inString := false
 	escaped := false
 
-	for i, r := range path {
+	for i, char := range path {
 		if escaped {
 			escaped = false
 			continue
 		}
 
-		if inString {
-			if r == '\\' {
-				escaped = true
-			} else if r == '"' {
-				inString = false
-			}
-			continue
-		}
-
-		switch r {
-		case '"':
-			inString = true
-		case '{':
-			braceDepth++
-		case '}':
-			braceDepth--
-			if braceDepth < 0 {
-				return newPathError(path, fmt.Sprintf("unmatched closing brace at position %d", i), ErrInvalidPath)
-			}
+		switch char {
+		case '\\':
+			escaped = true
+		case '"', '\'':
+			inString = !inString
 		case '[':
-			bracketDepth++
+			if !inString {
+				brackets++
+			}
 		case ']':
-			bracketDepth--
-			if bracketDepth < 0 {
-				return newPathError(path, fmt.Sprintf("unmatched closing bracket at position %d", i), ErrInvalidPath)
+			if !inString {
+				brackets--
+				if brackets < 0 {
+					return newPathError(path, fmt.Sprintf("unmatched closing bracket at position %d", i), ErrInvalidPath)
+				}
+			}
+		case '{':
+			if !inString {
+				braces++
+			}
+		case '}':
+			if !inString {
+				braces--
+				if braces < 0 {
+					return newPathError(path, fmt.Sprintf("unmatched closing brace at position %d", i), ErrInvalidPath)
+				}
 			}
 		}
 	}
 
-	if braceDepth > 0 {
-		return newPathError(path, "unmatched opening brace", ErrInvalidPath)
+	if brackets != 0 {
+		return newPathError(path, "unmatched brackets", ErrInvalidPath)
 	}
-	if bracketDepth > 0 {
-		return newPathError(path, "unmatched opening bracket", ErrInvalidPath)
+	if braces != 0 {
+		return newPathError(path, "unmatched braces", ErrInvalidPath)
 	}
 
 	return nil
 }
 
-// validatePathSyntax validates path syntax for common errors
+// validatePathSyntax performs basic path syntax validation
 func (sv *SecurityValidator) validatePathSyntax(path string) error {
-	// Check for empty extraction
-	if strings.Contains(path, "{}") {
-		return newPathError(path, "empty extraction syntax not allowed", ErrInvalidPath)
+	// Check for consecutive dots (more than 2)
+	if strings.Contains(path, "...") {
+		return newPathError(path, "invalid consecutive dots", ErrInvalidPath)
 	}
 
-	// Check for empty array access
-	if strings.Contains(path, "[]") {
-		return newPathError(path, "empty array access not allowed", ErrInvalidPath)
-	}
-
-	// Check for invalid consecutive dots
-	if strings.Contains(path, "..") {
-		return newPathError(path, "consecutive dots not allowed", ErrInvalidPath)
-	}
-
-	// Check for invalid starting/ending characters
-	if strings.HasPrefix(path, ".") && len(path) > 1 {
-		return newPathError(path, "path cannot start with dot (except root '.')", ErrInvalidPath)
-	}
-
-	if strings.HasSuffix(path, ".") && path != "." {
-		return newPathError(path, "path cannot end with dot", ErrInvalidPath)
+	// Check for invalid characters in path
+	for i, char := range path {
+		if char < 32 && char != '\t' && char != '\n' && char != '\r' {
+			return newPathError(path, fmt.Sprintf("invalid control character at position %d", i), ErrInvalidPath)
+		}
 	}
 
 	return nil
 }
 
-// isValidNumberStart checks if a character can start a valid JSON number
-func (sv *SecurityValidator) isValidNumberStart(r rune) bool {
-	return (r >= '0' && r <= '9') || r == '-'
+// isValidJSONPrimitive checks if a string represents a valid JSON primitive
+func isValidJSONPrimitive(s string) bool {
+	return s == "true" || s == "false" || s == "null" || isValidJSONNumber(s)
 }
 
-// FastValidateJSON performs ultra-fast JSON validation for hot paths
-func FastValidateJSON(jsonStr string) bool {
-	if len(jsonStr) == 0 {
+// isValidJSONNumber checks if a string represents a valid JSON number
+func isValidJSONNumber(s string) bool {
+	if len(s) == 0 {
 		return false
 	}
 
-	trimmed := strings.TrimSpace(jsonStr)
-	if len(trimmed) < 1 {
-		return false
-	}
-
-	first := trimmed[0]
-	last := trimmed[len(trimmed)-1]
-
-	// Quick structural check
-	switch first {
-	case '{':
-		return last == '}'
-	case '[':
-		return last == ']'
-	case '"':
-		return last == '"' && len(trimmed) >= 2
-	case 't':
-		return strings.HasPrefix(trimmed, "true")
-	case 'f':
-		return strings.HasPrefix(trimmed, "false")
-	case 'n':
-		return strings.HasPrefix(trimmed, "null")
-	default:
-		// Numbers
-		return (first >= '0' && first <= '9') || first == '-'
-	}
-}
-
-// FastValidatePath performs ultra-fast path validation for hot paths
-func FastValidatePath(path string) bool {
-	if len(path) > MaxPathLength {
-		return false
-	}
-
-	// Quick security check
-	return !strings.Contains(path, "..") &&
-		!strings.Contains(path, "\x00") &&
-		!strings.Contains(path, ":::")
+	// Simple number validation - starts with digit or minus
+	firstChar := s[0]
+	return (firstChar >= '0' && firstChar <= '9') || firstChar == '-'
 }

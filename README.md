@@ -1,6 +1,7 @@
 # 🚀 cybergodev/json - High-Performance Go JSON Processing Library
 
-[![Go Version](https://img.shields.io/badge/go-%3E%3D1.24-blue.svg)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
+[![pkg.go.dev](https://pkg.go.dev/badge/github.com/cybergodev/json.svg)](https://pkg.go.dev/github.com/cybergodev/json)
 [![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 [![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-yes-brightgreen.svg)](https://github.com/cybergodev/json)
@@ -47,8 +48,10 @@
 
 ### 📚 More Examples & Documentation
 
-- **[📁 Examples](examples)** - Comprehensive code examples for all features
-- **[⚙️ Configuration Guide](examples/configuration)** - Advanced configuration and optimization
+- **[📁 Examples](examples)** - Three comprehensive examples covering all features
+  - **[Basic Usage](examples/1.basic_usage.go)** - Quick start and fundamental operations
+  - **[Advanced Features](examples/2.advanced_features.go)** - Complex queries and nested operations
+  - **[Production Ready](examples/3.production_ready.go)** - Production patterns and best practices
 - **[📖 Compatibility](docs/COMPATIBILITY.md)** - Compatibility guide and migration information
 - **[🔄 Quick Reference](docs/QUICK_REFERENCE.md)** - Quick reference guide for common features
 
@@ -760,23 +763,15 @@ if err != nil {
 
 ### 📁 Example Code
 
-The repository includes comprehensive examples demonstrating various features and use cases:
+- **[Basic Usage](examples/1.basic_usage.go)** - examples/1.basic_usage.go
+- **[Advanced Features](examples/2.advanced_features.go)** - examples/2.advanced_features.go
+- **[Production Ready](examples/3.production_ready.go)** - examples/3.production_ready.go
 
-#### Basic Examples
-- **[Basic Usage](examples/basic)** - Fundamental operations and getting started
-- **[JSON Get Operations](examples/json_get)** - Data retrieval examples with different path expressions
-- **[JSON Set Operations](examples/json_set)** - Data modification and batch updates
-- **[JSON Delete Operations](examples/json_delete)** - Data deletion and cleanup operations
+### 📖 Additional Resources
 
-#### Advanced Examples
-- **[File Operations](examples/file_operations)** - File I/O, batch processing, and stream operations
-- **[JSON Iteration](examples/json_iteration)** - Data iteration and traversal patterns
-- **[Flat Extraction](examples/flat_extraction)** - Complex data extraction and flattening
-- **[JSON Encoding](examples/json_encode)** - Custom encoding configurations and formatting
-
-#### Configuration Examples
-- **[Configuration Management](examples/configuration)** - Processor configuration and optimization
-- **[Compatibility Examples](examples/compatibility)** - Drop-in replacement demonstrations
+- **[Compatibility Guide](docs/COMPATIBILITY.md)** - Drop-in replacement for `encoding/json`
+- **[Quick Reference](docs/QUICK_REFERENCE.md)** - Common operations cheat sheet
+- **[API Documentation](https://pkg.go.dev/github.com/cybergodev/json)** - Complete API reference
 
 ---
 

@@ -3,6 +3,7 @@ package json
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Core error definitions - simplified and optimized for performance
@@ -73,51 +74,45 @@ func (e *JsonsError) Is(target error) bool {
 
 // newOperationError creates a JsonsError for operation failures
 func newOperationError(operation, message string, err error) error {
-	return &JsonsError{
-		Op:      operation,
-		Message: message,
-		Err:     err,
-	}
+	return &JsonsError{Op: operation, Message: message, Err: err}
 }
 
 // newPathError creates a JsonsError for path-related errors
 func newPathError(path, message string, err error) error {
-	return &JsonsError{
-		Op:      "path_validation",
-		Path:    path,
-		Message: message,
-		Err:     err,
-	}
+	return &JsonsError{Op: "path_operation", Path: path, Message: message, Err: err}
+}
+
+// newOperationPathError creates a JsonsError with both operation and path context
+func newOperationPathError(operation, path, message string, err error) error {
+	return &JsonsError{Op: operation, Path: path, Message: message, Err: err}
 }
 
 // newSizeLimitError creates a JsonsError for size limit violations
 func newSizeLimitError(operation string, actual, limit int64) error {
-	return &JsonsError{
-		Op:      operation,
-		Message: fmt.Sprintf("size %d exceeds limit %d", actual, limit),
-		Err:     ErrSizeLimit,
-	}
+	return &JsonsError{Op: operation, Message: fmt.Sprintf("size %d exceeds limit %d", actual, limit), Err: ErrSizeLimit}
 }
 
 // newDepthLimitError creates a JsonsError for depth limit violations
-func newDepthLimitError(operation string, actual, limit int) error {
-	return &JsonsError{
-		Op:      operation,
-		Message: fmt.Sprintf("depth %d exceeds limit %d", actual, limit),
-		Err:     ErrDepthLimit,
-	}
+func newDepthLimitError(operation, path string, actual, limit int) error {
+	return &JsonsError{Op: operation, Path: path, Message: fmt.Sprintf("depth %d exceeds limit %d", actual, limit), Err: ErrDepthLimit}
 }
 
-// newSecurityError creates a JsonsError for security violations
+// newConcurrencyLimitError creates a JsonsError for concurrency limit violations
+func newConcurrencyLimitError(operation string, current, limit int) error {
+	return &JsonsError{Op: operation, Message: fmt.Sprintf("concurrent operations %d exceeds limit %d", current, limit), Err: ErrConcurrencyLimit}
+}
+
+// newSecurityError creates a security-related error
 func newSecurityError(operation, message string) error {
-	return &JsonsError{
-		Op:      operation,
-		Message: message,
-		Err:     ErrSecurityViolation,
-	}
+	return &JsonsError{Op: operation, Message: message, Err: ErrSecurityViolation}
 }
 
-// ErrorClassifier helps classify errors for better handling
+// newTimeoutError creates a timeout error
+func newTimeoutError(operation, path string, duration time.Duration) error {
+	return &JsonsError{Op: operation, Path: path, Message: fmt.Sprintf("operation timed out after %v", duration), Err: ErrOperationTimeout}
+}
+
+// ErrorClassifier provides error classification for better error handling
 type ErrorClassifier struct{}
 
 // NewErrorClassifier creates a new error classifier
@@ -132,59 +127,82 @@ func (ec *ErrorClassifier) IsRetryable(err error) bool {
 	}
 
 	// Check for specific error types that are retryable
-	switch {
-	case errors.Is(err, ErrOperationTimeout):
+	if errors.Is(err, ErrOperationTimeout) || errors.Is(err, ErrConcurrencyLimit) {
 		return true
-	case errors.Is(err, ErrConcurrencyLimit):
-		return true
-	case errors.Is(err, ErrResourceExhausted):
-		return true
-	default:
-		return false
 	}
+
+	// JsonsError with specific operations that might be retryable
+	if jsErr, ok := err.(*JsonsError); ok {
+		switch jsErr.Op {
+		case "cache_operation", "concurrent_operation":
+			return true
+		}
+	}
+
+	return false
 }
 
-// IsSecurityError determines if an error is security-related
-func (ec *ErrorClassifier) IsSecurityError(err error) bool {
+// IsSecurityRelated determines if an error is security-related
+func (ec *ErrorClassifier) IsSecurityRelated(err error) bool {
+	if err == nil {
+		return false
+	}
+
 	return errors.Is(err, ErrSecurityViolation)
 }
 
 // IsUserError determines if an error is caused by user input
 func (ec *ErrorClassifier) IsUserError(err error) bool {
-	switch {
-	case errors.Is(err, ErrInvalidJSON):
-		return true
-	case errors.Is(err, ErrInvalidPath):
-		return true
-	case errors.Is(err, ErrPathNotFound):
-		return true
-	case errors.Is(err, ErrTypeMismatch):
-		return true
-	default:
+	if err == nil {
 		return false
 	}
+
+	userErrors := []error{
+		ErrInvalidJSON, ErrPathNotFound, ErrTypeMismatch,
+		ErrInvalidPath, ErrUnsupportedPath,
+	}
+
+	for _, userErr := range userErrors {
+		if errors.Is(err, userErr) {
+			return true
+		}
+	}
+
+	return false
 }
 
-// GetErrorSuggestion provides helpful suggestions for common errors
+// GetErrorSuggestion provides suggestions for common errors
 func (ec *ErrorClassifier) GetErrorSuggestion(err error) string {
-	switch {
-	case errors.Is(err, ErrInvalidJSON):
-		return "Validate JSON format using json.Valid() or check for syntax errors"
-	case errors.Is(err, ErrPathNotFound):
-		return "Check if the path exists or use a default value with GetWithDefault()"
-	case errors.Is(err, ErrTypeMismatch):
-		return "Use appropriate getter method like GetString(), GetInt(), etc."
-	case errors.Is(err, ErrSizeLimit):
-		return "Reduce input size or increase MaxJSONSize in configuration"
-	case errors.Is(err, ErrDepthLimit):
-		return "Reduce nesting depth or increase MaxNestingDepth in configuration"
-	case errors.Is(err, ErrConcurrencyLimit):
-		return "Reduce concurrent operations or increase MaxConcurrency"
-	case errors.Is(err, ErrSecurityViolation):
-		return "Review input for security issues like path traversal attempts"
-	default:
-		return "Check the error message for specific details"
+	if err == nil {
+		return ""
 	}
+
+	if errors.Is(err, ErrInvalidJSON) {
+		return "Check JSON syntax - ensure proper quotes, brackets, and commas"
+	}
+	if errors.Is(err, ErrPathNotFound) {
+		return "Verify the path exists in the JSON structure"
+	}
+	if errors.Is(err, ErrTypeMismatch) {
+		return "Check that the path points to the expected data type"
+	}
+	if errors.Is(err, ErrInvalidPath) {
+		return "Use valid path syntax: 'key.subkey', 'array[0]', or 'object{field}'"
+	}
+	if errors.Is(err, ErrSizeLimit) {
+		return "Reduce JSON size or increase MaxJSONSize in configuration"
+	}
+	if errors.Is(err, ErrDepthLimit) {
+		return "Reduce nesting depth or increase MaxNestingDepth in configuration"
+	}
+	if errors.Is(err, ErrConcurrencyLimit) {
+		return "Reduce concurrent operations or increase MaxConcurrency in configuration"
+	}
+	if errors.Is(err, ErrSecurityViolation) {
+		return "Input contains potentially dangerous patterns - review and sanitize"
+	}
+
+	return "Check the error message for specific details"
 }
 
 // WrapError wraps an error with additional context

@@ -9,7 +9,7 @@ import (
 
 func TestMetricsCollector(t *testing.T) {
 	t.Run("Creation", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 		if mc == nil {
 			t.Fatal("NewMetricsCollector returned nil")
 		}
@@ -19,7 +19,7 @@ func TestMetricsCollector(t *testing.T) {
 	})
 
 	t.Run("RecordOperation", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		duration := 100 * time.Millisecond
 		mc.RecordOperation(duration, true, 1024)
@@ -36,7 +36,7 @@ func TestMetricsCollector(t *testing.T) {
 	})
 
 	t.Run("RecordFailedOperation", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		mc.RecordOperation(50*time.Millisecond, false, 0)
 
@@ -47,7 +47,7 @@ func TestMetricsCollector(t *testing.T) {
 	})
 
 	t.Run("TimingMetrics", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		durations := []time.Duration{
 			100 * time.Millisecond,
@@ -71,7 +71,7 @@ func TestMetricsCollector(t *testing.T) {
 	})
 
 	t.Run("CacheMetrics", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		mc.RecordCacheHit()
 		mc.RecordCacheHit()
@@ -89,7 +89,7 @@ func TestMetricsCollector(t *testing.T) {
 	})
 
 	t.Run("ConcurrencyMetrics", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		mc.StartConcurrentOperation()
 		mc.StartConcurrentOperation()
@@ -113,33 +113,28 @@ func TestMetricsCollector(t *testing.T) {
 	})
 
 	t.Run("ErrorTracking", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		mc.RecordError("ParseError")
 		mc.RecordError("ParseError")
 		mc.RecordError("ValidationError")
 
-		parseErrors := int64(0)
-		if val, ok := mc.errorsByType.Load("ParseError"); ok {
-			parseErrors = val.(int64)
-		}
+		// Get metrics to check error counts
+		metrics := mc.GetMetrics()
 
+		parseErrors := metrics.ErrorsByType["ParseError"]
 		if parseErrors != 2 {
 			t.Errorf("Expected 2 parse errors, got %d", parseErrors)
 		}
 
-		validationErrors := int64(0)
-		if val, ok := mc.errorsByType.Load("ValidationError"); ok {
-			validationErrors = val.(int64)
-		}
-
+		validationErrors := metrics.ErrorsByType["ValidationError"]
 		if validationErrors != 1 {
 			t.Errorf("Expected 1 validation error, got %d", validationErrors)
 		}
 	})
 
 	t.Run("ConcurrentRecording", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		var wg sync.WaitGroup
 		workers := 10
@@ -170,7 +165,7 @@ func TestMetricsCollector(t *testing.T) {
 	})
 
 	t.Run("MemoryTracking", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		mc.RecordOperation(time.Millisecond, true, 1024)
 		mc.RecordOperation(time.Millisecond, true, 2048)
@@ -182,7 +177,7 @@ func TestMetricsCollector(t *testing.T) {
 	})
 
 	t.Run("GetMetrics", func(t *testing.T) {
-		mc := NewMetricsCollector(true)
+		mc := NewMetricsCollector()
 
 		mc.RecordOperation(100*time.Millisecond, true, 1024)
 		mc.RecordOperation(200*time.Millisecond, false, 512)
@@ -201,28 +196,10 @@ func TestMetricsCollector(t *testing.T) {
 			t.Errorf("Expected 1 failed operation in metrics")
 		}
 	})
-
-	t.Run("DisabledMetrics", func(t *testing.T) {
-		mc := NewMetricsCollector(false)
-
-		mc.RecordOperation(100*time.Millisecond, true, 1024)
-		mc.RecordCacheHit()
-		mc.RecordError("TestError")
-
-		metrics := mc.GetMetrics()
-
-		// When disabled, should return minimal metrics
-		if metrics.TotalOperations != 0 {
-			t.Errorf("Expected 0 operations when disabled, got %d", metrics.TotalOperations)
-		}
-		if metrics.CacheHits != 0 {
-			t.Errorf("Expected 0 cache hits when disabled, got %d", metrics.CacheHits)
-		}
-	})
 }
 
 func BenchmarkRecordOperation(b *testing.B) {
-	mc := NewMetricsCollector(true)
+	mc := NewMetricsCollector()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -231,7 +208,7 @@ func BenchmarkRecordOperation(b *testing.B) {
 }
 
 func BenchmarkConcurrentMetrics(b *testing.B) {
-	mc := NewMetricsCollector(true)
+	mc := NewMetricsCollector()
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -242,11 +219,4 @@ func BenchmarkConcurrentMetrics(b *testing.B) {
 	})
 }
 
-func BenchmarkDisabledMetrics(b *testing.B) {
-	mc := NewMetricsCollector(false)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		mc.RecordOperation(time.Millisecond, true, 100)
-	}
-}

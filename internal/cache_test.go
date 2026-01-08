@@ -14,28 +14,22 @@ type mockConfig struct {
 	cacheTTL     time.Duration
 }
 
-func (m *mockConfig) IsCacheEnabled() bool                  { return m.cacheEnabled }
-func (m *mockConfig) GetMaxCacheSize() int                  { return m.maxCacheSize }
-func (m *mockConfig) GetCacheTTL() time.Duration            { return m.cacheTTL }
-func (m *mockConfig) GetMaxJSONSize() int64                 { return 10485760 }
-func (m *mockConfig) GetMaxPathDepth() int                  { return 100 }
-func (m *mockConfig) GetMaxConcurrency() int                { return 10 }
-func (m *mockConfig) IsMetricsEnabled() bool                { return false }
-func (m *mockConfig) IsHealthCheckEnabled() bool            { return false }
-func (m *mockConfig) IsStrictMode() bool                    { return false }
-func (m *mockConfig) AllowComments() bool                   { return false }
-func (m *mockConfig) PreserveNumbers() bool                 { return false }
-func (m *mockConfig) ShouldCreatePaths() bool               { return false }
-func (m *mockConfig) ShouldCleanupNulls() bool              { return false }
-func (m *mockConfig) ShouldCompactArrays() bool             { return false }
-func (m *mockConfig) ShouldValidateInput() bool             { return false }
-func (m *mockConfig) GetMaxNestingDepth() int               { return 100 }
-func (m *mockConfig) IsRateLimitEnabled() bool              { return false }
-func (m *mockConfig) GetRateLimitPerSec() int               { return 0 }
-func (m *mockConfig) ShouldValidateFilePath() bool          { return false }
-func (m *mockConfig) AreResourcePoolsEnabled() bool         { return false }
-func (m *mockConfig) GetMaxPoolSize() int                   { return 100 }
-func (m *mockConfig) GetPoolCleanupInterval() time.Duration { return time.Minute }
+func (m *mockConfig) IsCacheEnabled() bool         { return m.cacheEnabled }
+func (m *mockConfig) GetMaxCacheSize() int         { return m.maxCacheSize }
+func (m *mockConfig) GetCacheTTL() time.Duration   { return m.cacheTTL }
+func (m *mockConfig) GetMaxJSONSize() int64        { return 10485760 }
+func (m *mockConfig) GetMaxPathDepth() int         { return 100 }
+func (m *mockConfig) GetMaxConcurrency() int       { return 10 }
+func (m *mockConfig) IsMetricsEnabled() bool       { return false }
+func (m *mockConfig) IsStrictMode() bool           { return false }
+func (m *mockConfig) AllowComments() bool          { return false }
+func (m *mockConfig) PreserveNumbers() bool        { return false }
+func (m *mockConfig) ShouldCreatePaths() bool      { return false }
+func (m *mockConfig) ShouldCleanupNulls() bool     { return false }
+func (m *mockConfig) ShouldCompactArrays() bool    { return false }
+func (m *mockConfig) ShouldValidateInput() bool    { return false }
+func (m *mockConfig) GetMaxNestingDepth() int      { return 100 }
+func (m *mockConfig) ShouldValidateFilePath() bool { return false }
 
 func TestCacheManager(t *testing.T) {
 	t.Run("Creation", func(t *testing.T) {

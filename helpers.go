@@ -703,40 +703,34 @@ func (cm *ConcurrencyManager) DetectDeadlocks() []DeadlockInfo {
 }
 
 // cleanupStaleTimeouts removes stale entries from operationTimeouts map
-// OPTIMIZED: Prevents unbounded memory growth with aggressive cleanup
 func (cm *ConcurrencyManager) cleanupStaleTimeouts() {
 	cm.timeoutMutex.Lock()
 	defer cm.timeoutMutex.Unlock()
 
-	now := time.Now().UnixNano()
-	threshold := int64(60 * time.Second)
-	const maxMapSize = 200 // OPTIMIZED: Reduced from 500 to prevent memory bloat
-	const targetSize = 100 // OPTIMIZED: Reduced from 250
+	const maxMapSize = 100
+	const targetSize = 50
 
 	currentSize := len(cm.operationTimeouts)
 
-	// If map is empty or nil, nothing to clean
 	if cm.operationTimeouts == nil || currentSize == 0 {
 		return
 	}
 
-	// CRITICAL: If map exceeds max size, recreate immediately
+	// Recreate map if it exceeds limit
 	if currentSize > maxMapSize {
 		cm.operationTimeouts = make(map[uint64]int64, targetSize)
 		return
 	}
 
-	// Aggressive cleanup: recreate map with only fresh entries
-	newMap := make(map[uint64]int64, targetSize)
-	count := 0
+	// Remove stale entries
+	now := time.Now().UnixNano()
+	threshold := int64(60 * time.Second)
+
 	for gid, startTime := range cm.operationTimeouts {
-		if now-startTime <= threshold && count < targetSize {
-			newMap[gid] = startTime
-			count++
+		if now-startTime > threshold {
+			delete(cm.operationTimeouts, gid)
 		}
 	}
-
-	cm.operationTimeouts = newMap
 }
 
 // DeadlockInfo represents information about a potential deadlock
@@ -747,40 +741,9 @@ type DeadlockInfo struct {
 }
 
 // getGoroutineIDForConcurrency returns the current goroutine ID for concurrency tracking
+// This is an alias to getGoroutineID to avoid code duplication
 func getGoroutineIDForConcurrency() uint64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-
-	// Parse goroutine ID from stack trace
-	// Format: "goroutine 123 [running]:"
-	if n < 10 {
-		return 0
-	}
-
-	// Look for "goroutine " prefix
-	const prefix = "goroutine "
-	if n < len(prefix) {
-		return 0
-	}
-
-	// Check if it starts with "goroutine "
-	for i := 0; i < len(prefix); i++ {
-		if buf[i] != prefix[i] {
-			return 0
-		}
-	}
-
-	// Parse the number after "goroutine "
-	var id uint64
-	for i := len(prefix); i < n && buf[i] != ' '; i++ {
-		if buf[i] >= '0' && buf[i] <= '9' {
-			id = id*10 + uint64(buf[i]-'0')
-		} else {
-			break
-		}
-	}
-
-	return id
+	return getGoroutineID()
 }
 
 // IteratorControl represents control flags for iteration
@@ -794,11 +757,11 @@ const (
 
 // Nested call tracking to prevent state conflicts with optimized memory management
 var (
-	nestedCallTracker = make(map[uint64]int, 15) // OPTIMIZED: Reduced from 25 to prevent memory bloat
+	nestedCallTracker = make(map[uint64]int, 10) // Minimal size for better memory efficiency
 	nestedCallMutex   sync.RWMutex
 	lastCleanupTime   int64      // Unix timestamp of last cleanup
-	maxTrackerSize    = 15       // OPTIMIZED: Reduced from 25 to prevent memory bloat
-	cleanupInterval   = int64(2) // OPTIMIZED: More frequent cleanup every 2 seconds
+	maxTrackerSize    = 10       // Strict limit to prevent memory bloat
+	cleanupInterval   = int64(5) // Cleanup every 5 seconds for balance
 )
 
 // getGoroutineID returns the current goroutine ID (optimized version)
@@ -897,27 +860,18 @@ func exitNestedCall() {
 }
 
 // cleanupDeadGoroutines removes entries for goroutines that no longer exist
-// OPTIMIZED: Prevents unbounded memory growth from dead goroutines
 func cleanupDeadGoroutines() {
-	trackerSize := len(nestedCallTracker)
-
-	// CRITICAL: If tracker exceeds limit, clear everything immediately
-	if trackerSize > maxTrackerSize {
-		clear(nestedCallTracker) // Use Go 1.21+ clear() for efficiency
+	if len(nestedCallTracker) <= maxTrackerSize {
+		for gid, level := range nestedCallTracker {
+			if level <= 0 {
+				delete(nestedCallTracker, gid)
+			}
+		}
 		return
 	}
 
-	// Aggressive cleanup: remove all zero-level entries
-	for gid, level := range nestedCallTracker {
-		if level <= 0 {
-			delete(nestedCallTracker, gid)
-		}
-	}
-
-	// Final check: if still too large, clear everything
-	if len(nestedCallTracker) > maxTrackerSize*4/5 {
-		clear(nestedCallTracker)
-	}
+	// Clear everything if tracker exceeded limit
+	clear(nestedCallTracker)
 }
 
 // IteratorControlSignal represents control flow signals for iteration
@@ -1300,21 +1254,7 @@ func (iv *IterableValue) getArrayIndexSafely(current any, index int) (any, error
 // getArraySliceSafely safely gets an array slice
 func (iv *IterableValue) getArraySliceSafely(current any, segment internal.PathSegment) (any, error) {
 	if arr, ok := current.([]any); ok {
-		arrayUtils := internal.NewArrayUtils()
-		start, end, step := arrayUtils.ParseSliceFromSegment(segment.Value)
-		if start == -999999 { // Invalid slice
-			return nil, nil
-		}
-
-		// Use unified array slicing
-		startPtr := &start
-		endPtr := &end
-		stepPtr := &step
-		if end == -1 {
-			endPtr = nil // Use default end
-		}
-
-		result := arrayUtils.PerformArraySlice(arr, startPtr, endPtr, stepPtr)
+		result := internal.PerformArraySlice(arr, segment.Start, segment.End, segment.Step)
 		return result, nil
 	}
 	return nil, nil
@@ -2900,10 +2840,19 @@ func (p *Processor) handlePostExtractionSliceWithStructureAwareness(data any, sl
 		return nil
 	}
 
-	// Parse slice parameters
-	start, end, step := p.parseSliceFromSegment(sliceSegment.Value)
-	if start == -999999 { // Invalid slice
-		return nil
+	// Get slice parameters from segment
+	start := 0
+	end := len(arr)
+	step := 1
+
+	if sliceSegment.Start != nil {
+		start = *sliceSegment.Start
+	}
+	if sliceSegment.End != nil {
+		end = *sliceSegment.End
+	}
+	if sliceSegment.Step != nil {
+		step = *sliceSegment.Step
 	}
 
 	// Check if any extraction segment is flat
@@ -2916,12 +2865,9 @@ func (p *Processor) handlePostExtractionSliceWithStructureAwareness(data any, sl
 	}
 
 	if hasFlat {
-		// For flat extraction, apply slice to the flattened array with context
-		return p.applySliceToArrayWithContext(arr, start, end, step, sliceSegment.Value)
+		return p.applySliceToArrayWithContext(arr, start, end, step, sliceSegment.String())
 	} else {
-		// For non-flat extraction, the array contains structured results
-		// Apply slice to the outer array (slice the collection of extracted results)
-		slicedResults := p.applySliceToArrayWithContext(arr, start, end, step, sliceSegment.Value)
+		slicedResults := p.applySliceToArrayWithContext(arr, start, end, step, sliceSegment.String())
 		return slicedResults
 	}
 }
@@ -2992,17 +2938,23 @@ func (p *Processor) handleMixedExtractionOperations(data any, segments []PathSeg
 			current = result
 
 		case "slice":
-			// Apply slice operation - this needs special handling for extracted arrays
 			if arr, ok := current.([]any); ok {
-				// Parse slice parameters directly and apply slice
-				start, end, step := p.parseSliceFromSegment(segment.Value)
-				if start != -999999 { // Valid slice
-					// Apply slice with segment context to handle open vs explicit negative slices
-					slicedResult := p.applySliceToArrayWithContext(arr, start, end, step, segment.Value)
-					current = slicedResult
-				} else {
-					current = []any{}
+				start := 0
+				end := len(arr)
+				step := 1
+
+				if segment.Start != nil {
+					start = *segment.Start
 				}
+				if segment.End != nil {
+					end = *segment.End
+				}
+				if segment.Step != nil {
+					step = *segment.Step
+				}
+
+				slicedResult := p.applySliceToArrayWithContext(arr, start, end, step, segment.String())
+				current = slicedResult
 			} else {
 				return nil, fmt.Errorf("cannot apply slice to non-array type %T", current)
 			}
@@ -3015,8 +2967,7 @@ func (p *Processor) handleMixedExtractionOperations(data any, segments []PathSeg
 			}
 
 		default:
-			// For other operations, use regular navigation
-			result := p.handlePropertyAccess(current, segment.Value)
+			result := p.handlePropertyAccess(current, segment.Key)
 			if !result.Exists {
 				return nil, ErrPathNotFound
 			}
@@ -3060,13 +3011,13 @@ func (p *Processor) performConsecutiveExtractions(data any, extractSegments []Pa
 		if segment.IsFlat {
 			result, err := p.performFlatExtraction(current, segment)
 			if err != nil {
-				return nil, fmt.Errorf("flat extraction failed at segment %d (%s): %w", i, segment.Extract, err)
+				return nil, fmt.Errorf("flat extraction failed at segment %d (%s): %w", i, segment.Key, err)
 			}
 			current = result
 		} else {
 			result, err := p.performSingleExtractionWithStructure(current, segment, preserveStructure)
 			if err != nil {
-				return nil, fmt.Errorf("extraction failed at segment %d (%s): %w", i, segment.Extract, err)
+				return nil, fmt.Errorf("extraction failed at segment %d (%s): %w", i, segment.Key, err)
 			}
 			current = result
 		}
@@ -3079,10 +3030,10 @@ func (p *Processor) performConsecutiveExtractions(data any, extractSegments []Pa
 func (p *Processor) performFlatExtraction(data any, segment PathSegment) (any, error) {
 	switch data := data.(type) {
 	case []any:
-		return p.extractFromArrayWithFlat(data, segment.Extract, true)
+		return p.extractFromArrayWithFlat(data, segment.Key, true)
 	case map[string]any:
 		// For objects, flat extraction is the same as regular extraction
-		return p.extractFromObject(data, segment.Extract)
+		return p.extractFromObject(data, segment.Key)
 	default:
 		return nil, nil
 	}
@@ -3113,9 +3064,9 @@ func (p *Processor) flattenExtractionResult(data any) any {
 func (p *Processor) performSingleExtraction(data any, segment PathSegment) (any, error) {
 	switch data := data.(type) {
 	case []any:
-		return p.extractFromArrayWithFlat(data, segment.Extract, segment.IsFlat)
+		return p.extractFromArrayWithFlat(data, segment.Key, segment.IsFlat)
 	case map[string]any:
-		return p.extractFromObject(data, segment.Extract)
+		return p.extractFromObject(data, segment.Key)
 	default:
 		// Return nil for boundary case - trying to extract from non-extractable type
 		return nil, nil
@@ -3127,11 +3078,11 @@ func (p *Processor) performSingleExtractionWithStructure(data any, segment PathS
 	switch data := data.(type) {
 	case []any:
 		if preserveStructure {
-			return p.extractFromArrayPreservingStructureWithFlat(data, segment.Extract, segment.IsFlat)
+			return p.extractFromArrayPreservingStructureWithFlat(data, segment.Key, segment.IsFlat)
 		}
-		return p.extractFromArrayWithFlat(data, segment.Extract, segment.IsFlat)
+		return p.extractFromArrayWithFlat(data, segment.Key, segment.IsFlat)
 	case map[string]any:
-		return p.extractFromObject(data, segment.Extract)
+		return p.extractFromObject(data, segment.Key)
 	default:
 		// Return nil for boundary case - trying to extract from non-extractable type
 		return nil, nil
@@ -3310,7 +3261,7 @@ func (p *Processor) navigateToPathWithSegments(data any, segments []PathSegment)
 	for i, segment := range segments {
 		switch segment.TypeString() {
 		case "property":
-			result := p.handlePropertyAccess(current, segment.Value)
+			result := p.handlePropertyAccess(current, segment.Key)
 			if !result.Exists {
 				return nil, ErrPathNotFound
 			}

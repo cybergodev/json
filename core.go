@@ -623,108 +623,29 @@ type OperationContext struct {
 	CreatePaths bool
 }
 
-// PathParser interface for parsing path strings
-type PathParser interface {
-	ParsePath(path string) ([]PathSegmentInfo, error)
-	ValidatePath(path string) error
-	SplitPathIntoSegments(path string) []PathSegmentInfo
-	PreprocessPath(path string) string
-}
+// PathParser interface for parsing path strings - REMOVED (single implementation)
+// Use concrete PathParserImpl instead
 
-// Navigator interface for basic navigation operations
-type Navigator interface {
-	NavigateToPath(data any, segments []PathSegmentInfo) (any, error)
-	NavigateToSegment(data any, segment PathSegmentInfo) (NavigationResult, error)
-	HandlePropertyAccess(data any, property string) NavigationResult
-}
+// Navigator interface for basic navigation operations - REMOVED (single implementation)
+// Use concrete NavigatorImpl instead
 
-// ArrayOperations interface for array-related operations
-type ArrayOperations interface {
-	HandleArrayAccess(data any, index int) NavigationResult
-	HandleArraySlice(data any, start, end, step int) NavigationResult
-	ParseArrayIndex(indexStr string) int
-	HandleNegativeIndex(index, length int) int
-	ValidateArrayBounds(index, length int) bool
-	ExtendArray(arr []any, targetLength int) []any
-	SetArrayElement(arr []any, index int, value any) error
-}
+// ArrayOperations interface for array-related operations - REMOVED (single implementation)
+// Use concrete ArrayOperationsImpl instead
 
-// ExtractionOperations interface for extraction operations
-type ExtractionOperations interface {
-	// Basic extraction
-	HandleExtraction(data any, key string) (any, error)
-	ExtractFromArray(arr []any, key string) []any
-	ExtractFromObject(obj map[string]any, key string) (any, bool)
+// ExtractionOperations interface for extraction operations - REMOVED (single implementation)
+// Use concrete ExtractionOperationsImpl instead
 
-	// Deep extraction
-	HandleDeepExtraction(data any, keys []string) (any, error)
-	HandleConsecutiveExtractions(data any, segments []PathSegmentInfo) (any, error)
-	DetectConsecutiveExtractions(segments []PathSegmentInfo) [][]PathSegmentInfo
+// SetOperations interface for value setting operations - REMOVED (single implementation)
+// Use concrete SetOperationsImpl instead
 
-	// Mixed operations
-	HandleMixedExtractionOperations(data any, segments []PathSegmentInfo) (any, error)
+// DeleteOperations interface for deletion operations - REMOVED (single implementation)
+// Use concrete DeleteOperationsImpl instead
 
-	// Utility functions
-	FlattenExtractionResults(data any) []any
-	IsExtractionPath(path string) bool
-	CountExtractions(path string) int
-	ValidateExtractionSyntax(path string) error
-	ExtractMultipleKeys(data any, keys []string) (map[string]any, error)
-	FilterExtractionResults(data any, predicate func(any) bool) []any
-}
+// ProcessorUtils interface for utility functions - REMOVED (single implementation)
+// Use concrete ProcessorUtilsImpl instead
 
-// SetOperations interface for value setting operations
-type SetOperations interface {
-	SetValue(data any, path string, value any, createPaths bool) error
-	SetValueWithSegments(data any, segments []PathSegmentInfo, value any, createPaths bool) error
-	CreatePath(data any, segments []PathSegmentInfo) error
-	HandleTypeConversion(data any, requiredType string) (any, error)
-}
-
-// DeleteOperations interface for deletion operations
-type DeleteOperations interface {
-	DeleteValue(data any, path string) error
-	DeleteValueWithSegments(data any, segments []PathSegmentInfo) error
-	MarkForDeletion(data any, path string) error
-	CleanupDeletedValues(data any) any
-	CompactArray(arr []any) []any
-}
-
-// ProcessorUtils interface for utility functions
-type ProcessorUtils interface {
-	IsArrayType(data any) bool
-	IsObjectType(data any) bool
-	IsEmptyContainer(data any) bool
-	DeepCopy(data any) (any, error)
-	GetDataType(data any) string
-	ConvertToMap(data any) (map[string]any, bool)
-	ConvertToArray(data any) ([]any, bool)
-	ConvertToString(value any) string
-	ConvertToNumber(value any) (float64, error)
-}
-
-// ModularProcessor interface that combines all operation interfaces
-type ModularProcessor interface {
-	// Core operations
-	Get(jsonStr, path string, opts ...*ProcessorOptions) (any, error)
-	Set(jsonStr, path string, value any, opts ...*ProcessorOptions) (string, error)
-	Delete(jsonStr, path string, opts ...*ProcessorOptions) (string, error)
-
-	// Batch operations
-	GetMultiple(jsonStr string, paths []string, opts ...*ProcessorOptions) (map[string]any, error)
-	BatchProcess(operations []BatchOperation, opts ...*ProcessorOptions) ([]BatchResult, error)
-
-	// Validation
-	Valid(jsonStr string, opts ...*ProcessorOptions) (bool, error)
-
-	// Configuration
-	SetConfig(config *ProcessorConfig)
-	GetConfig() *ProcessorConfig
-
-	// Lifecycle
-	Close() error
-	IsClosed() bool
-}
+// ModularProcessor interface - REMOVED (over-engineered)
+// Use main Processor struct instead
 
 // ProcessorConfig holds configuration for the processor
 type ProcessorConfig struct {
@@ -1510,7 +1431,7 @@ func (v *Validator) validateNestingDepth(jsonStr string) error {
 				maxDepth = depth
 			}
 			if depth > v.maxNestingDepth {
-				return newDepthLimitError("validate_nesting_depth", depth, v.maxNestingDepth)
+				return newDepthLimitError("validate_nesting_depth", "", depth, v.maxNestingDepth)
 			}
 		case '}', ']':
 			depth--
