@@ -2,27 +2,29 @@ package internal
 
 import (
 	"container/list"
-	"crypto/sha256"
-	"fmt"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
+// ConfigInterface is imported from root package to avoid circular dependency
+type ConfigInterface interface {
+	IsCacheEnabled() bool
+	GetMaxCacheSize() int
+	GetCacheTTL() time.Duration
+}
+
 // CacheManager handles all caching operations with performance and memory management
 type CacheManager struct {
-	shards []*cacheShard
-	config ConfigInterface
-
-	// Global statistics
+	shards      []*cacheShard
+	config      ConfigInterface
 	hitCount    int64
 	missCount   int64
 	memoryUsage int64
 	evictions   int64
-
-	shardCount int
-	shardMask  uint64
+	shardCount  int
+	shardMask   uint64
 }
 
 // cacheShard represents a single cache shard with LRU eviction
@@ -31,7 +33,6 @@ type cacheShard struct {
 	evictList   *list.List
 	mu          sync.RWMutex
 	size        int64
-	memory      int64
 	maxSize     int
 	lastCleanup int64
 }
@@ -48,17 +49,24 @@ type lruEntry struct {
 
 // NewCacheManager creates a new cache manager with sharding
 func NewCacheManager(config ConfigInterface) *CacheManager {
-	if config == nil {
+	if config == nil || !config.IsCacheEnabled() {
+		// Return disabled cache manager
 		return &CacheManager{
-			shards:     []*cacheShard{newCacheShard(100)},
+			shards:     []*cacheShard{newCacheShard(1)},
+			config:     nil,
 			shardCount: 1,
 			shardMask:  0,
 		}
 	}
 
 	shardCount := calculateOptimalShardCount(config.GetMaxCacheSize())
+	// Ensure shard count is power of 2 for efficient masking
+	shardCount = nextPowerOf2(shardCount)
 	shards := make([]*cacheShard, shardCount)
 	shardSize := config.GetMaxCacheSize() / shardCount
+	if shardSize < 1 {
+		shardSize = 1
+	}
 
 	for i := range shards {
 		shards[i] = newCacheShard(shardSize)
@@ -91,6 +99,23 @@ func calculateOptimalShardCount(maxSize int) int {
 	return 4
 }
 
+// nextPowerOf2 returns the next power of 2 greater than or equal to n
+func nextPowerOf2(n int) int {
+	if n <= 1 {
+		return 1
+	}
+	// Check if already power of 2
+	if n&(n-1) == 0 {
+		return n
+	}
+	// Find next power of 2
+	power := 1
+	for power < n {
+		power <<= 1
+	}
+	return power
+}
+
 // Get retrieves a value from cache with O(1) complexity
 func (cm *CacheManager) Get(key string) (any, bool) {
 	if cm.config == nil || !cm.config.IsCacheEnabled() {
@@ -99,52 +124,40 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 	}
 
 	shard := cm.getShard(key)
-	shard.mu.RLock()
+	now := time.Now().UnixNano()
+	ttlNanos := int64(0)
+	if cm.config.GetCacheTTL() > 0 {
+		ttlNanos = int64(cm.config.GetCacheTTL().Nanoseconds())
+	}
+
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
 	element, exists := shard.items[key]
 	if !exists {
-		shard.mu.RUnlock()
 		atomic.AddInt64(&cm.missCount, 1)
 		return nil, false
 	}
 
-	// Check if element.Value is nil to prevent panic
-	if element.Value == nil {
-		shard.mu.RUnlock()
-		// Remove invalid entry
-		cm.Delete(key)
-		atomic.AddInt64(&cm.missCount, 1)
-		return nil, false
-	}
-
-	entry, ok := element.Value.(*lruEntry)
-	if !ok || entry == nil {
-		shard.mu.RUnlock()
-		// Remove invalid entry
-		cm.Delete(key)
-		atomic.AddInt64(&cm.missCount, 1)
-		return nil, false
-	}
+	entry := element.Value.(*lruEntry)
 
 	// Check TTL
-	now := time.Now().UnixNano()
-	if cm.config.GetCacheTTL() > 0 && now-entry.timestamp > int64(cm.config.GetCacheTTL().Nanoseconds()) {
-		shard.mu.RUnlock()
-		// Remove expired entry
-		cm.Delete(key)
+	if ttlNanos > 0 && now-entry.timestamp > ttlNanos {
+		delete(shard.items, entry.key)
+		shard.evictList.Remove(element)
+		shard.size--
+		atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
 		atomic.AddInt64(&cm.missCount, 1)
 		return nil, false
 	}
 
-	// Update access time and move to front (LRU)
+	// Update LRU
 	entry.accessTime = now
 	atomic.AddInt64(&entry.hits, 1)
 	shard.evictList.MoveToFront(element)
-	value := entry.value
 
-	shard.mu.RUnlock()
 	atomic.AddInt64(&cm.hitCount, 1)
-	return value, true
+	return entry.value, true
 }
 
 // Set stores a value in the cache
@@ -155,8 +168,6 @@ func (cm *CacheManager) Set(key string, value any) {
 
 	shard := cm.getShard(key)
 	now := time.Now().UnixNano()
-
-	// Estimate entry size
 	entrySize := cm.estimateSize(value)
 
 	entry := &lruEntry{
@@ -171,30 +182,35 @@ func (cm *CacheManager) Set(key string, value any) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	// Check if we need to evict entries
+	// Evict if needed
 	if int(shard.size) >= shard.maxSize {
 		cm.evictLRU(shard)
 	}
 
-	// Store the entry
+	// Store entry
 	if oldElement, exists := shard.items[key]; exists {
-		// Update existing entry
 		oldEntry := oldElement.Value.(*lruEntry)
 		atomic.AddInt64(&cm.memoryUsage, int64(entry.size-oldEntry.size))
 		oldElement.Value = entry
 		shard.evictList.MoveToFront(oldElement)
 	} else {
-		// New entry
 		element := shard.evictList.PushFront(entry)
 		shard.items[key] = element
 		shard.size++
 		atomic.AddInt64(&cm.memoryUsage, int64(entry.size))
 	}
 
-	// Periodic cleanup
-	if now-shard.lastCleanup > 30 { // Every 30 seconds
-		go cm.cleanupShard(shard)
-		shard.lastCleanup = now
+	// Periodic cleanup - trigger if enough time has passed
+	// Only spawn cleanup goroutine if TTL is enabled and cleanup interval has passed
+	if cm.config != nil && cm.config.GetCacheTTL() > 0 {
+		lastCleanup := atomic.LoadInt64(&shard.lastCleanup)
+		cleanupInterval := 30 * time.Second.Nanoseconds()
+		if now-lastCleanup > cleanupInterval {
+			if atomic.CompareAndSwapInt64(&shard.lastCleanup, lastCleanup, now) {
+				// Use goroutine pool or limit concurrent cleanups to avoid goroutine explosion
+				go cm.cleanupShard(shard)
+			}
+		}
 	}
 }
 
@@ -205,11 +221,8 @@ func (cm *CacheManager) Delete(key string) {
 	defer shard.mu.Unlock()
 
 	if element, exists := shard.items[key]; exists {
-		if element.Value != nil {
-			if entry, ok := element.Value.(*lruEntry); ok && entry != nil {
-				atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
-			}
-		}
+		entry := element.Value.(*lruEntry)
+		atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
 		delete(shard.items, key)
 		shard.evictList.Remove(element)
 		shard.size--
@@ -223,7 +236,6 @@ func (cm *CacheManager) Clear() {
 		shard.items = make(map[string]*list.Element, shard.maxSize)
 		shard.evictList = list.New()
 		shard.size = 0
-		shard.memory = 0
 		shard.mu.Unlock()
 	}
 	atomic.StoreInt64(&cm.memoryUsage, 0)
@@ -232,25 +244,15 @@ func (cm *CacheManager) Clear() {
 	atomic.StoreInt64(&cm.evictions, 0)
 }
 
-// ClearCache is an alias for Clear for backward compatibility
-func (cm *CacheManager) ClearCache() {
-	cm.Clear()
-}
-
 // CleanExpiredCache removes expired entries from all shards
 func (cm *CacheManager) CleanExpiredCache() {
-	if cm.config.GetCacheTTL() <= 0 {
+	if cm.config == nil || cm.config.GetCacheTTL() <= 0 {
 		return
 	}
 
 	for _, shard := range cm.shards {
 		go cm.cleanupShard(shard)
 	}
-}
-
-// SecureHash generates a secure hash for cache keys
-func (cm *CacheManager) SecureHash(data string) string {
-	return fmt.Sprintf("%x", cm.hashKey(data))
 }
 
 // GetStats returns cache statistics
@@ -296,16 +298,8 @@ func (cm *CacheManager) getShard(key string) *cacheShard {
 	return cm.shards[hash&cm.shardMask]
 }
 
-// hashKey generates a hash for the key
+// hashKey generates a hash for the key using FNV-1a (fast and sufficient for cache keys)
 func (cm *CacheManager) hashKey(key string) uint64 {
-	if len(key) > 256 {
-		// Use SHA256 for large keys
-		h := sha256.Sum256([]byte(key))
-		return uint64(h[0])<<56 | uint64(h[1])<<48 | uint64(h[2])<<40 | uint64(h[3])<<32 |
-			uint64(h[4])<<24 | uint64(h[5])<<16 | uint64(h[6])<<8 | uint64(h[7])
-	}
-
-	// Use FNV-1a for small keys (faster)
 	h := fnv.New64a()
 	h.Write([]byte(key))
 	return h.Sum64()
@@ -313,24 +307,17 @@ func (cm *CacheManager) hashKey(key string) uint64 {
 
 // evictLRU evicts the least recently used entry from a shard
 func (cm *CacheManager) evictLRU(shard *cacheShard) {
-	if shard.evictList.Len() == 0 {
+	element := shard.evictList.Back()
+	if element == nil {
 		return
 	}
 
-	// Remove the least recently used entry (back of the list)
-	element := shard.evictList.Back()
-	if element != nil && element.Value != nil {
-		if entry, ok := element.Value.(*lruEntry); ok && entry != nil {
-			delete(shard.items, entry.key)
-			shard.evictList.Remove(element)
-			shard.size--
-			atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
-			atomic.AddInt64(&cm.evictions, 1)
-		} else {
-			// Remove invalid entry
-			shard.evictList.Remove(element)
-		}
-	}
+	entry := element.Value.(*lruEntry)
+	delete(shard.items, entry.key)
+	shard.evictList.Remove(element)
+	shard.size--
+	atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
+	atomic.AddInt64(&cm.evictions, 1)
 }
 
 // cleanupShard removes expired entries from a shard
@@ -345,25 +332,9 @@ func (cm *CacheManager) cleanupShard(shard *cacheShard) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	// Iterate through the list and remove expired entries
+	// Iterate from back (oldest) and remove expired entries
 	for element := shard.evictList.Back(); element != nil; {
-		// Check if element.Value is nil to prevent panic
-		if element.Value == nil {
-			prev := element.Prev()
-			shard.evictList.Remove(element)
-			element = prev
-			continue
-		}
-
-		entry, ok := element.Value.(*lruEntry)
-		if !ok || entry == nil {
-			// Skip invalid entries
-			prev := element.Prev()
-			shard.evictList.Remove(element)
-			element = prev
-			continue
-		}
-
+		entry := element.Value.(*lruEntry)
 		if now-entry.timestamp > ttlNanos {
 			prev := element.Prev()
 			delete(shard.items, entry.key)
@@ -372,37 +343,40 @@ func (cm *CacheManager) cleanupShard(shard *cacheShard) {
 			atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
 			element = prev
 		} else {
-			break // Since entries are ordered by access time, we can stop here
+			break
 		}
 	}
 }
 
-// estimateSize estimates the memory size of a value
+// estimateSize estimates the memory size of a value more accurately
 func (cm *CacheManager) estimateSize(value any) int {
 	switch v := value.(type) {
 	case string:
-		return len(v) + 16 // String overhead
+		// String header (16 bytes) + data
+		return 16 + len(v)
 	case []byte:
-		return len(v) + 24 // Slice overhead
+		// Slice header (24 bytes) + data
+		return 24 + len(v)
 	case map[string]any:
-		size := 48 // Map overhead
-		for key, val := range v {
-			size += len(key) + 16 + cm.estimateSize(val)
-		}
-		return size
+		// Map overhead + estimated per-entry cost
+		// Each entry: key (string) + value (interface) + hash table overhead
+		return 48 + len(v)*64
 	case []any:
-		size := 24 // Slice overhead
-		for _, val := range v {
-			size += cm.estimateSize(val)
-		}
-		return size
-	case int, int32, int64, uint, uint32, uint64:
+		// Slice header + per-element interface overhead
+		return 24 + len(v)*16
+	case []PathSegment:
+		// Slice header + per-element struct size
+		return 24 + len(v)*128
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return 8
 	case float32, float64:
 		return 8
 	case bool:
 		return 1
+	case nil:
+		return 0
 	default:
-		return 64 // Default estimate for unknown types
+		// Conservative estimate for unknown types
+		return 128
 	}
 }

@@ -186,12 +186,10 @@ func TestConfigConstants(t *testing.T) {
 	})
 
 	t.Run("SecurityConstants", func(t *testing.T) {
-		helper.AssertTrue(MaxSecurityValidationSize > 0, "MaxSecurityValidationSize should be positive")
-		helper.AssertTrue(MaxAllowedNestingDepth > 0, "MaxAllowedNestingDepth should be positive")
-		helper.AssertTrue(MaxAllowedObjectKeys > 0, "MaxAllowedObjectKeys should be positive")
-		helper.AssertTrue(MaxAllowedArrayElements > 0, "MaxAllowedArrayElements should be positive")
-		helper.AssertEqual(DefaultMaxSecuritySize, MaxSecurityValidationSize, "Security size constants should match")
-		helper.AssertEqual(DefaultMaxNestingDepth, MaxAllowedNestingDepth, "Nesting depth constants should match")
+		helper.AssertTrue(DefaultMaxSecuritySize > 0, "DefaultMaxSecuritySize should be positive")
+		helper.AssertTrue(DefaultMaxNestingDepth > 0, "DefaultMaxNestingDepth should be positive")
+		helper.AssertTrue(DefaultMaxObjectKeys > 0, "DefaultMaxObjectKeys should be positive")
+		helper.AssertTrue(DefaultMaxArrayElements > 0, "DefaultMaxArrayElements should be positive")
 	})
 
 	t.Run("ErrorCodes", func(t *testing.T) {

@@ -7,70 +7,64 @@ import (
 	"time"
 )
 
+const (
+	defaultMaxMemoryBytes      = 1024 * 1024 * 1024 // 1GB
+	defaultMaxErrorRatePercent = 10.0                // 10%
+)
+
 // HealthChecker provides health checking functionality for the JSON processor
 type HealthChecker struct {
-	processor any // Reference to processor (using any to avoid circular dependency)
-	metrics   *MetricsCollector
+	metrics             *MetricsCollector
+	maxMemoryBytes      uint64
+	maxErrorRatePercent float64
 }
 
-// NewHealthChecker creates a new health checker
-func NewHealthChecker(processor any, metrics *MetricsCollector) *HealthChecker {
+// HealthCheckerConfig holds configuration for health checker
+type HealthCheckerConfig struct {
+	MaxMemoryBytes      uint64
+	MaxErrorRatePercent float64
+}
+
+// NewHealthChecker creates a new health checker with optional custom thresholds
+func NewHealthChecker(metrics *MetricsCollector, config *HealthCheckerConfig) *HealthChecker {
+	maxMemory := uint64(defaultMaxMemoryBytes)
+	maxErrorRate := defaultMaxErrorRatePercent
+
+	if config != nil {
+		if config.MaxMemoryBytes > 0 {
+			maxMemory = config.MaxMemoryBytes
+		}
+		if config.MaxErrorRatePercent > 0 && config.MaxErrorRatePercent <= 100 {
+			maxErrorRate = config.MaxErrorRatePercent
+		}
+	}
+
 	return &HealthChecker{
-		processor: processor,
-		metrics:   metrics,
+		metrics:             metrics,
+		maxMemoryBytes:      maxMemory,
+		maxErrorRatePercent: maxErrorRate,
 	}
 }
 
-// CheckHealth performs comprehensive health checks
+// CheckHealth performs health checks and returns overall status
 func (hc *HealthChecker) CheckHealth() HealthStatus {
-	timestamp := time.Now()
-	checks := make(map[string]CheckResult)
+	checks := map[string]CheckResult{
+		"metrics":    hc.checkMetrics(),
+		"memory":     hc.checkMemoryUsage(),
+		"error_rate": hc.checkErrorRates(),
+	}
+
+	// Calculate overall health
 	overall := true
-
-	// Check metrics availability
-	metricsResult := hc.checkMetrics()
-	checks["metrics"] = metricsResult
-	if !metricsResult.Healthy {
-		overall = false
-	}
-
-	// Check memory usage
-	memoryResult := hc.checkMemoryUsage()
-	checks["memory"] = memoryResult
-	if !memoryResult.Healthy {
-		overall = false
-	}
-
-	// Check error rates
-	errorResult := hc.checkErrorRates()
-	checks["error_rate"] = errorResult
-	if !errorResult.Healthy {
-		overall = false
-	}
-
-	// Check performance
-	performanceResult := hc.checkPerformance()
-	checks["performance"] = performanceResult
-	if !performanceResult.Healthy {
-		overall = false
-	}
-
-	// Check concurrency
-	concurrencyResult := hc.checkConcurrency()
-	checks["concurrency"] = concurrencyResult
-	if !concurrencyResult.Healthy {
-		overall = false
-	}
-
-	// Check cache health
-	cacheResult := hc.checkCacheHealth()
-	checks["cache"] = cacheResult
-	if !cacheResult.Healthy {
-		overall = false
+	for _, result := range checks {
+		if !result.Healthy {
+			overall = false
+			break
+		}
 	}
 
 	return HealthStatus{
-		Timestamp: timestamp,
+		Timestamp: time.Now(),
 		Healthy:   overall,
 		Checks:    checks,
 	}
@@ -104,27 +98,20 @@ func (hc *HealthChecker) checkMemoryUsage() CheckResult {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	// Check if memory usage is excessive (>1GB)
-	const maxMemoryBytes = 1024 * 1024 * 1024 // 1GB
-	if memStats.Alloc > maxMemoryBytes {
-		return CheckResult{
-			Healthy: false,
-			Message: fmt.Sprintf("High memory usage: %d bytes (>%d)", memStats.Alloc, maxMemoryBytes),
-		}
-	}
+	const mbDivisor = 1024 * 1024
+	allocMB := float64(memStats.Alloc) / mbDivisor
+	limitMB := float64(hc.maxMemoryBytes) / mbDivisor
 
-	// Check for memory leaks (growing heap)
-	if memStats.HeapInuse > memStats.HeapAlloc*2 {
+	if memStats.Alloc > hc.maxMemoryBytes {
 		return CheckResult{
 			Healthy: false,
-			Message: fmt.Sprintf("Potential memory leak detected: heap in use %d vs allocated %d",
-				memStats.HeapInuse, memStats.HeapAlloc),
+			Message: fmt.Sprintf("High memory usage: %.2f MB (limit: %.2f MB)", allocMB, limitMB),
 		}
 	}
 
 	return CheckResult{
 		Healthy: true,
-		Message: fmt.Sprintf("Memory usage healthy: %d bytes allocated", memStats.Alloc),
+		Message: fmt.Sprintf("Memory: %.2f MB (%.1f%% of limit)", allocMB, (allocMB/limitMB)*100),
 	}
 }
 
@@ -149,121 +136,17 @@ func (hc *HealthChecker) checkErrorRates() CheckResult {
 	}
 
 	errorRate := float64(failed) / float64(total) * 100.0
-	const maxErrorRate = 10.0 // 10% max error rate
 
-	if errorRate > maxErrorRate {
+	if errorRate > hc.maxErrorRatePercent {
 		return CheckResult{
 			Healthy: false,
-			Message: fmt.Sprintf("High error rate: %.2f%% (>%.1f%%)", errorRate, maxErrorRate),
+			Message: fmt.Sprintf("High error rate: %.2f%% (limit: %.1f%%)", errorRate, hc.maxErrorRatePercent),
 		}
 	}
 
 	return CheckResult{
 		Healthy: true,
 		Message: fmt.Sprintf("Error rate healthy: %.2f%% (%d/%d)", errorRate, failed, total),
-	}
-}
-
-// checkPerformance checks if performance metrics are within acceptable ranges
-func (hc *HealthChecker) checkPerformance() CheckResult {
-	if hc.metrics == nil {
-		return CheckResult{
-			Healthy: false,
-			Message: "Cannot check performance: metrics not available",
-		}
-	}
-
-	metrics := hc.metrics.GetMetrics()
-
-	// Check average processing time (should be < 100ms for most operations)
-	const maxAvgTime = 100 * time.Millisecond
-	if metrics.AvgProcessingTime > maxAvgTime {
-		return CheckResult{
-			Healthy: false,
-			Message: fmt.Sprintf("Slow average processing time: %v (>%v)",
-				metrics.AvgProcessingTime, maxAvgTime),
-		}
-	}
-
-	// Check maximum processing time (should be < 1s)
-	const maxProcessingTime = 1 * time.Second
-	if metrics.MaxProcessingTime > maxProcessingTime {
-		return CheckResult{
-			Healthy: false,
-			Message: fmt.Sprintf("Slow maximum processing time: %v (>%v)",
-				metrics.MaxProcessingTime, maxProcessingTime),
-		}
-	}
-
-	return CheckResult{
-		Healthy: true,
-		Message: fmt.Sprintf("Performance healthy: avg %v, max %v",
-			metrics.AvgProcessingTime, metrics.MaxProcessingTime),
-	}
-}
-
-// checkConcurrency checks if concurrency levels are reasonable
-func (hc *HealthChecker) checkConcurrency() CheckResult {
-	if hc.metrics == nil {
-		return CheckResult{
-			Healthy: false,
-			Message: "Cannot check concurrency: metrics not available",
-		}
-	}
-
-	metrics := hc.metrics.GetMetrics()
-	active := metrics.ActiveConcurrentOps
-	maxInt := metrics.MaxConcurrentOps
-
-	// Check if too many concurrent operations
-	const maxConcurrentOps = 1000
-	if active > maxConcurrentOps {
-		return CheckResult{
-			Healthy: false,
-			Message: fmt.Sprintf("Too many concurrent operations: %d (>%d)", active, maxConcurrentOps),
-		}
-	}
-
-	return CheckResult{
-		Healthy: true,
-		Message: fmt.Sprintf("Concurrency healthy: %d active, %d max", active, maxInt),
-	}
-}
-
-// checkCacheHealth checks cache performance and health
-func (hc *HealthChecker) checkCacheHealth() CheckResult {
-	if hc.metrics == nil {
-		return CheckResult{
-			Healthy: false,
-			Message: "Cannot check cache: metrics not available",
-		}
-	}
-
-	metrics := hc.metrics.GetMetrics()
-	hits := metrics.CacheHits
-	misses := metrics.CacheMisses
-	total := hits + misses
-
-	if total == 0 {
-		return CheckResult{
-			Healthy: true,
-			Message: "Cache not used yet",
-		}
-	}
-
-	hitRate := float64(hits) / float64(total) * 100.0
-	const minHitRate = 50.0 // 50% minimum hit rate
-
-	if hitRate < minHitRate {
-		return CheckResult{
-			Healthy: false,
-			Message: fmt.Sprintf("Low cache hit rate: %.2f%% (<%.1f%%)", hitRate, minHitRate),
-		}
-	}
-
-	return CheckResult{
-		Healthy: true,
-		Message: fmt.Sprintf("Cache healthy: %.2f%% hit rate (%d/%d)", hitRate, hits, total),
 	}
 }
 
@@ -287,23 +170,30 @@ func (hs *HealthStatus) GetSummary() string {
 		status = "UNHEALTHY"
 	}
 
-	var summary strings.Builder
-	summary.WriteString(fmt.Sprintf("Health Status: %s (checked at %s)\n", status, hs.Timestamp.Format(time.RFC3339)))
+	// Pre-calculate size for better performance
+	estimatedSize := 100 + len(hs.Checks)*80
+	var b strings.Builder
+	b.Grow(estimatedSize)
+
+	b.WriteString("Health Status: ")
+	b.WriteString(status)
+	b.WriteString(" (checked at ")
+	b.WriteString(hs.Timestamp.Format(time.RFC3339))
+	b.WriteString(")\n")
 
 	for checkName, result := range hs.Checks {
-		checkStatus := "✓"
-		if !result.Healthy {
-			checkStatus = "✗"
+		if result.Healthy {
+			b.WriteString("  ✓ ")
+		} else {
+			b.WriteString("  ✗ ")
 		}
-		summary.WriteString(fmt.Sprintf("  %s %s: %s\n", checkStatus, checkName, result.Message))
+		b.WriteString(checkName)
+		b.WriteString(": ")
+		b.WriteString(result.Message)
+		b.WriteByte('\n')
 	}
 
-	return summary.String()
-}
-
-// IsHealthy returns true if all health checks passed
-func (hs *HealthStatus) IsHealthy() bool {
-	return hs.Healthy
+	return b.String()
 }
 
 // GetFailedChecks returns a list of failed health check names

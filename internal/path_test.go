@@ -66,9 +66,6 @@ func TestPathSegment(t *testing.T) {
 		if seg.Key != "email" {
 			t.Errorf("Expected key 'email', got '%s'", seg.Key)
 		}
-		if seg.Extract != "email" {
-			t.Errorf("Expected extract 'email', got '%s'", seg.Extract)
-		}
 		if seg.IsFlat {
 			t.Error("Should not be flat extraction")
 		}
@@ -88,26 +85,6 @@ func TestPathSegment(t *testing.T) {
 		}
 	})
 
-	t.Run("LegacyPathSegment", func(t *testing.T) {
-		tests := []struct {
-			typeStr  string
-			value    string
-			expected PathSegmentType
-		}{
-			{"property", "name", PropertySegment},
-			{"array", "[0]", ArrayIndexSegment},
-		}
-
-		for _, tt := range tests {
-			seg := NewLegacyPathSegment(tt.typeStr, tt.value)
-			if seg.Type != tt.expected {
-				t.Errorf("Expected type %v, got %v", tt.expected, seg.Type)
-			}
-			if seg.Value != tt.value {
-				t.Errorf("Expected value '%s', got '%s'", tt.value, seg.Value)
-			}
-		}
-	})
 }
 
 func TestPathSegmentType(t *testing.T) {
@@ -130,61 +107,4 @@ func TestPathSegmentType(t *testing.T) {
 			t.Errorf("Expected '%s', got '%s'", tt.expected, result)
 		}
 	}
-}
-
-func TestOperationContext(t *testing.T) {
-	t.Run("Creation", func(t *testing.T) {
-		ctx := &OperationContext{
-			ExtractionPath: "users[*].email",
-			OperationType:  "get",
-			TargetArrays: []ArrayLocation{
-				{
-					ContainerPath:  "users",
-					ArrayFieldName: "email",
-				},
-			},
-		}
-
-		if ctx.ExtractionPath != "users[*].email" {
-			t.Error("Extraction path not set correctly")
-		}
-		if ctx.OperationType != "get" {
-			t.Error("Operation type not set correctly")
-		}
-		if len(ctx.TargetArrays) != 1 {
-			t.Error("Target arrays not set correctly")
-		}
-	})
-}
-
-func TestMappingInfo(t *testing.T) {
-	t.Run("Creation", func(t *testing.T) {
-		info := &MappingInfo{
-			ArrayFieldName: "items",
-			TargetIndices:  []int{0, 1, 2},
-		}
-
-		if info.ArrayFieldName != "items" {
-			t.Error("Array field name not set correctly")
-		}
-		if len(info.TargetIndices) != 3 {
-			t.Error("Target indices not set correctly")
-		}
-	})
-}
-
-func TestArrayLocation(t *testing.T) {
-	t.Run("Creation", func(t *testing.T) {
-		loc := ArrayLocation{
-			ContainerPath:  "data.users",
-			ArrayFieldName: "emails",
-		}
-
-		if loc.ContainerPath != "data.users" {
-			t.Error("Container path not set correctly")
-		}
-		if loc.ArrayFieldName != "emails" {
-			t.Error("Array field name not set correctly")
-		}
-	})
 }

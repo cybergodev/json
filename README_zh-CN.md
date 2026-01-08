@@ -1,6 +1,7 @@
 # 🚀 cybergodev/json - 高性能 Go JSON 处理库
 
-[![Go Version](https://img.shields.io/badge/go-%3E%3D1.24-blue.svg)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-blue.svg)](https://golang.org)
+[![pkg.go.dev](https://pkg.go.dev/badge/github.com/cybergodev/json.svg)](https://pkg.go.dev/github.com/cybergodev/json)
 [![MIT license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 [![Performance](https://img.shields.io/badge/performance-high%20performance-green.svg)](https://github.com/cybergodev/json)
 [![Thread Safe](https://img.shields.io/badge/thread%20safe-yes-brightgreen.svg)](https://github.com/cybergodev/json)
@@ -47,8 +48,10 @@
 
 ### 📚 更多示例与文档
 
-- **[📁 示例代码](examples)** - 所有功能的完整代码示例
-- **[⚙️ 配置指南](examples/configuration)** - 高级配置和优化
+- **[📁 示例代码](examples)** - 三个涵盖所有功能的完整示例
+  - **[基本用法](examples/1.basic_usage.go)** - 快速入门和基础操作
+  - **[高级功能](examples/2.advanced_features.go)** - 复杂查询和嵌套操作
+  - **[生产就绪](examples/3.production_ready.go)** - 生产环境模式和最佳实践
 - **[📖 兼容性](docs/COMPATIBILITY.md)** - 兼容性指南和迁移信息
 - **[🔄 快速参考](docs/QUICK_REFERENCE.md)** - 常用功能快速参考指南
 
@@ -759,23 +762,16 @@ if err != nil {
 
 ### 📁 示例代码
 
-仓库包含演示各种功能和用例的完整示例：
+- **[基本用法](examples/1.basic_usage.go)** - examples/1.basic_usage.go 
+- **[高级功能](examples/2.advanced_features.go)** - examples/2.advanced_features.go 
+- **[生产就绪](examples/3.production_ready.go)** - examples/3.production_ready.go 
 
-#### 基础示例
-- **[基本用法](examples/basic)** - 基本操作和入门
-- **[JSON Get 操作](examples/json_get)** - 使用不同路径表达式的数据检索示例
-- **[JSON Set 操作](examples/json_set)** - 数据修改和批量更新
-- **[JSON Delete 操作](examples/json_delete)** - 数据删除和清理操作
 
-#### 高级示例
-- **[文件操作](examples/file_operations)** - 文件 I/O、批量处理和流操作
-- **[JSON 迭代](examples/json_iteration)** - 数据迭代和遍历模式
-- **[扁平化提取](examples/flat_extraction)** - 复杂数据提取和扁平化
-- **[JSON 编码](examples/json_encode)** - 自定义编码配置和格式化
+### 📖 其他资源
 
-#### 配置示例
-- **[配置管理](examples/configuration)** - 处理器配置和优化
-- **[兼容性示例](examples/compatibility)** - 直接替换演示
+- **[兼容性指南](docs/COMPATIBILITY.md)** - `encoding/json` 的直接替换
+- **[快速参考](docs/QUICK_REFERENCE.md)** - 常用操作速查表
+- **[API 文档](https://pkg.go.dev/github.com/cybergodev/json)** - 完整的 API 参考
 
 ---
 

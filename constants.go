@@ -2,6 +2,25 @@ package json
 
 import "time"
 
+// ConfigInterface defines the interface for configuration objects
+type ConfigInterface interface {
+	IsCacheEnabled() bool
+	GetMaxCacheSize() int
+	GetCacheTTL() time.Duration
+	GetMaxJSONSize() int64
+	GetMaxPathDepth() int
+	GetMaxConcurrency() int
+	IsMetricsEnabled() bool
+	IsStrictMode() bool
+	AllowComments() bool
+	PreserveNumbers() bool
+	ShouldCreatePaths() bool
+	ShouldCleanupNulls() bool
+	ShouldCompactArrays() bool
+	ShouldValidateInput() bool
+	GetMaxNestingDepth() int
+}
+
 const (
 	// Buffer and Pool Sizes - Optimized for production workloads
 	DefaultBufferSize        = 1024
@@ -29,9 +48,9 @@ const (
 	DefaultParallelThreshold = 10
 
 	// Timing and Intervals - Optimized for responsiveness
-	MemoryPressureCheckInterval = 30000
-	PoolResetInterval           = 60000
-	PoolResetIntervalPressure   = 30000
+	MemoryPressureCheckInterval = 30 * time.Second
+	PoolResetInterval           = 60 * time.Second
+	PoolResetIntervalPressure   = 30 * time.Second
 	CacheCleanupInterval        = 30 * time.Second
 	DeadlockCheckInterval       = 30 * time.Second
 	DeadlockThreshold           = 30 * time.Second
@@ -50,14 +69,22 @@ const (
 	MaxConsecutiveColons   = 3
 	MaxConsecutiveBrackets = 3
 
-	// Security constants (aliases for backward compatibility)
-	MaxSecurityValidationSize = DefaultMaxSecuritySize
-	MaxAllowedNestingDepth    = DefaultMaxNestingDepth
-	MaxAllowedObjectKeys      = DefaultMaxObjectKeys
-	MaxAllowedArrayElements   = DefaultMaxArrayElements
-
-	// Cache TTL - Default cache time-to-live
+	// Cache TTL
 	DefaultCacheTTL = 5 * time.Minute
+
+	// JSON processing thresholds
+	SmallJSONThreshold  = 256  // Threshold for lightweight JSON normalization
+	MediumJSONThreshold = 1024 // Threshold for full JSON normalization
+
+	// Cache key constants
+	CacheKeyHashLength   = 32  // Length for cache key hash
+	SmallJSONCacheLimit  = 2048 // Limit for caching small JSON strings
+	EstimatedKeyOverhead = 32  // Estimated overhead for cache key generation
+	LargeJSONKeyOverhead = 64  // Overhead for large JSON cache keys
+	MaxCacheKeyLength    = 500 // Maximum allowed cache key length
+
+	// Validation constants
+	ValidationBOMPrefix = "\uFEFF" // UTF-8 BOM prefix to detect and remove
 )
 
 // Error codes for machine-readable error identification

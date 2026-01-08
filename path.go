@@ -241,7 +241,7 @@ func (p *Processor) Compact(jsonStr string, opts ...*ProcessorOptions) (string, 
 	return result, nil
 }
 
-// pathParser implements the PathParser interface
+// pathParser provides path parsing functionality
 type pathParser struct {
 	// Compiled regex patterns for performance
 	simplePropertyPattern *regexp.Regexp
@@ -254,7 +254,7 @@ type pathParser struct {
 }
 
 // NewPathParser creates a new path parser instance
-func NewPathParser() PathParser {
+func NewPathParser() *pathParser {
 	return &pathParser{
 		simplePropertyPattern: regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
 		arrayIndexPattern:     regexp.MustCompile(`^\[(-?\d+)\]$`),
@@ -622,8 +622,7 @@ func (pp *pathParser) parseSimpleSegment(part string) (PathSegmentInfo, error) {
 // parseComplexSegment parses complex segments that may contain mixed syntax
 func (pp *pathParser) parseComplexSegment(part string) ([]PathSegmentInfo, error) {
 	// For now, delegate to the internal parser for complex segments
-	parser := internal.NewPathParser()
-	internalSegments, err := parser.ParseComplexSegment(part)
+	internalSegments, err := internal.ParseComplexSegment(part)
 	if err != nil {
 		return nil, err
 	}
@@ -633,10 +632,10 @@ func (pp *pathParser) parseComplexSegment(part string) ([]PathSegmentInfo, error
 	for _, seg := range internalSegments {
 		segmentInfo := PathSegmentInfo{
 			Type:    seg.TypeString(),
-			Value:   seg.Value,
+			Value:   seg.String(),
 			Key:     seg.Key,
 			Index:   seg.Index,
-			Extract: seg.Extract,
+			Extract: seg.Key,
 			IsFlat:  seg.IsFlat,
 		}
 
@@ -1174,12 +1173,12 @@ func ConvertFromScientific(s string) (string, error) {
 
 // navigator implements the Navigator interface
 type navigator struct {
-	pathParser PathParser
-	utils      ProcessorUtils
+	pathParser *pathParser
+	utils      *processorUtils
 }
 
 // NewNavigator creates a new navigator instance
-func NewNavigator(pathParser PathParser, utils ProcessorUtils) Navigator {
+func NewNavigator(pathParser *pathParser, utils *processorUtils) *navigator {
 	return &navigator{
 		pathParser: pathParser,
 		utils:      utils,
@@ -1337,7 +1336,7 @@ func (n *navigator) handleArraySlice(data any, segment PathSegmentInfo) (Navigat
 
 // handleExtraction handles extraction operations ({key} syntax)
 func (n *navigator) handleExtraction(data any, segment PathSegmentInfo) (NavigationResult, error) {
-	extractKey := segment.Extract
+	extractKey := segment.Key
 	if extractKey == "" {
 		return NavigationResult{Value: nil, Exists: false}, nil
 	}
@@ -1588,7 +1587,7 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 		// Handle different segment types
 		switch segment.TypeString() {
 		case "property":
-			result := p.handlePropertyAccess(current, segment.Value)
+			result := p.handlePropertyAccess(current, segment.Key)
 			if !result.Exists {
 				return nil, ErrPathNotFound
 			}
@@ -1820,7 +1819,6 @@ func (p *Processor) parsePathSegment(part string, segments []PathSegment) []Path
 		if index, err := strconv.Atoi(part); err == nil {
 			// This is a numeric index, treat as array access
 			segments = append(segments, PathSegment{
-				Value: part,
 				Type:  internal.ArrayIndexSegment,
 				Index: index,
 			})
@@ -1829,8 +1827,8 @@ func (p *Processor) parsePathSegment(part string, segments []PathSegment) []Path
 
 		// Simple property segment
 		segments = append(segments, PathSegment{
-			Value: part,
-			Type:  internal.PropertySegment,
+			Key:  part,
+			Type: internal.PropertySegment,
 		})
 		return segments
 	}
@@ -1885,7 +1883,7 @@ func (p *Processor) parsePath(path string) ([]string, error) {
 	// Convert to string array
 	result := make([]string, len(segments))
 	for i, segment := range segments {
-		result[i] = segment.Value
+		result[i] = segment.String()
 	}
 
 	return result, nil
@@ -1917,7 +1915,8 @@ func (p *Processor) isDistributedOperationPath(path string) bool {
 // isDistributedOperationSegment checks if a segment requires distributed handling
 func (p *Processor) isDistributedOperationSegment(segment PathSegment) bool {
 	// Check segment properties for distributed operation indicators
-	return segment.IsDistributed || segment.Extract != ""
+	// Note: IsDistributed field was removed as it was never used
+	return segment.Key != ""
 }
 
 // handleDistributedOperation handles distributed operations across extracted arrays
@@ -1938,7 +1937,7 @@ func (p *Processor) reconstructPath(segments []PathSegment) string {
 		if i > 0 {
 			sb.WriteRune('.')
 		}
-		sb.WriteString(segment.Value)
+		sb.WriteString(segment.String())
 	}
 
 	return sb.String()
@@ -1955,8 +1954,8 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 	if openBracket == -1 || closeBracket == -1 || closeBracket <= openBracket {
 		// Invalid bracket syntax, treat as property
 		segments = append(segments, PathSegment{
-			Value: part,
-			Type:  internal.PropertySegment,
+			Key:  part,
+			Type: internal.PropertySegment,
 		})
 		return segments
 	}
@@ -1965,8 +1964,8 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 	if openBracket > 0 {
 		propertyName := part[:openBracket]
 		segments = append(segments, PathSegment{
-			Value: propertyName,
-			Type:  internal.PropertySegment,
+			Key:  propertyName,
+			Type: internal.PropertySegment,
 		})
 	}
 
@@ -1977,8 +1976,7 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 	if strings.Contains(bracketContent, ":") {
 		// Slice syntax - parse slice parameters
 		segment := PathSegment{
-			Value: bracketContent,
-			Type:  internal.ArraySliceSegment,
+			Type: internal.ArraySliceSegment,
 		}
 
 		// Parse slice parameters
@@ -2010,8 +2008,7 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 	} else {
 		// Array index
 		segment := PathSegment{
-			Value: bracketContent,
-			Type:  internal.ArrayIndexSegment,
+			Type: internal.ArrayIndexSegment,
 		}
 
 		// Parse index
@@ -2042,8 +2039,8 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 	if openBrace == -1 || closeBrace == -1 || closeBrace <= openBrace {
 		// Invalid brace syntax, treat as property
 		segments = append(segments, PathSegment{
-			Value: part,
-			Type:  internal.PropertySegment,
+			Key:  part,
+			Type: internal.PropertySegment,
 		})
 		return segments
 	}
@@ -2052,8 +2049,8 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 	if openBrace > 0 {
 		propertyName := part[:openBrace]
 		segments = append(segments, PathSegment{
-			Value: propertyName,
-			Type:  internal.PropertySegment,
+			Key:  propertyName,
+			Type: internal.PropertySegment,
 		})
 	}
 
@@ -2062,16 +2059,15 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 
 	// Create extraction segment
 	extractSegment := PathSegment{
-		Value: braceContent,
-		Type:  internal.ExtractSegment,
+		Type: internal.ExtractSegment,
 	}
 
 	// Check for flat extraction
 	if strings.HasPrefix(braceContent, "flat:") {
-		extractSegment.Extract = braceContent[5:] // Remove "flat:" prefix
+		extractSegment.Key = braceContent[5:] // Remove "flat:" prefix
 		extractSegment.IsFlat = true
 	} else {
-		extractSegment.Extract = braceContent
+		extractSegment.Key = braceContent
 	}
 
 	segments = append(segments, extractSegment)

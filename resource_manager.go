@@ -107,40 +107,51 @@ func (urm *UnifiedResourceManager) PutBuffer(buf []byte) {
 // PerformMaintenance performs periodic cleanup and optimization
 func (urm *UnifiedResourceManager) PerformMaintenance() {
 	now := time.Now().Unix()
-	if now-atomic.LoadInt64(&urm.lastCleanup) < urm.cleanupInterval {
+	lastCleanup := atomic.LoadInt64(&urm.lastCleanup)
+
+	// Fast path: skip if cleanup interval not reached
+	if now-lastCleanup < urm.cleanupInterval {
 		return
 	}
 
-	if atomic.CompareAndSwapInt64(&urm.lastCleanup, atomic.LoadInt64(&urm.lastCleanup), now) {
-		// Reset pools if they're getting too large (memory pressure relief)
-		if atomic.LoadInt64(&urm.allocatedBuilders) > 100 {
-			urm.stringBuilderPool = &sync.Pool{
-				New: func() any {
-					sb := &strings.Builder{}
-					sb.Grow(512)
-					return sb
-				},
-			}
-			atomic.StoreInt64(&urm.allocatedBuilders, 0)
-		}
+	// Try to acquire cleanup lock
+	if !atomic.CompareAndSwapInt64(&urm.lastCleanup, lastCleanup, now) {
+		return // Another goroutine is performing cleanup
+	}
 
-		if atomic.LoadInt64(&urm.allocatedSegments) > 50 {
-			urm.pathSegmentPool = &sync.Pool{
-				New: func() any {
-					return make([]PathSegment, 0, 8)
-				},
-			}
-			atomic.StoreInt64(&urm.allocatedSegments, 0)
+	// Reset pools if they exceed thresholds
+	urm.resetPoolIfNeeded(&urm.allocatedBuilders, 50, func() {
+		urm.stringBuilderPool = &sync.Pool{
+			New: func() any {
+				sb := &strings.Builder{}
+				sb.Grow(512)
+				return sb
+			},
 		}
+	})
 
-		if atomic.LoadInt64(&urm.allocatedBuffers) > 50 {
-			urm.bufferPool = &sync.Pool{
-				New: func() any {
-					return make([]byte, 0, 1024)
-				},
-			}
-			atomic.StoreInt64(&urm.allocatedBuffers, 0)
+	urm.resetPoolIfNeeded(&urm.allocatedSegments, 30, func() {
+		urm.pathSegmentPool = &sync.Pool{
+			New: func() any {
+				return make([]PathSegment, 0, 8)
+			},
 		}
+	})
+
+	urm.resetPoolIfNeeded(&urm.allocatedBuffers, 30, func() {
+		urm.bufferPool = &sync.Pool{
+			New: func() any {
+				return make([]byte, 0, 1024)
+			},
+		}
+	})
+}
+
+// resetPoolIfNeeded resets a pool if the counter exceeds the threshold
+func (urm *UnifiedResourceManager) resetPoolIfNeeded(counter *int64, threshold int64, resetFunc func()) {
+	if atomic.LoadInt64(counter) > threshold {
+		resetFunc()
+		atomic.StoreInt64(counter, 0)
 	}
 }
 

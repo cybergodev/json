@@ -38,32 +38,26 @@ func ValidateConfig(config *Config) error {
 		return newOperationError("validate_config", "config cannot be nil", ErrOperationFailed)
 	}
 
-	// Check for invalid values that should return errors
 	if config.MaxCacheSize < 0 {
 		return newOperationError("validate_config", "MaxCacheSize cannot be negative", ErrOperationFailed)
 	}
 
-	// Apply corrections for edge cases
+	// Apply defaults for invalid values
 	if config.MaxJSONSize <= 0 {
 		config.MaxJSONSize = DefaultMaxJSONSize
 	}
-
 	if config.MaxPathDepth <= 0 {
 		config.MaxPathDepth = DefaultMaxPathDepth
 	}
-
 	if config.MaxConcurrency <= 0 {
 		config.MaxConcurrency = DefaultMaxConcurrency
 	}
-
 	if config.MaxNestingDepthSecurity <= 0 {
 		config.MaxNestingDepthSecurity = DefaultMaxNestingDepth
 	}
-
 	if config.MaxObjectKeys <= 0 {
 		config.MaxObjectKeys = DefaultMaxObjectKeys
 	}
-
 	if config.MaxArrayElements <= 0 {
 		config.MaxArrayElements = DefaultMaxArrayElements
 	}
@@ -150,52 +144,39 @@ func (c *Config) Clone() *Config {
 
 // Validate validates the configuration and applies corrections
 func (c *Config) Validate() error {
-	// Apply minimum limits
-	if c.MaxJSONSize <= 0 {
-		c.MaxJSONSize = 1024 * 1024 // 1MB minimum
-	}
-	if c.MaxJSONSize > 100*1024*1024 {
-		c.MaxJSONSize = 100 * 1024 * 1024 // 100MB maximum
-	}
-
-	if c.MaxPathDepth <= 0 {
-		c.MaxPathDepth = 10
-	}
-	if c.MaxPathDepth > 200 {
-		c.MaxPathDepth = 200
+	// Clamp int64 values
+	clampInt64 := func(value *int64, min, max int64) {
+		if *value <= 0 {
+			*value = min
+		} else if *value > max {
+			*value = max
+		}
 	}
 
-	if c.MaxNestingDepth <= 0 {
-		c.MaxNestingDepth = 10
-	}
-	if c.MaxNestingDepth > 100 {
-		c.MaxNestingDepth = 100
+	// Clamp int values
+	clampInt := func(value *int, min, max int) {
+		if *value <= 0 {
+			*value = min
+		} else if *value > max {
+			*value = max
+		}
 	}
 
-	if c.MaxConcurrency <= 0 {
-		c.MaxConcurrency = 1
-	}
-	if c.MaxConcurrency > 200 {
-		c.MaxConcurrency = 200
-	}
+	clampInt64(&c.MaxJSONSize, 1024*1024, 100*1024*1024)
+	clampInt(&c.MaxPathDepth, 10, 200)
+	clampInt(&c.MaxNestingDepth, 10, 100)
+	clampInt(&c.MaxConcurrency, 1, 200)
+	clampInt(&c.ParallelThreshold, 1, 50)
 
 	if c.MaxCacheSize < 0 {
 		c.MaxCacheSize = 0
 		c.EnableCache = false
-	}
-	if c.MaxCacheSize > 2000 {
+	} else if c.MaxCacheSize > 2000 {
 		c.MaxCacheSize = 2000
 	}
 
 	if c.CacheTTL <= 0 {
 		c.CacheTTL = DefaultCacheTTL
-	}
-
-	if c.ParallelThreshold <= 0 {
-		c.ParallelThreshold = 1
-	}
-	if c.ParallelThreshold > 50 {
-		c.ParallelThreshold = 50
 	}
 
 	return nil
