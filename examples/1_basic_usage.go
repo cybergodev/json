@@ -1,3 +1,5 @@
+//go:build ignore
+
 package main
 
 import (
@@ -9,7 +11,7 @@ import (
 
 // Basic Usage Example
 //
-// This example demonstrates the essential features for getting started with the json library.
+// This example demonstrates the essential features for getting started with the cybergodev/json library.
 // Perfect for developers who want to quickly understand the core functionality.
 //
 // Topics covered:

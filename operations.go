@@ -9,6 +9,34 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
+// ExtractionGroup represents a group of consecutive extraction operations
+type ExtractionGroup struct {
+	Segments []PathSegment
+}
+
+// detectConsecutiveExtractions detects if there are consecutive extraction operations
+func (p *Processor) detectConsecutiveExtractions(segments []PathSegment) []ExtractionGroup {
+	var groups []ExtractionGroup
+	var currentGroup []PathSegment
+
+	for _, seg := range segments {
+		if seg.Type == internal.ExtractSegment {
+			currentGroup = append(currentGroup, seg)
+		} else {
+			if len(currentGroup) > 0 {
+				groups = append(groups, ExtractionGroup{Segments: currentGroup})
+				currentGroup = nil
+			}
+		}
+	}
+
+	if len(currentGroup) > 0 {
+		groups = append(groups, ExtractionGroup{Segments: currentGroup})
+	}
+
+	return groups
+}
+
 // handleArrayAccess handles array access with negative index support
 func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAccessResult {
 	var arrayData any = data
@@ -2474,7 +2502,7 @@ func (p *Processor) hasConsecutiveExtractions(segments []PathSegment, startIndex
 // deleteConsecutiveExtractions handles consecutive extraction deletions
 func (p *Processor) deleteConsecutiveExtractions(data any, segments []PathSegment, segmentIndex int) error {
 	// Find all consecutive extraction segments
-	extractionSegments := []PathSegment{}
+	var extractionSegments []PathSegment
 	i := segmentIndex
 	for i < len(segments) && segments[i].TypeString() == "extract" {
 		extractionSegments = append(extractionSegments, segments[i])

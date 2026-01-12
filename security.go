@@ -132,11 +132,6 @@ func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 		}
 	}
 
-	// Path traversal check (simplified)
-	if strings.Contains(jsonStr, "..") {
-		return newSecurityError("validate_json_security", "path traversal pattern detected")
-	}
-
 	return nil
 }
 
@@ -156,8 +151,8 @@ func (sv *SecurityValidator) validatePathSecurity(path string) error {
 
 	// Check URL encoding bypass (including double encoding)
 	if strings.Contains(lowerPath, "%2e") || strings.Contains(lowerPath, "%2f") ||
-	   strings.Contains(lowerPath, "%5c") || strings.Contains(lowerPath, "%00") ||
-	   strings.Contains(lowerPath, "%252e") || strings.Contains(lowerPath, "%252f") {
+		strings.Contains(lowerPath, "%5c") || strings.Contains(lowerPath, "%00") ||
+		strings.Contains(lowerPath, "%252e") || strings.Contains(lowerPath, "%252f") {
 		return newPathError(path, "path traversal via URL encoding detected", ErrSecurityViolation)
 	}
 

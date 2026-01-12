@@ -1,3 +1,5 @@
+//go:build ignore
+
 package main
 
 import (
@@ -159,24 +161,27 @@ func demonstrateIteration(data string) {
 		}
 	}
 
-	// Use ForeachReturn to transform data
-	result, err := json.ForeachReturn(data, func(key any, item *json.IterableValue) {
-		if key == "departments" {
-			// Get departments array
-			depts := item.GetArray("")
-			if depts != nil {
-				for i := range depts {
-					// Add a processed flag to each department
-					item.Set(fmt.Sprintf("[%d].processed", i), true)
-				}
-			}
+	// Use ForeachWithPath to iterate over specific paths
+	fmt.Println("\n   Iterating over first department teams:")
+	err = json.ForeachWithPath(data, "departments[0].teams", func(key any, item *json.IterableValue) {
+		teamName := item.GetString("name")
+		fmt.Printf("   - Team: %s\n", teamName)
+	})
+	if err != nil {
+		log.Printf("Iteration error: %v", err)
+	}
+
+	// Use ForeachNested for recursive iteration
+	fmt.Println("\n   Nested iteration of first department:")
+	count := 0
+	json.ForeachNested(data, func(key any, item *json.IterableValue) {
+		// Access value safely using Get method
+		val := item.Get("")
+		if str, ok := val.(string); ok && str != "" {
+			count++
 		}
 	})
-
-	if err == nil {
-		processed, _ := json.GetBool(result, "departments[0].processed")
-		fmt.Printf("   First department processed: %t\n", processed)
-	}
+	fmt.Printf("   Found %d non-empty string values in nested structure\n", count)
 }
 
 func demonstrateFileOps() {

@@ -762,9 +762,9 @@ if err != nil {
 
 ### 📁 示例代码
 
-- **[基本用法](examples/1.basic_usage.go)** - examples/1.basic_usage.go 
-- **[高级功能](examples/2.advanced_features.go)** - examples/2.advanced_features.go 
-- **[生产就绪](examples/3.production_ready.go)** - examples/3.production_ready.go 
+- **[基本用法](examples/1_basic_usage.go)** - examples/1.basic_usage.go 
+- **[高级功能](examples/2_advanced_features.go)** - examples/2.advanced_features.go 
+- **[生产就绪](examples/3_production_ready.go)** - examples/3.production_ready.go 
 
 
 ### 📖 其他资源

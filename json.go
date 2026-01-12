@@ -98,7 +98,7 @@ func Get(jsonStr, path string, opts ...*ProcessorOptions) (any, error) {
 
 // GetTyped retrieves a typed value from JSON at the specified path
 func GetTyped[T any](jsonStr, path string, opts ...*ProcessorOptions) (T, error) {
-	return getTypedWithProcessor[T](getDefaultProcessor(), jsonStr, path, opts...)
+	return GetTypedWithProcessor[T](getDefaultProcessor(), jsonStr, path, opts...)
 }
 
 // GetString retrieves a string value from JSON
@@ -513,9 +513,4 @@ func mergeOptionsWithOverride(opts []*ProcessorOptions, override func(*Processor
 	}
 	override(result)
 	return result
-}
-
-// getTypedWithProcessor is an internal helper for type-safe operations
-func getTypedWithProcessor[T any](proc *Processor, jsonStr, path string, opts ...*ProcessorOptions) (T, error) {
-	return GetTypedWithProcessor[T](proc, jsonStr, path, opts...)
 }

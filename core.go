@@ -623,30 +623,6 @@ type OperationContext struct {
 	CreatePaths bool
 }
 
-// PathParser interface for parsing path strings - REMOVED (single implementation)
-// Use concrete PathParserImpl instead
-
-// Navigator interface for basic navigation operations - REMOVED (single implementation)
-// Use concrete NavigatorImpl instead
-
-// ArrayOperations interface for array-related operations - REMOVED (single implementation)
-// Use concrete ArrayOperationsImpl instead
-
-// ExtractionOperations interface for extraction operations - REMOVED (single implementation)
-// Use concrete ExtractionOperationsImpl instead
-
-// SetOperations interface for value setting operations - REMOVED (single implementation)
-// Use concrete SetOperationsImpl instead
-
-// DeleteOperations interface for deletion operations - REMOVED (single implementation)
-// Use concrete DeleteOperationsImpl instead
-
-// ProcessorUtils interface for utility functions - REMOVED (single implementation)
-// Use concrete ProcessorUtilsImpl instead
-
-// ModularProcessor interface - REMOVED (over-engineered)
-// Use main Processor struct instead
-
 // ProcessorConfig holds configuration for the processor
 type ProcessorConfig struct {
 	EnableCache      bool
@@ -786,51 +762,8 @@ type RateLimiter interface {
 	Limit() int
 }
 
-// ErrorType represents different types of errors
-type ErrorType int
-
-const (
-	ErrTypeValidation ErrorType = iota
-	ErrTypeNavigation
-	ErrTypeConversion
-	ErrTypeBoundary
-	ErrTypeTimeout
-	ErrTypeRateLimit
-)
-
-// ProcessorError represents a structured error from the processor
-type ProcessorError struct {
-	Type      ErrorType
-	Operation string
-	Path      string
-	Message   string
-	Cause     error
-}
-
-func (e *ProcessorError) Error() string {
-	if e.Cause != nil {
-		return e.Message + ": " + e.Cause.Error()
-	}
-	return e.Message
-}
-
-func (e *ProcessorError) Unwrap() error {
-	return e.Cause
-}
-
 // Special marker for deleted values
 var DeletedMarker = &struct{ deleted bool }{deleted: true}
-
-// Common error variables for the new architecture
-var (
-	ErrPathNotFoundNew   = &ProcessorError{Type: ErrTypeNavigation, Message: "path not found"}
-	ErrInvalidPathNew    = &ProcessorError{Type: ErrTypeValidation, Message: "invalid path"}
-	ErrInvalidJSONNew    = &ProcessorError{Type: ErrTypeValidation, Message: "invalid JSON"}
-	ErrIndexOutOfBounds  = &ProcessorError{Type: ErrTypeBoundary, Message: "index out of bounds"}
-	ErrTypeConversionNew = &ProcessorError{Type: ErrTypeConversion, Message: "type conversion failed"}
-	ErrTimeoutNew        = &ProcessorError{Type: ErrTypeTimeout, Message: "operation timeout"}
-	ErrRateLimitNew      = &ProcessorError{Type: ErrTypeRateLimit, Message: "rate limit exceeded"}
-)
 
 // DefaultConfig moved to config.go
 
