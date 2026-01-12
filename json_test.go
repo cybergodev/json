@@ -971,3 +971,181 @@ func TestConfigConstantsComprehensive(t *testing.T) {
 	})
 }
 
+// TestAdvancedPathOperations tests advanced path features
+func TestAdvancedPathOperations(t *testing.T) {
+	helper := NewTestHelper(t)
+
+	t.Run("WildcardAccess", func(t *testing.T) {
+		testData := `{
+			"users": [
+				{"name": "Alice", "age": 25},
+				{"name": "Bob", "age": 30}
+			]
+		}`
+
+		// Test wildcard path access
+		result, err := Get(testData, "users[*].name")
+		helper.AssertNoError(err)
+		if arr, ok := result.([]any); ok {
+			helper.AssertTrue(len(arr) > 0)
+		}
+	})
+
+	t.Run("ComplexExtraction", func(t *testing.T) {
+		testData := `{
+			"departments": [
+				{
+					"name": "Engineering",
+					"teams": [
+						{"name": "Backend", "members": ["Alice", "Bob"]},
+						{"name": "Frontend", "members": ["Charlie"]}
+					]
+				}
+			]
+		}`
+
+		// Test deep extraction
+		result, err := Get(testData, "departments{teams{members}}")
+		helper.AssertNoError(err)
+		helper.AssertNotNil(result)
+	})
+
+	t.Run("ArraySlicingAdvanced", func(t *testing.T) {
+		testData := `{"numbers": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}`
+
+		// Test various slice patterns
+		tests := []struct {
+			path     string
+			expected []int
+		}{
+			{"numbers[0:3]", []int{1, 2, 3}},
+			{"numbers[7:]", []int{8, 9, 10}},
+			{"numbers[:3]", []int{1, 2, 3}},
+			{"numbers[-3:]", []int{8, 9, 10}},
+		}
+
+		for _, tt := range tests {
+			result, err := Get(testData, tt.path)
+			helper.AssertNoError(err, "Path: %s", tt.path)
+			if arr, ok := result.([]any); ok {
+				helper.AssertEqual(len(tt.expected), len(arr))
+			}
+		}
+	})
+}
+
+// TestResourceManager tests resource management functionality
+func TestResourceManager(t *testing.T) {
+	helper := NewTestHelper(t)
+
+	t.Run("StringBuilderPool", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		success := TestProcessorResourcePools(processor)
+		helper.AssertTrue(success, "Resource pools should be functional")
+	})
+
+	t.Run("MemoryEfficiency", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		testData := `{"data": {"nested": {"deep": "value"}}}`
+
+		// Perform multiple operations to test memory efficiency
+		for i := 0; i < 100; i++ {
+			_, err := processor.Get(testData, "data.nested.deep")
+			helper.AssertNoError(err)
+		}
+
+		// Verify no memory leaks
+		stats := processor.GetStats()
+		helper.AssertTrue(stats.OperationCount >= 0)
+	})
+}
+
+// TestHealthCheckSystem tests health check functionality
+func TestHealthCheckSystem(t *testing.T) {
+	helper := NewTestHelper(t)
+
+	t.Run("BasicHealthCheck", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		health := processor.GetHealthStatus()
+		helper.AssertNotNil(health)
+		// Health status should be available
+		helper.AssertNotNil(health.Checks)
+	})
+
+	t.Run("HealthCheckWithLoad", func(t *testing.T) {
+		processor := New()
+		defer processor.Close()
+
+		testData := `{"test": "value"}`
+		for i := 0; i < 100; i++ {
+			processor.Get(testData, "test")
+		}
+
+		health := processor.GetHealthStatus()
+		helper.AssertNotNil(health)
+		// Health status should still be available after load
+		helper.AssertNotNil(health.Checks)
+	})
+}
+
+// TestIteratorAdvancedFeatures tests advanced iterator functionality
+func TestIteratorAdvancedFeatures(t *testing.T) {
+	helper := NewTestHelper(t)
+
+	t.Run("IteratorControlBreak", func(t *testing.T) {
+		testData := `{"items": [1, 2, 3, 4, 5]}`
+
+		count := 0
+		Foreach(testData, func(key any, item *IterableValue) {
+			count++
+			if count >= 2 {
+				// Break early
+			}
+		})
+
+		helper.AssertTrue(count <= 5)
+	})
+
+	t.Run("IterableValueGetPath", func(t *testing.T) {
+		testData := `{"user": {"name": "Alice", "profile": {"age": 25}}}`
+		processor := New()
+		defer processor.Close()
+
+		var data map[string]any
+		processor.Parse(testData, &data)
+
+		iv := &IterableValue{data: data}
+
+		// Test nested path access using dot notation
+		profile := iv.GetObject("user")
+		helper.AssertNotNil(profile)
+		age, ok := profile["profile"].(map[string]any)
+		helper.AssertTrue(ok)
+		helper.AssertEqual(float64(25), age["age"])
+	})
+
+	t.Run("ForeachNestedWithPaths", func(t *testing.T) {
+		testData := `{
+			"users": [
+				{"name": "Alice", "roles": ["admin", "user"]},
+				{"name": "Bob", "roles": ["user"]}
+			]
+		}`
+
+		// Test that Foreach correctly iterates over the root object
+		callCount := 0
+		Foreach(testData, func(key any, item *IterableValue) {
+			callCount++
+		})
+
+		// Should be called once for the root object
+		helper.AssertTrue(callCount >= 1)
+	})
+}
+

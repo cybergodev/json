@@ -19,15 +19,14 @@ import (
 
 // Processor is the main JSON processing engine with thread safety and performance optimization
 type Processor struct {
-	config             *Config
-	cache              *internal.CacheManager
-	state              int32
-	cleanupOnce        sync.Once
-	resources          *processorResources
-	metrics            *processorMetrics
-	resourceMonitor    *ResourceMonitor
-	concurrencyManager *ConcurrencyManager
-	logger             *slog.Logger
+	config          *Config
+	cache           *internal.CacheManager
+	state           int32
+	cleanupOnce     sync.Once
+	resources       *processorResources
+	metrics         *processorMetrics
+	resourceMonitor *ResourceMonitor
+	logger          *slog.Logger
 }
 
 // processorResources consolidates resource management with optimized pooling
@@ -66,11 +65,10 @@ func New(config ...*Config) *Processor {
 	}
 
 	p := &Processor{
-		config:             cfg,
-		cache:              internal.NewCacheManager(cfg),
-		resourceMonitor:    NewResourceMonitor(),
-		concurrencyManager: NewConcurrencyManager(cfg.MaxConcurrency, 0),
-		logger:             slog.Default().With("component", "json-processor"),
+		config:          cfg,
+		cache:           internal.NewCacheManager(cfg),
+		resourceMonitor: NewResourceMonitor(),
+		logger:          slog.Default().With("component", "json-processor"),
 		resources: &processorResources{
 			lastPoolReset:   0,
 			lastMemoryCheck: 0,
@@ -93,22 +91,22 @@ func New(config ...*Config) *Processor {
 
 // getPathSegments gets a path segments slice from the unified resource manager
 func (p *Processor) getPathSegments() []PathSegment {
-	return globalResourceManager.GetPathSegments()
+	return getGlobalResourceManager().GetPathSegments()
 }
 
 // putPathSegments returns a path segments slice to the unified resource manager
 func (p *Processor) putPathSegments(segments []PathSegment) {
-	globalResourceManager.PutPathSegments(segments)
+	getGlobalResourceManager().PutPathSegments(segments)
 }
 
 // getStringBuilder gets a string builder from the unified resource manager
 func (p *Processor) getStringBuilder() *strings.Builder {
-	return globalResourceManager.GetStringBuilder()
+	return getGlobalResourceManager().GetStringBuilder()
 }
 
 // putStringBuilder returns a string builder to the unified resource manager
 func (p *Processor) putStringBuilder(sb *strings.Builder) {
-	globalResourceManager.PutStringBuilder(sb)
+	getGlobalResourceManager().PutStringBuilder(sb)
 }
 
 // performMaintenance performs periodic maintenance tasks
@@ -123,7 +121,7 @@ func (p *Processor) performMaintenance() {
 	}
 
 	// Perform unified resource manager maintenance
-	globalResourceManager.PerformMaintenance()
+	getGlobalResourceManager().PerformMaintenance()
 
 	// Perform leak detection
 	if p.resourceMonitor != nil {
@@ -165,20 +163,25 @@ func (p *Processor) isClosing() bool {
 	return state == 1 || state == 2
 }
 
-// executeWithConcurrencyControl executes an operation with full concurrency control
+// executeWithConcurrencyControl executes an operation with timeout control
 func (p *Processor) executeWithConcurrencyControl(
 	operation func() error,
 	timeout time.Duration,
 ) error {
-	if p.concurrencyManager == nil {
-		// Fallback to direct execution if concurrency manager is not available
-		return operation()
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	return p.concurrencyManager.ExecuteWithConcurrencyControl(ctx, operation, timeout)
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- operation()
+	}()
+
+	select {
+	case err := <-errChan:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("operation timeout after %v", timeout)
+	}
 }
 
 // executeOperation executes an operation with metrics tracking and error handling
@@ -274,7 +277,7 @@ func (p *Processor) GetStats() Stats {
 // getDetailedStats returns detailed performance statistics
 func (p *Processor) getDetailedStats() DetailedStats {
 	stats := p.GetStats()
-	resourceStats := globalResourceManager.GetStats()
+	resourceStats := getGlobalResourceManager().GetStats()
 
 	return DetailedStats{
 		Stats:          stats,
@@ -2628,11 +2631,11 @@ func (urp *RecursiveProcessor) ProcessRecursivelyWithOptions(data any, path stri
 				}
 
 				return flattened, nil
-			} else {
-				// No operations after flat extraction - the flat extraction should have been handled
-				// during normal processing, so just return the result as-is
-				return result, nil
 			}
+
+			// No operations after flat extraction - the flat extraction should have been handled
+			// during normal processing, so just return the result as-is
+			return result, nil
 		}
 	}
 
@@ -2766,12 +2769,12 @@ func (urp *RecursiveProcessor) handlePropertySegmentUnified(data any, segment in
 	case []any:
 		// Apply property access to each array element recursively
 		var results []any
-		var errors []error
+		var errs []error
 
 		for i, item := range container {
 			result, err := urp.handlePropertySegmentUnified(item, segment, segments, segmentIndex, isLastSegment, operation, value, createPaths)
 			if err != nil {
-				errors = append(errors, err)
+				errs = append(errs, err)
 				continue
 			}
 
@@ -2789,7 +2792,7 @@ func (urp *RecursiveProcessor) handlePropertySegmentUnified(data any, segment in
 			return results, nil
 		}
 
-		return nil, urp.combineErrors(errors)
+		return nil, urp.combineErrors(errs)
 
 	default:
 		if operation == OpGet {
@@ -2811,7 +2814,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 		if shouldUseDistributed {
 			// For distributed operations, apply the index to each element in the container
 			var results []any
-			var errors []error
+			var errs []error
 
 			for _, item := range container {
 				// Find the actual target array for distributed operation
@@ -2823,7 +2826,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 						if operation == OpGet {
 							continue // Skip out of bounds items
 						}
-						errors = append(errors, fmt.Errorf("array index %d out of bounds (length %d)", segment.Index, len(targetArray)))
+						errs = append(errs, fmt.Errorf("array index %d out of bounds (length %d)", segment.Index, len(targetArray)))
 						continue
 					}
 
@@ -2852,7 +2855,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 						// Recursively process next segment
 						result, err := urp.processRecursivelyAtSegmentsWithOptions(targetArray[index], segments, segmentIndex+1, operation, value, createPaths)
 						if err != nil {
-							errors = append(errors, err)
+							errs = append(errs, err)
 							continue
 						}
 						if operation == OpGet && result != nil {
@@ -2871,7 +2874,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 				}
 				return results, nil
 			}
-			return nil, urp.combineErrors(errors)
+			return nil, urp.combineErrors(errs)
 		}
 
 		// Non-distributed operation - standard array index access
@@ -2907,12 +2910,12 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 	case map[string]any:
 		// Apply array index to each map value recursively
 		var results []any
-		var errors []error
+		var errs []error
 
 		for key, mapValue := range container {
 			result, err := urp.handleArrayIndexSegmentUnified(mapValue, segment, segments, segmentIndex, isLastSegment, operation, value, createPaths)
 			if err != nil {
-				errors = append(errors, err)
+				errs = append(errs, err)
 				continue
 			}
 
@@ -2930,7 +2933,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 			return results, nil
 		}
 
-		return nil, urp.combineErrors(errors)
+		return nil, urp.combineErrors(errs)
 
 	default:
 		// Cannot perform array index access on non-array types
@@ -2949,7 +2952,7 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 		if shouldUseDistributed {
 			// Distributed slice operation - apply slice to each array element
 			var results []any
-			var errors []error
+			var errs []error
 
 			for _, item := range container {
 				targetArray := urp.findTargetArrayForDistributedOperation(item)
@@ -3004,7 +3007,7 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 
 					result, err := urp.processRecursivelyAtSegmentsWithOptions(sliceResult, segments, segmentIndex+1, operation, value, createPaths)
 					if err != nil {
-						errors = append(errors, err)
+						errs = append(errs, err)
 						continue
 					}
 					if operation == OpGet && result != nil {
@@ -3013,8 +3016,8 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 				}
 			}
 
-			if len(errors) > 0 {
-				return nil, urp.combineErrors(errors)
+			if len(errs) > 0 {
+				return nil, urp.combineErrors(errs)
 			}
 
 			if operation == OpGet {
@@ -3090,12 +3093,12 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 
 		// Process remaining segments on each sliced element
 		var results []any
-		var errors []error
+		var errs []error
 
 		for i, item := range slicedContainer {
 			result, err := urp.processRecursivelyAtSegmentsWithOptions(item, segments, segmentIndex+1, operation, value, createPaths)
 			if err != nil {
-				errors = append(errors, err)
+				errs = append(errs, err)
 				continue
 			}
 
@@ -3110,17 +3113,17 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 			return results, nil
 		}
 
-		return nil, urp.combineErrors(errors)
+		return nil, urp.combineErrors(errs)
 
 	case map[string]any:
 		// Apply array slice to each map value recursively
 		var results []any
-		var errors []error
+		var errs []error
 
 		for key, mapValue := range container {
 			result, err := urp.handleArraySliceSegmentUnified(mapValue, segment, segments, segmentIndex, isLastSegment, operation, value, createPaths)
 			if err != nil {
-				errors = append(errors, err)
+				errs = append(errs, err)
 				continue
 			}
 
@@ -3136,7 +3139,7 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 			return results, nil
 		}
 
-		return nil, urp.combineErrors(errors)
+		return nil, urp.combineErrors(errs)
 
 	default:
 		if operation == OpGet {
@@ -3160,7 +3163,7 @@ func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment int
 	case []any:
 		// Extract from each array element
 		var results []any
-		var errors []error
+		var errs []error
 
 		for i, item := range container {
 			if itemMap, ok := item.(map[string]any); ok {
@@ -3197,7 +3200,7 @@ func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment int
 								// For non-array operations, process recursively
 								result, err := urp.processRecursivelyAtSegmentsWithOptions(extractedValue, segments, segmentIndex+1, operation, value, createPaths)
 								if err != nil {
-									errors = append(errors, err)
+									errs = append(errs, err)
 									continue
 								}
 								if result != nil {
@@ -3227,7 +3230,7 @@ func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment int
 										// The extracted value is an array, apply the array operation to it
 										_, err := urp.processRecursivelyAtSegmentsWithOptions(extractedValue, segments, segmentIndex+1, operation, value, createPaths)
 										if err != nil {
-											errors = append(errors, err)
+											errs = append(errs, err)
 											continue
 										}
 									} else {
@@ -3239,7 +3242,7 @@ func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment int
 									// For other delete operations, process recursively
 									_, err := urp.processRecursivelyAtSegmentsWithOptions(extractedValue, segments, segmentIndex+1, operation, value, createPaths)
 									if err != nil {
-										errors = append(errors, err)
+										errs = append(errs, err)
 										continue
 									}
 								}
@@ -3247,7 +3250,7 @@ func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment int
 								// For other delete operations, process recursively
 								_, err := urp.processRecursivelyAtSegmentsWithOptions(extractedValue, segments, segmentIndex+1, operation, value, createPaths)
 								if err != nil {
-									errors = append(errors, err)
+									errs = append(errs, err)
 									continue
 								}
 							}
@@ -3255,7 +3258,7 @@ func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment int
 							// For Set operations, always process recursively
 							_, err := urp.processRecursivelyAtSegmentsWithOptions(extractedValue, segments, segmentIndex+1, operation, value, createPaths)
 							if err != nil {
-								errors = append(errors, err)
+								errs = append(errs, err)
 								continue
 							}
 							if operation == OpSet {
@@ -3326,7 +3329,7 @@ func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment int
 			return results, nil
 		}
 
-		return nil, urp.combineErrors(errors)
+		return nil, urp.combineErrors(errs)
 
 	case map[string]any:
 		if isLastSegment {
@@ -3391,12 +3394,12 @@ func (urp *RecursiveProcessor) handleWildcardSegmentUnified(data any, segment in
 
 		// Recursively process all array elements
 		var results []any
-		var errors []error
+		var errs []error
 
 		for i, item := range container {
 			result, err := urp.processRecursivelyAtSegmentsWithOptions(item, segments, segmentIndex+1, operation, value, createPaths)
 			if err != nil {
-				errors = append(errors, err)
+				errs = append(errs, err)
 				continue
 			}
 
@@ -3412,7 +3415,7 @@ func (urp *RecursiveProcessor) handleWildcardSegmentUnified(data any, segment in
 			return results, nil
 		}
 
-		return nil, urp.combineErrors(errors)
+		return nil, urp.combineErrors(errs)
 
 	case map[string]any:
 		if isLastSegment {
@@ -3780,8 +3783,3 @@ func (urp *RecursiveProcessor) shouldUseDistributedArrayOperation(container []an
 	// Default to normal indexing for regular nested arrays
 	return false
 }
-
-// ============================================================================
-// Note: ProcessorEnhancements removed - incomplete experimental code
-// Use standard Processor with appropriate Config settings for security
-// ============================================================================

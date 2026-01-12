@@ -763,9 +763,9 @@ if err != nil {
 
 ### 📁 Example Code
 
-- **[Basic Usage](examples/1.basic_usage.go)** - examples/1.basic_usage.go
-- **[Advanced Features](examples/2.advanced_features.go)** - examples/2.advanced_features.go
-- **[Production Ready](examples/3.production_ready.go)** - examples/3.production_ready.go
+- **[Basic Usage](examples/1_basic_usage.go)** - examples/1.basic_usage.go
+- **[Advanced Features](examples/2_advanced_features.go)** - examples/2.advanced_features.go
+- **[Production Ready](examples/3_production_ready.go)** - examples/3.production_ready.go
 
 ### 📖 Additional Resources
 

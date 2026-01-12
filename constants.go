@@ -37,13 +37,13 @@ const (
 
 	// Operation Limits - Secure defaults with reasonable headroom
 	InvalidArrayIndex        = -999999
-	DefaultMaxJSONSize       = 10 * 1024 * 1024 // 10MB - reasonable for most use cases
+	DefaultMaxJSONSize       = 100 * 1024 * 1024 // 100MB - reasonable for most use cases
 	DefaultMaxSecuritySize   = 10 * 1024 * 1024
-	DefaultMaxNestingDepth   = 32
-	DefaultMaxObjectKeys     = 10000
-	DefaultMaxArrayElements  = 10000
+	DefaultMaxNestingDepth   = 200
+	DefaultMaxObjectKeys     = 100000
+	DefaultMaxArrayElements  = 100000
 	DefaultMaxPathDepth      = 50
-	DefaultMaxBatchSize      = 1000
+	DefaultMaxBatchSize      = 2000
 	DefaultMaxConcurrency    = 50
 	DefaultParallelThreshold = 10
 
@@ -77,11 +77,11 @@ const (
 	MediumJSONThreshold = 1024 // Threshold for full JSON normalization
 
 	// Cache key constants
-	CacheKeyHashLength   = 32  // Length for cache key hash
+	CacheKeyHashLength   = 32   // Length for cache key hash
 	SmallJSONCacheLimit  = 2048 // Limit for caching small JSON strings
-	EstimatedKeyOverhead = 32  // Estimated overhead for cache key generation
-	LargeJSONKeyOverhead = 64  // Overhead for large JSON cache keys
-	MaxCacheKeyLength    = 500 // Maximum allowed cache key length
+	EstimatedKeyOverhead = 32   // Estimated overhead for cache key generation
+	LargeJSONKeyOverhead = 64   // Overhead for large JSON cache keys
+	MaxCacheKeyLength    = 500  // Maximum allowed cache key length
 
 	// Validation constants
 	ValidationBOMPrefix = "\uFEFF" // UTF-8 BOM prefix to detect and remove

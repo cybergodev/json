@@ -257,9 +257,9 @@ type pathParser struct {
 func NewPathParser() *pathParser {
 	return &pathParser{
 		simplePropertyPattern: regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
-		arrayIndexPattern:     regexp.MustCompile(`^\[(-?\d+)\]$`),
-		slicePattern:          regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?\]$`),
-		extractPattern:        regexp.MustCompile(`^\{([^}]+)\}$`),
+		arrayIndexPattern:     regexp.MustCompile(`^\[(-?\d+)]$`),
+		slicePattern:          regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?]$`),
+		extractPattern:        regexp.MustCompile(`^\{([^}]+)}$`),
 		stringBuilderPool:     newStringBuilderPool(),
 	}
 }
@@ -1200,7 +1200,7 @@ func (n *navigator) NavigateToPath(data any, segments []PathSegmentInfo) (any, e
 
 		if !result.Exists {
 			// Path not found - return error as documented
-			return nil, ErrPathNotFoundNew
+			return nil, ErrPathNotFound
 		}
 
 		current = result.Value
@@ -1570,11 +1570,6 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 
 	// Parse path into segments
 	segments = p.splitPath(path, segments)
-
-	// Check for deep extraction patterns and preprocess if needed
-	if p.isDeepExtractionPath(segments) {
-		segments = p.preprocessPathForDeepExtraction(segments)
-	}
 
 	// Navigate through each segment
 	for i, segment := range segments {

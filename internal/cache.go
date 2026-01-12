@@ -8,6 +8,20 @@ import (
 	"time"
 )
 
+// Global cleanup semaphore to limit concurrent cleanup goroutines
+var (
+	cleanupSem     chan struct{}
+	cleanupSemOnce sync.Once
+)
+
+// getCleanupSem returns the cleanup semaphore (max 4 concurrent cleanups)
+func getCleanupSem() chan struct{} {
+	cleanupSemOnce.Do(func() {
+		cleanupSem = make(chan struct{}, 4) // Limit to 4 concurrent cleanups
+	})
+	return cleanupSem
+}
+
 // ConfigInterface is imported from root package to avoid circular dependency
 type ConfigInterface interface {
 	IsCacheEnabled() bool
@@ -208,7 +222,17 @@ func (cm *CacheManager) Set(key string, value any) {
 		if now-lastCleanup > cleanupInterval {
 			if atomic.CompareAndSwapInt64(&shard.lastCleanup, lastCleanup, now) {
 				// Use goroutine pool or limit concurrent cleanups to avoid goroutine explosion
-				go cm.cleanupShard(shard)
+				sem := getCleanupSem()
+				select {
+				case sem <- struct{}{}:
+					go func(s *cacheShard) {
+						defer func() { <-sem }()
+						cm.cleanupShard(s)
+					}(shard)
+				default:
+					// Skip cleanup if semaphore is full (too many concurrent cleanups)
+					// Next Set operation will try again
+				}
 			}
 		}
 	}
@@ -244,14 +268,25 @@ func (cm *CacheManager) Clear() {
 	atomic.StoreInt64(&cm.evictions, 0)
 }
 
-// CleanExpiredCache removes expired entries from all shards
+// CleanExpiredCache removes expired entries from all shards (with goroutine limit)
 func (cm *CacheManager) CleanExpiredCache() {
 	if cm.config == nil || cm.config.GetCacheTTL() <= 0 {
 		return
 	}
 
+	sem := getCleanupSem()
 	for _, shard := range cm.shards {
-		go cm.cleanupShard(shard)
+		s := shard
+		select {
+		case sem <- struct{}{}:
+			go func() {
+				defer func() { <-sem }()
+				cm.cleanupShard(s)
+			}()
+		default:
+			// Skip this shard if semaphore is full
+			// This prevents unbounded goroutine growth
+		}
 	}
 }
 
