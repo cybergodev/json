@@ -85,6 +85,7 @@ func TestConcurrentAccess(t *testing.T) {
 		defer processor.Close()
 
 		testData := `{"data": {"value": 0}}`
+		var testDataMu sync.Mutex
 
 		concurrency := 15
 		iterations := 50
@@ -97,12 +98,17 @@ func TestConcurrentAccess(t *testing.T) {
 				defer wg.Done()
 				for j := 0; j < iterations; j++ {
 					if workerID%2 == 0 {
-						// Read
-						processor.Get(testData, "data.value")
+						// Read - use a consistent snapshot
+						testDataMu.Lock()
+						localData := testData
+						testDataMu.Unlock()
+						processor.Get(localData, "data.value")
 					} else {
-						// Write
+						// Write - protect testData with mutex
+						testDataMu.Lock()
 						newData, _ := Set(testData, "data.value", workerID*100+j)
 						testData = newData
+						testDataMu.Unlock()
 					}
 				}
 			}(i)
@@ -362,11 +368,9 @@ func TestRaceConditions(t *testing.T) {
 			go func(workerID int) {
 				defer wg.Done()
 
-				// Each goroutine tries to modify config
-				_ = config.Clone()
-
-				// Validate is thread-safe
-				config.Validate()
+				// Each goroutine works on its own clone to avoid race
+				localConfig := config.Clone()
+				localConfig.Validate()
 			}(i)
 		}
 

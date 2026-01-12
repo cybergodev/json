@@ -91,22 +91,22 @@ func New(config ...*Config) *Processor {
 
 // getPathSegments gets a path segments slice from the unified resource manager
 func (p *Processor) getPathSegments() []PathSegment {
-	return globalResourceManager.GetPathSegments()
+	return getGlobalResourceManager().GetPathSegments()
 }
 
 // putPathSegments returns a path segments slice to the unified resource manager
 func (p *Processor) putPathSegments(segments []PathSegment) {
-	globalResourceManager.PutPathSegments(segments)
+	getGlobalResourceManager().PutPathSegments(segments)
 }
 
 // getStringBuilder gets a string builder from the unified resource manager
 func (p *Processor) getStringBuilder() *strings.Builder {
-	return globalResourceManager.GetStringBuilder()
+	return getGlobalResourceManager().GetStringBuilder()
 }
 
 // putStringBuilder returns a string builder to the unified resource manager
 func (p *Processor) putStringBuilder(sb *strings.Builder) {
-	globalResourceManager.PutStringBuilder(sb)
+	getGlobalResourceManager().PutStringBuilder(sb)
 }
 
 // performMaintenance performs periodic maintenance tasks
@@ -121,7 +121,7 @@ func (p *Processor) performMaintenance() {
 	}
 
 	// Perform unified resource manager maintenance
-	globalResourceManager.PerformMaintenance()
+	getGlobalResourceManager().PerformMaintenance()
 
 	// Perform leak detection
 	if p.resourceMonitor != nil {
@@ -277,7 +277,7 @@ func (p *Processor) GetStats() Stats {
 // getDetailedStats returns detailed performance statistics
 func (p *Processor) getDetailedStats() DetailedStats {
 	stats := p.GetStats()
-	resourceStats := globalResourceManager.GetStats()
+	resourceStats := getGlobalResourceManager().GetStats()
 
 	return DetailedStats{
 		Stats:          stats,

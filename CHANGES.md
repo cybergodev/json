@@ -2,8 +2,39 @@
 
 All notable changes to the cybergodev/json library will be documented in this file.
 
-[//]: # (The format is based on [Keep a Changelog]&#40;https://keepachangelog.com/en/1.0.0/&#41;,)
-[//]: # (and this project adheres to [Semantic Versioning]&#40;https://semver.org/spec/v2.0.0.html&#41;.)
+[//]: # (The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),)
+[//]: # (and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html/),)
+
+---
+
+## v1.0.8 - Thread Safety & Quality Enhancement (2026-01-12)
+
+### Added
+- Thread-safe resource pool operations with read/write locks
+- Goroutine leak prevention for cache cleanup (max 4 concurrent)
+- Comprehensive test coverage for array helpers, error types, and schema validation
+- Performance benchmarks for array operations
+
+### Changed
+- Enhanced timeout control using `context.WithTimeout`
+- Simplified concurrency patterns with direct context usage
+- Optimized string building with `strings.Builder` (O(n²) → O(n))
+
+### Fixed
+- Data race conditions in concurrent test scenarios
+- False positive path traversal detection in JSON content validation
+- Flaky concurrent file operations test
+
+### Removed
+- Dead code: 15+ unused functions, interfaces, and types
+- Unreliable goroutine tracking implementation
+- Redundant error definitions and wrapper functions
+- Over-engineered concurrency abstractions
+
+### Backward Compatibility
+- 100% backward compatible - all public APIs unchanged
+- Zero breaking changes across all improvements
+- All existing tests pass (100% success rate)
 
 ---
 
@@ -57,10 +88,10 @@ All notable changes to the cybergodev/json library will be documented in this fi
 - **Error Handling**: Improved error handling patterns with proper type safety
 
 ### Backward Compatibility
-- ✅ 100% backward compatible - all public APIs unchanged
-- ✅ All existing tests pass (100% success rate)
-- ✅ Zero breaking changes across all optimizations
-- ✅ Deprecated methods still work via delegation
+- 100% backward compatible - all public APIs unchanged
+- All existing tests pass (100% success rate)
+- Zero breaking changes across all optimizations
+- Deprecated methods still work via delegation
 
 ---
 
@@ -74,7 +105,7 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ### Changed
 - **Resource Management Overhaul**: Replaced scattered resource pools with unified management system, reducing memory overhead by ~40%
-- **Security Consolidation**: Moved all security validation logic to dedicated SecurityValidator module for consistency and maintainability  
+- **Security Consolidation**: Moved all security validation logic to dedicated SecurityValidator module for consistency and maintainability
 - **Memory Optimization**: Reduced nested call tracker size (25→15), concurrency timeout map (200→100), and cleanup intervals (3s→2s)
 - **Type Conversion Fix**: Corrected json.Number vs fmt.Stringer precedence order to prevent unreachable code warnings
 - **Interface Modernization**: Replaced `interface{}` with `any` throughout codebase for Go 1.18+ compatibility
@@ -94,7 +125,7 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ### Performance Improvements
 - **Memory Usage**: 40% reduction in resource pool overhead through unified management
-- **Allocation Reduction**: Optimized buffer sizes and pool management for reduced GC pressure  
+- **Allocation Reduction**: Optimized buffer sizes and pool management for reduced GC pressure
 - **Security Validation**: Single-pass validation combining structure and security checks
 - **Resource Cleanup**: More aggressive cleanup with shorter intervals prevents memory bloat in long-running applications
 
