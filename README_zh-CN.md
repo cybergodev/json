@@ -8,28 +8,11 @@
 
 > 一个高性能、功能丰富的 Go JSON 处理库，100% 兼容 `encoding/json`，提供强大的路径操作、类型安全、性能优化和丰富的高级功能。
 
-#### **[📖 English Documentation](README.md)** - 英文文档
+#### **[📖 English Documentation](README.md)** - 用户指南
 
 ---
 
-## 📚 目录
-
-- [📖 概述](#-概述)
-- [📋 基本路径语法](#-基本路径语法)
-- [🚀 快速开始](#-快速开始)
-- [🏆 核心功能](#-核心功能)
-- [🔧 配置选项](#-配置选项)
-- [📁 文件操作](#-文件操作)
-- [🎯 使用场景](#-使用场景)
-- [🌐 示例与资源](#-示例与资源)
-
----
-
-## 📖 概述
-
-**`cybergodev/json`** 是一个高性能的 Go JSON 处理库，与标准 `encoding/json` 包保持 100% 兼容，同时提供强大的路径操作、类型安全、性能优化和丰富的高级功能。
-
-### 🏆 核心优势
+## 🏆 核心优势
 
 - **🔄 完全兼容** - 100% 兼容标准 `encoding/json`，零学习成本，直接替换
 - **🎯 强大路径** - 支持复杂路径表达式，一行代码完成复杂数据操作
@@ -46,27 +29,18 @@
 - **🔄 微服务通信** - 服务间数据交换和格式转换
 - **📝 日志处理** - 结构化日志的解析和分析
 
-### 📚 更多示例与文档
-
-- **[📁 示例代码](examples)** - 三个涵盖所有功能的完整示例
-  - **[基本用法](examples/1.basic_usage.go)** - 快速入门和基础操作
-  - **[高级功能](examples/2.advanced_features.go)** - 复杂查询和嵌套操作
-  - **[生产就绪](examples/3.production_ready.go)** - 生产环境模式和最佳实践
-- **[📖 兼容性](docs/COMPATIBILITY.md)** - 兼容性指南和迁移信息
-- **[🔄 快速参考](docs/QUICK_REFERENCE.md)** - 常用功能快速参考指南
-
 ---
 
-## 📋 基本路径语法
+## 📋 基础路径语法
 
-| 语法               | 描述        | 示例                 | 结果                   |
-|-------------------|-------------|---------------------|------------------------|
-| `.`               | 属性访问     | `user.name`         | 获取用户名属性          |
-| `[n]`             | 数组索引     | `users[0]`          | 获取第一个用户          |
-| `[-n]`            | 负数索引     | `users[-1]`         | 获取最后一个用户        |
-| `[start:end:step]`| 数组切片     | `users[1:3]`        | 获取索引 1-2 的用户     |
-| `{field}`         | 批量提取     | `users{name}`       | 提取所有用户名          |
-| `{flat:field}`    | 扁平化提取   | `users{flat:skills}`| 扁平化提取所有技能      |
+| 语法              | 描述         | 示例                  | 结果                 |
+|-------------------|--------------|-----------------------|----------------------|
+| `.`               | 属性访问     | `user.name`           | 获取用户的 name 属性  |
+| `[n]`             | 数组索引     | `users[0]`            | 获取第一个用户       |
+| `[-n]`            | 负数索引     | `users[-1]`           | 获取最后一个用户     |
+| `[start:end:step]` | 数组切片     | `users[1:3]`          | 获取索引 1-2 的用户  |
+| `{field}`         | 批量提取     | `users{name}`         | 提取所有用户名       |
+| `{flat:field}`    | 扁平化提取   | `users{flat:skills}`  | 扁平化提取所有技能   |
 
 ## 🚀 快速开始
 
@@ -87,7 +61,7 @@ import (
 )
 
 func main() {
-    // 1. 与标准库完全兼容
+    // 1. 完全兼容标准库
     data := map[string]any{"name": "Alice", "age": 25}
     jsonBytes, err := json.Marshal(data)
 
@@ -129,6 +103,7 @@ paths := []string{"users[0].name", "users[1].name", "users{active}"}
 results, err := json.GetMultiple(complexData, paths)
 ```
 
+
 ---
 
 ## ⚡ 核心功能
@@ -136,11 +111,11 @@ results, err := json.GetMultiple(complexData, paths)
 ### 数据检索
 
 ```go
-// 基本检索
+// 基础检索
 json.Get(data, "user.name")          // 获取任意类型
 json.GetString(data, "user.name")    // 获取字符串
 json.GetInt(data, "user.age")        // 获取整数
-json.GetFloat64(data, "user.score")  // 获取浮点数
+json.GetFloat64(data, "user.score")  // 获取 float64
 json.GetBool(data, "user.active")    // 获取布尔值
 json.GetArray(data, "user.tags")     // 获取数组
 json.GetObject(data, "user.profile") // 获取对象
@@ -166,7 +141,7 @@ results, err := json.GetMultiple(data, paths)
 ### 数据修改
 
 ```go
-// 基本设置 - 成功时返回修改后的数据，失败时返回原始数据
+// 基础设置 - 成功时返回修改后的数据，失败时返回原始数据
 data := `{"user":{"name":"Bob","age":25}}`
 result, err := json.Set(data, "user.name", "Alice")
 // result => {"user":{"name":"Alice","age":25}}
@@ -191,13 +166,13 @@ result, err := json.SetMultipleWithAdd(data, updates) // 自动创建路径
 
 ```go
 json.Delete(data, "user.temp") // 删除字段
-json.DeleteWithCleanNull(data, "user.temp") // 删除并清理空值
+json.DeleteWithCleanNull(data, "user.temp") // 删除并清理 null 值
 ```
 
 ### 数据迭代
 
 ```go
-// 基本迭代 - 只读遍历
+// 基础迭代 - 只读遍历
 json.Foreach(data, func (key any, item *json.IterableValue) {
     name := item.GetString("name")
     fmt.Printf("Key: %v, Name: %s\n", key, name)
@@ -208,14 +183,14 @@ json.ForeachNested(data, callback)           // 嵌套安全迭代
 json.ForeachWithIterator(data, callback)     // 带迭代器访问
 json.ForeachWithPath(data, "users", callback) // 迭代特定路径
 
-// 迭代并返回修改的 JSON - 支持数据修改
+// 迭代并返回修改后的 JSON - 支持数据修改
 modifiedJson, err := json.ForeachReturn(data, func (key any, item *json.IterableValue) {
-    // 在迭代过程中修改数据
+    // 迭代过程中修改数据
     if item.GetString("status") == "inactive" {
         item.Set("status", "active")
         item.Set("updated_at", time.Now().Format("2006-01-02"))
     }
-    
+
     // 批量更新用户信息
     if key == "users" {
         item.SetMultiple(map[string]any{
@@ -248,7 +223,7 @@ jsonStr, err := json.EncodeCompact(data, config)
 pretty, err := json.FormatPretty(jsonStr)
 compact, err := json.FormatCompact(jsonStr)
 
-// 缓冲区操作（兼容 encoding/json）
+// 缓冲区操作（encoding/json 兼容）
 json.Compact(dst, src)
 json.Indent(dst, src, prefix, indent)
 json.HTMLEscape(dst, src)
@@ -293,7 +268,7 @@ copy, err := json.DeepCopy(data)
 ### 处理器管理
 
 ```go
-// 使用配置创建处理器
+// 创建带配置的处理器
 config := &json.Config{
     EnableCache:      true,
     MaxCacheSize:     5000,
@@ -343,7 +318,7 @@ complexData := `{
 
 // 多级嵌套提取
 allMembers, err := json.Get(complexData, "company.departments{teams}{flat:members}")
-// 结果: [Alice的数据, Bob的数据]
+// 结果: [Alice 的数据, Bob 的数据]
 
 // 提取特定字段
 allNames, err := json.Get(complexData, "company.departments{teams}{flat:members}{name}")
@@ -367,7 +342,7 @@ arrayData := `{
 
 // 数组索引和切片
 first, err := json.GetInt(arrayData, "numbers[0]")       // 1
-last, err := json.GetInt(arrayData, "numbers[-1]")       // 10 (负索引)
+last, err := json.GetInt(arrayData, "numbers[-1]")       // 10 (负数索引)
 slice, err := json.Get(arrayData, "numbers[1:4]")        // [2, 3, 4]
 everyOther, err := json.Get(arrayData, "numbers[::2]")   // [1, 3, 5, 7, 9]
 everyOther, err := json.Get(arrayData, "numbers[::-2]")  // [10 8 6 4 2]
@@ -389,7 +364,7 @@ ages, err := json.Get(arrayData, "users{age}") // [25, 30]
 processor1 := json.New()
 defer processor1.Close()
 
-// 2. 显式 nil - 与默认配置相同
+// 2. 显式传 nil - 与默认配置相同
 processor2 := json.New()
 defer processor2.Close()
 
@@ -397,7 +372,7 @@ defer processor2.Close()
 customConfig := &json.Config{
     // 缓存设置
     EnableCache:      true,             // 启用缓存
-    MaxCacheSize:     5000,             // 缓存条目数
+    MaxCacheSize:     5000,             // 缓存条目数量
     CacheTTL:         10 * time.Minute, // 缓存过期时间
 
     // 大小限制
@@ -413,7 +388,7 @@ customConfig := &json.Config{
     EnableValidation: true,  // 启用验证
     StrictMode:       false, // 非严格模式
     CreatePaths:      true,  // 自动创建路径
-    CleanupNulls:     true,  // 清理空值
+    CleanupNulls:     true,  // 清理 null 值
 }
 
 processor3 := json.New(customConfig)
@@ -429,9 +404,9 @@ largeDataProcessor := json.New(json.LargeDataConfig())
 ```go
 opts := &json.ProcessorOptions{
     CreatePaths:     true,  // 自动创建路径
-    CleanupNulls:    true,  // 清理空值
+    CleanupNulls:    true,  // 清理 null 值
     CompactArrays:   true,  // 压缩数组
-    ContinueOnError: false, // 遇到错误时继续
+    ContinueOnError: false, // 出错时继续
     MaxDepth:        50,    // 最大深度
 }
 
@@ -452,14 +427,14 @@ fmt.Printf("缓存内存使用: %d 字节\n", stats.CacheMemory)
 
 // 获取健康状态
 health := processor.GetHealthStatus()
-fmt.Printf("系统健康状态: %v\n", health.Healthy)
+fmt.Printf("系统健康: %v\n", health.Healthy)
 ```
 
 ---
 
 ## 📁 文件操作
 
-### 基本文件操作
+### 基础文件操作
 
 ```go
 // 从文件加载 JSON
@@ -468,7 +443,7 @@ data, err := json.LoadFromFile("example.json")
 // 保存到文件（美化格式）
 err = json.SaveToFile("output_pretty.json", data, true)
 
-// 保存到文件（紧凑格式）
+// 保存到文件（压缩格式）
 err = json.SaveToFile("output.json", data, false)
 
 // 从 Reader 加载
@@ -488,7 +463,7 @@ err = json.SaveToWriter(&buffer, data, true)
 ### Marshal/Unmarshal 文件操作
 
 ```go
-// 将数据 Marshal 到文件（默认紧凑格式）
+// 将数据序列化到文件（默认压缩格式）
 user := map[string]any{
     "name": "Alice",
     "age":  30,
@@ -496,14 +471,14 @@ user := map[string]any{
 }
 err := json.MarshalToFile("user.json", user)
 
-// 将数据 Marshal 到文件（美化格式）
+// 将数据序列化到文件（美化格式）
 err = json.MarshalToFile("user_pretty.json", user, true)
 
-// 从文件 Unmarshal 数据
+// 从文件反序列化数据
 var loadedUser map[string]any
 err = json.UnmarshalFromFile("user.json", &loadedUser)
 
-// 也适用于结构体
+// 也支持结构体
 type User struct {
     Name  string `json:"name"`
     Age   int    `json:"age"`
@@ -513,7 +488,7 @@ type User struct {
 var person User
 err = json.UnmarshalFromFile("user.json", &person)
 
-// 使用处理器进行高级选项
+// 使用处理器进行高级操作
 processor := json.New()
 defer processor.Close()
 
@@ -543,7 +518,7 @@ for _, filename := range configFiles {
     allConfigs[configName] = config
 }
 
-// 保存合并的配置
+// 保存合并后的配置
 err := json.SaveToFile("merged_config.json", allConfigs, true)
 ```
 
@@ -724,14 +699,14 @@ for _, t := range times {
 }
 
 avgTime := total / float64(len(times))
-fmt.Printf("平均响应时间: %.2f ms\n", avgTime)
+fmt.Printf("平均响应时间: %.2f 毫秒\n", avgTime)
 ```
 
 ---
 
 ## Set 操作 - 数据安全保证
 
-所有 Set 操作都遵循**默认安全**模式，确保您的数据永远不会被损坏：
+所有 Set 操作都遵循 **安全优先** 模式，确保您的数据永远不会被损坏：
 
 ```go
 // ✅ 成功：返回修改后的数据
@@ -751,10 +726,10 @@ if err != nil {
 }
 ```
 
-**主要优势**：
-- 🔒 **数据完整性**：错误时原始数据永不损坏
-- ✅ **安全回退**：始终有有效的 JSON 可以使用
-- 🎯 **可预测性**：所有操作的一致行为
+**核心优势**：
+- 🔒 **数据完整性**：错误时永远不会损坏原始数据
+- ✅ **安全回退**：始终有有效的 JSON 可用
+- 🎯 **可预测**：所有操作行为一致
 
 ---
 
@@ -762,33 +737,26 @@ if err != nil {
 
 ### 📁 示例代码
 
-- **[基本用法](examples/1_basic_usage.go)** - examples/1.basic_usage.go 
-- **[高级功能](examples/2_advanced_features.go)** - examples/2.advanced_features.go 
-- **[生产就绪](examples/3_production_ready.go)** - examples/3.production_ready.go 
-
+- **[基础用法](examples/1_basic_usage.go)** - examples/1.basic_usage.go
+- **[高级功能](examples/2_advanced_features.go)** - examples/2.advanced_features.go
+- **[生产就绪](examples/3_production_ready.go)** - examples/3.production_ready.go
 
 ### 📖 其他资源
 
-- **[兼容性指南](docs/COMPATIBILITY.md)** - `encoding/json` 的直接替换
+- **[兼容性指南](docs/COMPATIBILITY.md)** - `encoding/json` 的直接替换品
 - **[快速参考](docs/QUICK_REFERENCE.md)** - 常用操作速查表
-- **[API 文档](https://pkg.go.dev/github.com/cybergodev/json)** - 完整的 API 参考
-
----
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 详情请参阅 [LICENSE](LICENSE) 文件。
+- **[API 文档](https://pkg.go.dev/github.com/cybergodev/json)** - 完整 API 参考
 
 ---
 
 ## 🤝 贡献
 
-欢迎贡献！请随时提交 Pull Request。对于重大更改，请先开启 issue 讨论您想要更改的内容。
+欢迎贡献、问题报告和建议！
 
-## 🌟 Star 历史
+## 📄 许可证
 
-如果您觉得这个项目有用，请考虑给它一个 star！⭐
+MIT 许可证 - 详见 [LICENSE](LICENSE) 文件。
 
 ---
 
-**由 CyberGoDev 团队用 ❤️ 制作**
+**用心为 Go 社区打造** ❤️ | 如果这个项目对您有帮助，请给它 ⭐️ Star！

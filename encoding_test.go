@@ -368,8 +368,8 @@ func TestEncodingStreams(t *testing.T) {
 
 	t.Run("EncodeBatch", func(t *testing.T) {
 		pairs := map[string]interface{}{
-			"name":  "Alice",
-			"age":   30,
+			"name":   "Alice",
+			"age":    30,
 			"email":  "alice@example.com",
 			"active": true,
 		}
@@ -443,11 +443,11 @@ func TestEncodingCompatibility(t *testing.T) {
 		data := map[string]interface{}{
 			"string": "value",
 			"number": 42,
-			"float":   3.14,
-			"bool":    true,
-			"null":    nil,
-			"array":   []interface{}{1, 2, 3},
-			"object":  map[string]interface{}{"nested": "value"},
+			"float":  3.14,
+			"bool":   true,
+			"null":   nil,
+			"array":  []interface{}{1, 2, 3},
+			"object": map[string]interface{}{"nested": "value"},
 		}
 
 		processor := New(DefaultConfig())

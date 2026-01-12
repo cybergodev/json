@@ -12,24 +12,7 @@
 
 ---
 
-## 📚 Table of Contents
-
-- [📖 Overview](#-overview)
-- [📋 Basic Path Syntax](#-Basic-Path-Syntax)
-- [🚀 Quick Start](#-quick-start)
-- [🏆 Core Features](#-core-features)
-- [🔧 Configuration Options](#-configuration-options)
-- [📁 File Operations](#-file-operations)
-- [🎯 Use Cases](#-use-cases)
-- [🌐 Examples & Resources](#-examples--resources)
-
----
-
-## 📖 Overview
-
-**`cybergodev/json`** is a high-performance Go JSON processing library that maintains 100% compatibility with the standard `encoding/json` package while providing powerful path operations, type safety, performance optimization, and rich advanced features.
-
-### 🏆 Core Advantages
+## 🏆 Core Advantages
 
 - **🔄 Full Compatibility** - 100% compatible with standard `encoding/json`, zero learning curve, drop-in replacement
 - **🎯 Powerful Paths** - Support for complex path expressions, complete complex data operations in one line
@@ -45,15 +28,6 @@
 - **📊 Data Analysis** - Statistics and analysis of large amounts of JSON data
 - **🔄 Microservice Communication** - Data exchange and format conversion between services
 - **📝 Log Processing** - Parsing and analysis of structured logs
-
-### 📚 More Examples & Documentation
-
-- **[📁 Examples](examples)** - Three comprehensive examples covering all features
-  - **[Basic Usage](examples/1.basic_usage.go)** - Quick start and fundamental operations
-  - **[Advanced Features](examples/2.advanced_features.go)** - Complex queries and nested operations
-  - **[Production Ready](examples/3.production_ready.go)** - Production patterns and best practices
-- **[📖 Compatibility](docs/COMPATIBILITY.md)** - Compatibility guide and migration information
-- **[🔄 Quick Reference](docs/QUICK_REFERENCE.md)** - Quick reference guide for common features
 
 ---
 
@@ -775,20 +749,14 @@ if err != nil {
 
 ---
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+Contributions, issue reports, and suggestions are welcome!
 
-## 🌟 Star History
+## 📄 License
 
-If you find this project useful, please consider giving it a star! ⭐
+MIT License - See [LICENSE](LICENSE) file for details.
 
 ---
 
-**Made with ❤️ by the CyberGoDev team**
+**Crafted with care for the Go community** ❤️ | If this project helps you, please give it a ⭐️ Star!
