@@ -7,6 +7,49 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.0.9 - Path Navigation & Processor API Enhancement (2026-01-13)
+
+### Added
+- **Processor-Level Foreach Methods**: 6 new methods on `Processor` type for custom configuration support
+  - `processor.Foreach()` - Iterate over root-level arrays or objects
+  - `processor.ForeachWithPath()` - Iterate at a specific path
+  - `processor.ForeachWithPathAndControl()` - Iterate with flow control
+  - `processor.ForeachWithPathAndIterator()` - Iterate with path information
+  - `processor.ForeachReturn()` - Iterate and return the JSON string
+  - `processor.ForeachNested()` - Recursively iterate over all nested structures
+- **Full Path Navigation Support**: Enhanced all 15 `IterableValue` getter methods with path navigation
+  - Dot notation: `"user.address.city"`
+  - Array indices: `"users[0].name"`, `"thumbnails[-1].url"`
+  - Array slices: `"items[0:10]"`
+  - Complex paths: `"data.users[0].posts[-1].title"`
+
+### Changed
+- All package-level `Foreach` functions now have corresponding `Processor` methods for custom configuration support
+- Enhanced `GetString()`, `GetInt()`, `GetFloat64()`, `GetBool()`, `GetArray()`, `GetObject()` to support path navigation
+- Enhanced `GetWithDefault()`, `GetStringWithDefault()`, `GetIntWithDefault()`, `GetFloat64WithDefault()`, `GetBoolWithDefault()` with path support
+- Enhanced `Exists()`, `IsNull()`, `IsEmpty()` methods with path navigation
+- `Get()` method now supports array indices and slices
+- Automatic path detection (contains `.` or `[` or `]`) with backward compatibility
+
+### Removed
+- Dead code: `GetValue()` method from `internal/path.go` (duplicate of `String()`)
+
+### Fixed
+- Critical issue where custom `Processor` configurations (security limits, nesting depth) were ignored by package-level `Foreach` functions
+- Path navigation support in `IterableValue` getter methods for complex JSON structures
+
+### Test Results
+- ✅ 100% test pass rate across all packages
+- ✅ Comprehensive test coverage with 8 new test functions
+- ✅ No regressions - all existing tests pass
+
+### Backward Compatibility
+- 100% backward compatible - all existing single-key lookup code continues to work
+- Zero breaking changes - path navigation is opt-in through path syntax detection
+- All public APIs preserved
+
+---
+
 ## v1.0.8 - Thread Safety & Quality Enhancement (2026-01-12)
 
 ### Added

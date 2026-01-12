@@ -552,11 +552,6 @@ func (ps PathSegment) String() string {
 
 
 
-// GetValue returns the value representation for backward compatibility
-func (ps PathSegment) GetValue() string {
-	return ps.String()
-}
-
 // IsArrayAccess returns true if this segment accesses an array
 func (ps PathSegment) IsArrayAccess() bool {
 	return ps.Type == ArrayIndexSegment || ps.Type == ArraySliceSegment || ps.Type == WildcardSegment
