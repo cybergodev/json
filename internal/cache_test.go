@@ -22,8 +22,8 @@ func (m *mockConfig) GetMaxPathDepth() int         { return 100 }
 func (m *mockConfig) GetMaxConcurrency() int       { return 10 }
 func (m *mockConfig) IsMetricsEnabled() bool       { return false }
 func (m *mockConfig) IsStrictMode() bool           { return false }
-func (m *mockConfig) AllowComments() bool          { return false }
-func (m *mockConfig) PreserveNumbers() bool        { return false }
+func (m *mockConfig) IsCommentsAllowed() bool      { return false }
+func (m *mockConfig) ShouldPreserveNumbers() bool  { return false }
 func (m *mockConfig) ShouldCreatePaths() bool      { return false }
 func (m *mockConfig) ShouldCleanupNulls() bool     { return false }
 func (m *mockConfig) ShouldCompactArrays() bool    { return false }

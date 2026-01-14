@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// CacheConfig provides the configuration needed by CacheManager
+// This minimal interface avoids circular dependencies with the main json package
+type CacheConfig interface {
+	IsCacheEnabled() bool
+	GetMaxCacheSize() int
+	GetCacheTTL() time.Duration
+}
+
 // Global cleanup semaphore to limit concurrent cleanup goroutines
 var (
 	cleanupSem     chan struct{}
@@ -22,17 +30,10 @@ func getCleanupSem() chan struct{} {
 	return cleanupSem
 }
 
-// ConfigInterface is imported from root package to avoid circular dependency
-type ConfigInterface interface {
-	IsCacheEnabled() bool
-	GetMaxCacheSize() int
-	GetCacheTTL() time.Duration
-}
-
 // CacheManager handles all caching operations with performance and memory management
 type CacheManager struct {
 	shards      []*cacheShard
-	config      ConfigInterface
+	config      CacheConfig
 	hitCount    int64
 	missCount   int64
 	memoryUsage int64
@@ -62,7 +63,7 @@ type lruEntry struct {
 }
 
 // NewCacheManager creates a new cache manager with sharding
-func NewCacheManager(config ConfigInterface) *CacheManager {
+func NewCacheManager(config CacheConfig) *CacheManager {
 	if config == nil || !config.IsCacheEnabled() {
 		// Return disabled cache manager
 		return &CacheManager{

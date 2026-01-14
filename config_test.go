@@ -333,8 +333,8 @@ func TestConfigurationEdgeCases(t *testing.T) {
 			{"CompactArrays", func(b bool) { config.CompactArrays = b }, func() bool { return config.CompactArrays }},
 			{"EnableMetrics", func(b bool) { config.EnableMetrics = b }, func() bool { return config.EnableMetrics }},
 			{"EnableHealthCheck", func(b bool) { config.EnableHealthCheck = b }, func() bool { return config.EnableHealthCheck }},
-			{"AllowCommentsFlag", func(b bool) { config.AllowCommentsFlag = b }, func() bool { return config.AllowCommentsFlag }},
-			{"PreserveNumbersFlag", func(b bool) { config.PreserveNumbersFlag = b }, func() bool { return config.PreserveNumbersFlag }},
+			{"AllowComments", func(b bool) { config.AllowComments = b }, func() bool { return config.AllowComments }},
+			{"PreserveNumbers", func(b bool) { config.PreserveNumbers = b }, func() bool { return config.PreserveNumbers }},
 			{"ValidateInput", func(b bool) { config.ValidateInput = b }, func() bool { return config.ValidateInput }},
 			{"ValidateFilePath", func(b bool) { config.ValidateFilePath = b }, func() bool { return config.ValidateFilePath }},
 		}

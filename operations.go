@@ -67,11 +67,6 @@ func (p *Processor) parseArrayIndex(indexStr string) int {
 	return globalArrayHelper.ParseArrayIndex(indexStr)
 }
 
-// parseArrayIndexFromSegment delegates to parseArrayIndex
-func (p *Processor) parseArrayIndexFromSegment(segmentValue string) int {
-	return p.parseArrayIndex(segmentValue)
-}
-
 // handleArraySlice handles array slicing operations
 func (p *Processor) handleArraySlice(data any, segment PathSegment) PropertyAccessResult {
 	arr, ok := data.([]any)
@@ -320,35 +315,6 @@ func (p *Processor) navigateToArrayIndexWithNegative(current any, index int, cre
 	}
 }
 
-// tryConvertToArray attempts to convert a map to an array if it has numeric keys
-func (p *Processor) tryConvertToArray(m map[string]any) ([]any, bool) {
-	if len(m) == 0 {
-		return []any{}, true
-	}
-
-	// Check if all keys are numeric and sequential
-	maxIndex := -1
-	for key := range m {
-		if index, err := strconv.Atoi(key); err == nil && index >= 0 {
-			if index > maxIndex {
-				maxIndex = index
-			}
-		} else {
-			return nil, false // Non-numeric key found
-		}
-	}
-
-	// Create array with proper size
-	arr := make([]any, maxIndex+1)
-	for key, value := range m {
-		if index, err := strconv.Atoi(key); err == nil {
-			arr[index] = value
-		}
-	}
-
-	return arr, true
-}
-
 // extendAndSetArray extends an array and sets a value at the specified index
 func (p *Processor) extendAndSetArray(arr []any, index int, value any) error {
 	if index < 0 {
@@ -561,10 +527,10 @@ func NewArrayOperations(utils *processorUtils) *arrayOperations {
 }
 
 // HandleArrayAccess handles array index access
-func (ao *arrayOperations) HandleArrayAccess(data any, index int) NavigationResult {
+func (ao *arrayOperations) HandleArrayAccess(data any, index int) PropertyAccessResult {
 	arr, ok := data.([]any)
 	if !ok {
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
 	// Handle negative indices
@@ -572,17 +538,17 @@ func (ao *arrayOperations) HandleArrayAccess(data any, index int) NavigationResu
 
 	// Check bounds
 	if !ao.ValidateArrayBounds(normalizedIndex, len(arr)) {
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
-	return NavigationResult{Value: arr[normalizedIndex], Exists: true}
+	return PropertyAccessResult{Value: arr[normalizedIndex], Exists: true}
 }
 
 // HandleArraySlice handles array slice operations
-func (ao *arrayOperations) HandleArraySlice(data any, start, end, step int) NavigationResult {
+func (ao *arrayOperations) HandleArraySlice(data any, start, end, step int) PropertyAccessResult {
 	arr, ok := data.([]any)
 	if !ok {
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
 	// Normalize parameters
@@ -600,7 +566,7 @@ func (ao *arrayOperations) HandleArraySlice(data any, start, end, step int) Navi
 
 	// Perform the slice operation
 	slicedArray := ao.performArraySlice(arr, normalizedStart, normalizedEnd, step)
-	return NavigationResult{Value: slicedArray, Exists: true}
+	return PropertyAccessResult{Value: slicedArray, Exists: true}
 }
 
 // ParseArrayIndex delegates to centralized ArrayHelper
@@ -704,13 +670,13 @@ func (ao *arrayOperations) ParseSliceParameters(sliceStr string, arrayLength int
 }
 
 // HandleComplexArrayAccess handles complex array access patterns like "property[index]"
-func (ao *arrayOperations) HandleComplexArrayAccess(data any, segmentValue string) NavigationResult {
+func (ao *arrayOperations) HandleComplexArrayAccess(data any, segmentValue string) PropertyAccessResult {
 	// Find bracket positions
 	bracketStart := strings.IndexByte(segmentValue, '[')
 	bracketEnd := strings.IndexByte(segmentValue, ']')
 
 	if bracketStart == -1 || bracketEnd == -1 || bracketEnd <= bracketStart {
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
 	property := segmentValue[:bracketStart]
@@ -719,13 +685,11 @@ func (ao *arrayOperations) HandleComplexArrayAccess(data any, segmentValue strin
 	// First access the property if specified
 	var arrayData any = data
 	if property != "" {
-		// This would need to be implemented with property access logic
-		// For now, assume data is the target array
 		if obj, ok := data.(map[string]any); ok {
 			if val, exists := obj[property]; exists {
 				arrayData = val
 			} else {
-				return NavigationResult{Value: nil, Exists: false}
+				return PropertyAccessResult{Value: nil, Exists: false}
 			}
 		}
 	}
@@ -733,20 +697,20 @@ func (ao *arrayOperations) HandleComplexArrayAccess(data any, segmentValue strin
 	// Parse and handle array access
 	index := ao.ParseArrayIndex(indexStr)
 	if index == InvalidArrayIndex {
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
 	return ao.HandleArrayAccess(arrayData, index)
 }
 
 // HandleComplexArraySlice handles complex array slice patterns like "property[start:end:step]"
-func (ao *arrayOperations) HandleComplexArraySlice(data any, segmentValue string) NavigationResult {
+func (ao *arrayOperations) HandleComplexArraySlice(data any, segmentValue string) PropertyAccessResult {
 	// Find bracket positions
 	bracketStart := strings.IndexByte(segmentValue, '[')
 	bracketEnd := strings.IndexByte(segmentValue, ']')
 
 	if bracketStart == -1 || bracketEnd == -1 || bracketEnd <= bracketStart {
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
 	property := segmentValue[:bracketStart]
@@ -759,7 +723,7 @@ func (ao *arrayOperations) HandleComplexArraySlice(data any, segmentValue string
 			if val, exists := obj[property]; exists {
 				arrayData = val
 			} else {
-				return NavigationResult{Value: nil, Exists: false}
+				return PropertyAccessResult{Value: nil, Exists: false}
 			}
 		}
 	}
@@ -767,13 +731,13 @@ func (ao *arrayOperations) HandleComplexArraySlice(data any, segmentValue string
 	// Get array length for slice parsing
 	arr, ok := arrayData.([]any)
 	if !ok {
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
 	// Parse slice parameters
 	start, end, step, err := ao.ParseSliceParameters(sliceStr, len(arr))
 	if err != nil {
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
 	return ao.HandleArraySlice(arrayData, start, end, step)

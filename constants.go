@@ -12,8 +12,8 @@ type ConfigInterface interface {
 	GetMaxConcurrency() int
 	IsMetricsEnabled() bool
 	IsStrictMode() bool
-	AllowComments() bool
-	PreserveNumbers() bool
+	IsCommentsAllowed() bool
+	ShouldPreserveNumbers() bool
 	ShouldCreatePaths() bool
 	ShouldCleanupNulls() bool
 	ShouldCompactArrays() bool

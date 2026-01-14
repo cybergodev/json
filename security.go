@@ -6,15 +6,14 @@ import (
 	"unicode/utf8"
 )
 
-// SecurityValidator provides comprehensive security validation for JSON processing
-// This consolidates all validation logic in one place for better maintainability
+// SecurityValidator provides comprehensive security validation for JSON processing.
 type SecurityValidator struct {
 	maxJSONSize     int64
 	maxPathLength   int
 	maxNestingDepth int
 }
 
-// NewSecurityValidator creates a new security validator with the given limits
+// NewSecurityValidator creates a new security validator with the given limits.
 func NewSecurityValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int) *SecurityValidator {
 	return &SecurityValidator{
 		maxJSONSize:     maxJSONSize,
@@ -23,65 +22,47 @@ func NewSecurityValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int)
 	}
 }
 
-// ValidateAll performs comprehensive validation of both JSON and path inputs
+// ValidateAll performs comprehensive validation of both JSON and path inputs.
 func (sv *SecurityValidator) ValidateAll(jsonStr, path string) error {
-	// Validate JSON input first
 	if err := sv.ValidateJSONInput(jsonStr); err != nil {
 		return err
 	}
-
-	// Validate path input
-	if err := sv.ValidatePathInput(path); err != nil {
-		return err
-	}
-
-	return nil
+	return sv.ValidatePathInput(path)
 }
 
-// ValidateJSONInput performs comprehensive JSON input validation with enhanced security
+// ValidateJSONInput performs comprehensive JSON input validation with enhanced security.
 func (sv *SecurityValidator) ValidateJSONInput(jsonStr string) error {
-	// Size validation
 	if int64(len(jsonStr)) > sv.maxJSONSize {
 		return newSizeLimitError("validate_json_input", int64(len(jsonStr)), sv.maxJSONSize)
 	}
 
-	// Empty input check
 	if len(jsonStr) == 0 {
 		return newOperationError("validate_json_input", "JSON string cannot be empty", ErrInvalidJSON)
 	}
 
-	// UTF-8 validation with BOM detection
 	if !utf8.ValidString(jsonStr) {
 		return newOperationError("validate_json_input", "JSON contains invalid UTF-8 sequences", ErrInvalidJSON)
 	}
 
-	// Remove BOM if present and validate
+	// Detect BOM (not allowed)
 	cleanJSON := strings.TrimPrefix(jsonStr, ValidationBOMPrefix)
 	if len(cleanJSON) != len(jsonStr) {
 		return newOperationError("validate_json_input", "JSON contains BOM which is not allowed", ErrInvalidJSON)
 	}
 
-	// Enhanced security validation
 	if err := sv.validateJSONSecurity(jsonStr); err != nil {
 		return err
 	}
 
-	// Basic structure validation
 	if err := sv.validateJSONStructure(jsonStr); err != nil {
 		return err
 	}
 
-	// Nesting depth validation
-	if err := sv.validateNestingDepth(jsonStr); err != nil {
-		return err
-	}
-
-	return nil
+	return sv.validateNestingDepth(jsonStr)
 }
 
-// ValidatePathInput performs comprehensive path validation with enhanced security
+// ValidatePathInput performs comprehensive path validation with enhanced security.
 func (sv *SecurityValidator) ValidatePathInput(path string) error {
-	// Length validation
 	if len(path) > sv.maxPathLength {
 		return newPathError(path, fmt.Sprintf("path length %d exceeds maximum %d", len(path), sv.maxPathLength), ErrInvalidPath)
 	}
@@ -91,35 +72,25 @@ func (sv *SecurityValidator) ValidatePathInput(path string) error {
 		return nil
 	}
 
-	// Enhanced security validation
 	if err := sv.validatePathSecurity(path); err != nil {
 		return err
 	}
 
-	// Bracket/brace matching validation
 	if err := sv.validateBracketMatching(path); err != nil {
 		return err
 	}
 
-	// Syntax validation
-	if err := sv.validatePathSyntax(path); err != nil {
-		return err
-	}
-
-	return nil
+	return sv.validatePathSyntax(path)
 }
 
-// validateJSONSecurity performs optimized security validation for JSON input
 func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 	// Fast path: check for null bytes first (most critical)
 	if strings.IndexByte(jsonStr, 0) != -1 {
 		return newSecurityError("validate_json_security", "null byte injection detected")
 	}
 
-	// Optimize: single pass for multiple checks using byte scanning
+	// Check dangerous patterns
 	lowerJSON := strings.ToLower(jsonStr)
-
-	// Check dangerous patterns in single pass
 	dangerousPatterns := []string{
 		"__proto__", "constructor", "prototype",
 		"<script", "javascript:", "vbscript:",
@@ -135,9 +106,7 @@ func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 	return nil
 }
 
-// validatePathSecurity performs optimized security validation for paths
 func (sv *SecurityValidator) validatePathSecurity(path string) error {
-	// Fast path: check for null bytes
 	if strings.IndexByte(path, 0) != -1 {
 		return newPathError(path, "null byte injection detected", ErrSecurityViolation)
 	}
@@ -169,15 +138,12 @@ func (sv *SecurityValidator) validatePathSecurity(path string) error {
 	return nil
 }
 
-// validateJSONStructure performs basic JSON structure validation
 func (sv *SecurityValidator) validateJSONStructure(jsonStr string) error {
-	// Trim whitespace for validation
 	trimmed := strings.TrimSpace(jsonStr)
 	if len(trimmed) == 0 {
 		return newOperationError("validate_json_structure", "JSON string is empty after trimming", ErrInvalidJSON)
 	}
 
-	// Check for valid JSON start/end characters
 	firstChar := trimmed[0]
 	lastChar := trimmed[len(trimmed)-1]
 
@@ -189,7 +155,6 @@ func (sv *SecurityValidator) validateJSONStructure(jsonStr string) error {
 	return nil
 }
 
-// validateNestingDepth validates JSON nesting depth (optimized)
 func (sv *SecurityValidator) validateNestingDepth(jsonStr string) error {
 	depth := 0
 	inString := false
@@ -226,7 +191,6 @@ func (sv *SecurityValidator) validateNestingDepth(jsonStr string) error {
 	return nil
 }
 
-// validateBracketMatching validates bracket and brace matching in paths
 func (sv *SecurityValidator) validateBracketMatching(path string) error {
 	brackets := 0
 	braces := 0
@@ -279,14 +243,11 @@ func (sv *SecurityValidator) validateBracketMatching(path string) error {
 	return nil
 }
 
-// validatePathSyntax performs basic path syntax validation
 func (sv *SecurityValidator) validatePathSyntax(path string) error {
-	// Check for consecutive dots (more than 2)
 	if strings.Contains(path, "...") {
 		return newPathError(path, "invalid consecutive dots", ErrInvalidPath)
 	}
 
-	// Check for invalid characters in path
 	for i, char := range path {
 		if char < 32 && char != '\t' && char != '\n' && char != '\r' {
 			return newPathError(path, fmt.Sprintf("invalid control character at position %d", i), ErrInvalidPath)
@@ -296,18 +257,14 @@ func (sv *SecurityValidator) validatePathSyntax(path string) error {
 	return nil
 }
 
-// isValidJSONPrimitive checks if a string represents a valid JSON primitive
 func isValidJSONPrimitive(s string) bool {
 	return s == "true" || s == "false" || s == "null" || isValidJSONNumber(s)
 }
 
-// isValidJSONNumber checks if a string represents a valid JSON number
 func isValidJSONNumber(s string) bool {
 	if len(s) == 0 {
 		return false
 	}
-
-	// Simple number validation - starts with digit or minus
 	firstChar := s[0]
 	return (firstChar >= '0' && firstChar <= '9') || firstChar == '-'
 }

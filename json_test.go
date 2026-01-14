@@ -1005,7 +1005,7 @@ func TestAdvancedPathOperations(t *testing.T) {
 		}`
 
 		// Test deep extraction
-		result, err := Get(testData, "departments{teams{members}}")
+		result, err := Get(testData, "departments{teams}{members}")
 		helper.AssertNoError(err)
 		helper.AssertNotNil(result)
 	})

@@ -414,3 +414,30 @@ func isJsonPrimitive(data any) bool {
 	}
 }
 
+// tryConvertToArray attempts to convert a map to an array if it has numeric keys
+func tryConvertToArray(m map[string]any) ([]any, bool) {
+	if len(m) == 0 {
+		return []any{}, true
+	}
+
+	maxIndex := -1
+	for key := range m {
+		if index, err := strconv.Atoi(key); err == nil && index >= 0 {
+			if index > maxIndex {
+				maxIndex = index
+			}
+		} else {
+			return nil, false
+		}
+	}
+
+	arr := make([]any, maxIndex+1)
+	for key, value := range m {
+		if index, err := strconv.Atoi(key); err == nil {
+			arr[index] = value
+		}
+	}
+
+	return arr, true
+}
+

@@ -324,7 +324,7 @@ func Encode(value any, config ...*EncodeConfig) (string, error) {
 // EncodePretty converts any Go value to pretty-formatted JSON string
 func EncodePretty(value any, config ...*EncodeConfig) (string, error) {
 	var cfg *EncodeConfig
-	if len(config) > 0 {
+	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
 	} else {
 		cfg = NewPrettyConfig()
@@ -335,7 +335,7 @@ func EncodePretty(value any, config ...*EncodeConfig) (string, error) {
 // EncodeCompact converts any Go value to compact JSON string
 func EncodeCompact(value any, config ...*EncodeConfig) (string, error) {
 	var cfg *EncodeConfig
-	if len(config) > 0 {
+	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
 	} else {
 		cfg = NewCompactConfig()

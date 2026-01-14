@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -463,13 +464,41 @@ func parseJSONPointer(path string) ([]PathSegment, error) {
 
 // ValidatePath validates a path string for security and correctness
 func ValidatePath(path string) error {
+	const (
+		maxPathLength = 1000
+		maxPathDepth  = 100
+		maxArrayIndex = 10000
+	)
+
 	pathLen := len(path)
-	if pathLen > 1000 {
-		return fmt.Errorf("path too long: %d characters (max 1000)", pathLen)
+	if pathLen > maxPathLength {
+		return fmt.Errorf("path too long: %d characters (max %d)", pathLen, maxPathLength)
 	}
 
 	if pathLen == 0 {
 		return nil
+	}
+
+	// Check path depth (prevent deeply nested paths)
+	segmentCount := strings.Count(path, ".") + strings.Count(path, "[")
+	if segmentCount > maxPathDepth {
+		return fmt.Errorf("path too deep: %d segments (max %d)", segmentCount, maxPathDepth)
+	}
+
+	// Validate array indices are within reasonable range
+	arrayPattern := regexp.MustCompile(`\[(-?\d+)`)
+	matches := arrayPattern.FindAllStringSubmatch(path, -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			index, err := strconv.Atoi(match[1])
+			if err != nil {
+				return fmt.Errorf("invalid array index: %s", match[1])
+			}
+			if index < -maxArrayIndex || index > maxArrayIndex {
+				return fmt.Errorf("array index out of reasonable range: %d (range: %d to %d)",
+					index, -maxArrayIndex, maxArrayIndex)
+			}
+		}
 	}
 
 	// Single-pass validation for control characters and dangerous patterns
@@ -479,34 +508,34 @@ func ValidatePath(path string) error {
 
 		// Check for null bytes and control characters
 		if c == 0 || c < 32 {
-			return fmt.Errorf("path contains invalid control characters")
+			return fmt.Errorf("path contains invalid control characters at position %d", i)
 		}
 
 		// Check for path traversal patterns (optimized)
 		if c == '.' && i+1 < pathLen && path[i+1] == '.' {
 			if i+2 < pathLen && path[i+2] == '/' {
-				return fmt.Errorf("path contains traversal patterns")
+				return fmt.Errorf("path contains traversal patterns at position %d", i)
 			}
 		}
 
 		// Check for double slashes
 		if c == '/' && prevChar == '/' {
-			return fmt.Errorf("path contains traversal patterns")
+			return fmt.Errorf("path contains traversal patterns at position %d", i)
 		}
 
 		// Check for backslashes
 		if c == '\\' {
-			return fmt.Errorf("path contains traversal patterns")
+			return fmt.Errorf("path contains traversal patterns at position %d", i)
 		}
 
 		// Check for template injection patterns
 		if c == '$' || c == '#' {
 			if i+1 < pathLen && path[i+1] == '{' {
-				return fmt.Errorf("path contains template injection patterns")
+				return fmt.Errorf("path contains template injection patterns at position %d", i)
 			}
 		}
 		if c == '{' && prevChar == '{' {
-			return fmt.Errorf("path contains template injection patterns")
+			return fmt.Errorf("path contains template injection patterns at position %d", i)
 		}
 
 		prevChar = c

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -745,77 +744,6 @@ func isASCIIOnly(s string) bool {
 		}
 	}
 	return true
-}
-
-// validateJSONSecurityAndStructure performs combined security and structure validation in a single pass
-// This optimization reduces redundant iterations over the JSON string
-func (p *Processor) validateJSONSecurityAndStructure(jsonString string) error {
-	// Get security limits from configuration
-	maxDepth := p.config.MaxNestingDepthSecurity
-	if maxDepth <= 0 {
-		maxDepth = DefaultMaxNestingDepth
-	}
-
-	// Trim whitespace for structure validation
-	trimmed := strings.TrimSpace(jsonString)
-	if len(trimmed) == 0 {
-		return newOperationError("validate_input", "empty JSON after trimming whitespace", ErrInvalidJSON)
-	}
-
-	// Validate first and last characters for basic structure
-	firstChar := trimmed[0]
-	lastChar := trimmed[len(trimmed)-1]
-
-	// Quick structure validation based on first character
-	switch firstChar {
-	case '{':
-		if lastChar != '}' {
-			return newOperationError("validate_input", "JSON object not properly closed", ErrInvalidJSON)
-		}
-	case '[':
-		if lastChar != ']' {
-			return newOperationError("validate_input", "JSON array not properly closed", ErrInvalidJSON)
-		}
-	case '"':
-		if lastChar != '"' || len(trimmed) < 2 {
-			return newOperationError("validate_input", "JSON string not properly closed", ErrInvalidJSON)
-		}
-		return nil // String values don't need depth checking
-	case 't', 'f', 'n':
-		// Primitive values (true, false, null) - no depth checking needed
-		return nil
-	default:
-		// Numbers - no depth checking needed
-		if !isValidNumberStart(firstChar) {
-			return newOperationError("validate_input", fmt.Sprintf("invalid JSON start character: %c", firstChar), ErrInvalidJSON)
-		}
-		return nil
-	}
-
-	// Depth validation (only for objects and arrays)
-	braceDepth := 0
-	bracketDepth := 0
-
-	for _, char := range trimmed {
-		switch char {
-		case '{':
-			braceDepth++
-			if braceDepth > maxDepth {
-				return newDepthLimitError("validate_security", "", braceDepth, maxDepth)
-			}
-		case '}':
-			braceDepth--
-		case '[':
-			bracketDepth++
-			if bracketDepth > maxDepth {
-				return newDepthLimitError("validate_security", "", bracketDepth, maxDepth)
-			}
-		case ']':
-			bracketDepth--
-		}
-	}
-
-	return nil
 }
 
 // isValidNumberStart checks if character can start a valid JSON number
@@ -2220,89 +2148,6 @@ func (u *processorUtils) IsEmptyContainer(data any) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-// DeepCopy creates a deep copy of the data structure
-func (u *processorUtils) DeepCopy(data any) (any, error) {
-	// Use JSON marshal/unmarshal for deep copy
-	jsonBytes, err := json.Marshal(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal data for deep copy: %w", err)
-	}
-
-	var result any
-	err = json.Unmarshal(jsonBytes, &result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal data for deep copy: %w", err)
-	}
-
-	return result, nil
-}
-
-// GetDataType returns a string representation of the data type
-func (u *processorUtils) GetDataType(data any) string {
-	if data == nil {
-		return "null"
-	}
-
-	switch data.(type) {
-	case map[string]any:
-		return "object"
-	case map[any]any:
-		return "object"
-	case []any:
-		return "array"
-	case string:
-		return "string"
-	case float64:
-		return "number"
-	case int:
-		return "number"
-	case bool:
-		return "boolean"
-	default:
-		return reflect.TypeOf(data).String()
-	}
-}
-
-// ConvertToMap converts data to map[string]any if possible
-func (u *processorUtils) ConvertToMap(data any) (map[string]any, bool) {
-	switch v := data.(type) {
-	case map[string]any:
-		return v, true
-	case map[any]any:
-		// Convert map[any]any to map[string]any
-		result := make(map[string]any)
-		for key, value := range v {
-			if strKey, ok := key.(string); ok {
-				result[strKey] = value
-			} else {
-				result[fmt.Sprintf("%v", key)] = value
-			}
-		}
-		return result, true
-	default:
-		return nil, false
-	}
-}
-
-// ConvertToArray converts data to []any if possible
-func (u *processorUtils) ConvertToArray(data any) ([]any, bool) {
-	switch v := data.(type) {
-	case []any:
-		return v, true
-	default:
-		// Try to convert using reflection
-		rv := reflect.ValueOf(data)
-		if rv.Kind() == reflect.Slice {
-			result := make([]any, rv.Len())
-			for i := 0; i < rv.Len(); i++ {
-				result[i] = rv.Index(i).Interface()
-			}
-			return result, true
-		}
-		return nil, false
 	}
 }
 

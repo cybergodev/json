@@ -241,14 +241,30 @@ func (p *Processor) Compact(jsonStr string, opts ...*ProcessorOptions) (string, 
 	return result, nil
 }
 
+// Package-level compiled regex patterns (shared across all pathParser instances for performance)
+var (
+	simplePropertyPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+	arrayIndexPattern     = regexp.MustCompile(`^\[(-?\d+)]$`)
+	slicePattern          = regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?]$`)
+	extractPattern        = regexp.MustCompile(`^\{([^}]+)}$`)
+)
+
+// PathSegmentInfo contains detailed information about a parsed path segment
+// This is an internal type used by pathParser for navigation operations
+type PathSegmentInfo struct {
+	Type    string
+	Value   string
+	Key     string
+	Index   int
+	Start   *int
+	End     *int
+	Step    *int
+	Extract string
+	IsFlat  bool
+}
+
 // pathParser provides path parsing functionality
 type pathParser struct {
-	// Compiled regex patterns for performance
-	simplePropertyPattern *regexp.Regexp
-	arrayIndexPattern     *regexp.Regexp
-	slicePattern          *regexp.Regexp
-	extractPattern        *regexp.Regexp
-
 	// String builder pool for efficient string operations
 	stringBuilderPool *stringBuilderPool
 }
@@ -256,11 +272,7 @@ type pathParser struct {
 // NewPathParser creates a new path parser instance
 func NewPathParser() *pathParser {
 	return &pathParser{
-		simplePropertyPattern: regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`),
-		arrayIndexPattern:     regexp.MustCompile(`^\[(-?\d+)]$`),
-		slicePattern:          regexp.MustCompile(`^\[(-?\d*):(-?\d*)(?::(-?\d+))?]$`),
-		extractPattern:        regexp.MustCompile(`^\{([^}]+)}$`),
-		stringBuilderPool:     newStringBuilderPool(),
+		stringBuilderPool: newStringBuilderPool(),
 	}
 }
 
@@ -479,7 +491,7 @@ func (pp *pathParser) parsePathSegment(part string) ([]PathSegmentInfo, error) {
 // parseSimpleSegment parses a simple path segment
 func (pp *pathParser) parseSimpleSegment(part string) (PathSegmentInfo, error) {
 	// Check for extraction syntax first
-	if matches := pp.extractPattern.FindStringSubmatch(part); matches != nil {
+	if matches := extractPattern.FindStringSubmatch(part); matches != nil {
 		return PathSegmentInfo{
 			Type:    "extract",
 			Value:   part,
@@ -488,7 +500,7 @@ func (pp *pathParser) parseSimpleSegment(part string) (PathSegmentInfo, error) {
 	}
 
 	// Check for array slice syntax
-	if matches := pp.slicePattern.FindStringSubmatch(part); matches != nil {
+	if matches := slicePattern.FindStringSubmatch(part); matches != nil {
 		segment := PathSegmentInfo{
 			Type:  "slice",
 			Value: part,
@@ -529,7 +541,7 @@ func (pp *pathParser) parseSimpleSegment(part string) (PathSegmentInfo, error) {
 	}
 
 	// Check for array index syntax
-	if matches := pp.arrayIndexPattern.FindStringSubmatch(part); matches != nil {
+	if matches := arrayIndexPattern.FindStringSubmatch(part); matches != nil {
 		index, err := strconv.Atoi(matches[1])
 		if err != nil {
 			return PathSegmentInfo{}, fmt.Errorf("invalid array index: %s", matches[1])
@@ -558,7 +570,7 @@ func (pp *pathParser) parseSimpleSegment(part string) (PathSegmentInfo, error) {
 				}
 
 				// Use regex to parse slice parameters
-				if matches := pp.slicePattern.FindStringSubmatch(part[bracketStart:]); matches != nil {
+				if matches := slicePattern.FindStringSubmatch(part[bracketStart:]); matches != nil {
 					// Parse start
 					if matches[1] != "" {
 						start, err := strconv.Atoi(matches[1])
@@ -1210,10 +1222,11 @@ func (n *navigator) NavigateToPath(data any, segments []PathSegmentInfo) (any, e
 }
 
 // NavigateToSegment navigates to a single segment
-func (n *navigator) NavigateToSegment(data any, segment PathSegmentInfo) (NavigationResult, error) {
+func (n *navigator) NavigateToSegment(data any, segment PathSegmentInfo) (PropertyAccessResult, error) {
 	switch segment.Type {
 	case "property":
-		return n.HandlePropertyAccess(data, segment.Key), nil
+		result := n.HandlePropertyAccess(data, segment.Key)
+		return PropertyAccessResult{Value: result.Value, Exists: result.Exists, Path: segment.Key}, nil
 	case "array":
 		return n.handleArrayAccess(data, segment)
 	case "slice":
@@ -1221,18 +1234,17 @@ func (n *navigator) NavigateToSegment(data any, segment PathSegmentInfo) (Naviga
 	case "extract":
 		return n.handleExtraction(data, segment)
 	default:
-		return NavigationResult{}, fmt.Errorf("unsupported segment type: %s", segment.Type)
+		return PropertyAccessResult{}, fmt.Errorf("unsupported segment type: %s", segment.Type)
 	}
 }
 
 // HandlePropertyAccess handles property access on objects
-func (n *navigator) HandlePropertyAccess(data any, property string) NavigationResult {
+func (n *navigator) HandlePropertyAccess(data any, property string) PropertyAccessResult {
 	switch v := data.(type) {
 	case map[string]any:
 		value, exists := v[property]
 		if !exists {
-			// Check if it's a numeric property for array-like access
-			if arr, ok := n.tryConvertToArray(v); ok {
+			if arr, ok := tryConvertToArray(v); ok {
 				if index := n.parseArrayIndex(property); index != -2 {
 					// Handle negative indices
 					if index < 0 {
@@ -1240,16 +1252,16 @@ func (n *navigator) HandlePropertyAccess(data any, property string) NavigationRe
 					}
 					// Check bounds after negative index conversion
 					if index >= 0 && index < len(arr) {
-						return NavigationResult{Value: arr[index], Exists: true}
+						return PropertyAccessResult{Value: arr[index], Exists: true, Path: property}
 					}
 				}
 			}
 		}
-		return NavigationResult{Value: value, Exists: exists}
+		return PropertyAccessResult{Value: value, Exists: exists, Path: property}
 
 	case map[any]any:
 		value, exists := v[property]
-		return NavigationResult{Value: value, Exists: exists}
+		return PropertyAccessResult{Value: value, Exists: exists, Path: property}
 
 	case []any:
 		// Handle numeric property access on arrays (like array.5)
@@ -1260,29 +1272,29 @@ func (n *navigator) HandlePropertyAccess(data any, property string) NavigationRe
 			}
 			// Check bounds after negative index conversion
 			if index >= 0 && index < len(v) {
-				return NavigationResult{Value: v[index], Exists: true}
+				return PropertyAccessResult{Value: v[index], Exists: true, Path: property}
 			}
 		}
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false, Path: property}
 
 	case nil:
 		// Accessing property on nil - boundary case
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false, Path: property}
 
 	default:
 		// Cannot access property on this type
-		return NavigationResult{Value: nil, Exists: false}
+		return PropertyAccessResult{Value: nil, Exists: false, Path: property}
 	}
 }
 
 // handleArrayAccess handles array index access
-func (n *navigator) handleArrayAccess(data any, segment PathSegmentInfo) (NavigationResult, error) {
+func (n *navigator) handleArrayAccess(data any, segment PathSegmentInfo) (PropertyAccessResult, error) {
 	// Handle property.array[index] syntax
 	if segment.Key != "" {
 		// First access the property
 		propResult := n.HandlePropertyAccess(data, segment.Key)
 		if !propResult.Exists {
-			return NavigationResult{Value: nil, Exists: false}, nil
+			return PropertyAccessResult{Value: nil, Exists: false}, nil
 		}
 		data = propResult.Value
 	}
@@ -1290,7 +1302,7 @@ func (n *navigator) handleArrayAccess(data any, segment PathSegmentInfo) (Naviga
 	// Now handle array access
 	arr, ok := data.([]any)
 	if !ok {
-		return NavigationResult{Value: nil, Exists: false}, nil
+		return PropertyAccessResult{Value: nil, Exists: false}, nil
 	}
 
 	index := segment.Index
@@ -1302,20 +1314,20 @@ func (n *navigator) handleArrayAccess(data any, segment PathSegmentInfo) (Naviga
 
 	// Check bounds
 	if index < 0 || index >= len(arr) {
-		return NavigationResult{Value: nil, Exists: false}, nil
+		return PropertyAccessResult{Value: nil, Exists: false}, nil
 	}
 
-	return NavigationResult{Value: arr[index], Exists: true}, nil
+	return PropertyAccessResult{Value: arr[index], Exists: true}, nil
 }
 
 // handleArraySlice handles array slice operations
-func (n *navigator) handleArraySlice(data any, segment PathSegmentInfo) (NavigationResult, error) {
+func (n *navigator) handleArraySlice(data any, segment PathSegmentInfo) (PropertyAccessResult, error) {
 	// Handle property.array[start:end:step] syntax
 	if segment.Key != "" {
 		// First access the property
 		propResult := n.HandlePropertyAccess(data, segment.Key)
 		if !propResult.Exists {
-			return NavigationResult{Value: nil, Exists: false}, nil
+			return PropertyAccessResult{Value: nil, Exists: false}, nil
 		}
 		data = propResult.Value
 	}
@@ -1323,7 +1335,7 @@ func (n *navigator) handleArraySlice(data any, segment PathSegmentInfo) (Navigat
 	// Now handle array slice
 	arr, ok := data.([]any)
 	if !ok {
-		return NavigationResult{Value: nil, Exists: false}, nil
+		return PropertyAccessResult{Value: nil, Exists: false}, nil
 	}
 
 	// Parse slice parameters
@@ -1331,14 +1343,14 @@ func (n *navigator) handleArraySlice(data any, segment PathSegmentInfo) (Navigat
 
 	// Perform the slice operation
 	slicedArray := n.performArraySlice(arr, start, end, step)
-	return NavigationResult{Value: slicedArray, Exists: true}, nil
+	return PropertyAccessResult{Value: slicedArray, Exists: true}, nil
 }
 
 // handleExtraction handles extraction operations ({key} syntax)
-func (n *navigator) handleExtraction(data any, segment PathSegmentInfo) (NavigationResult, error) {
+func (n *navigator) handleExtraction(data any, segment PathSegmentInfo) (PropertyAccessResult, error) {
 	extractKey := segment.Key
 	if extractKey == "" {
-		return NavigationResult{Value: nil, Exists: false}, nil
+		return PropertyAccessResult{Value: nil, Exists: false}, nil
 	}
 
 	switch v := data.(type) {
@@ -1356,15 +1368,15 @@ func (n *navigator) handleExtraction(data any, segment PathSegmentInfo) (Navigat
 				results = append(results, nil)
 			}
 		}
-		return NavigationResult{Value: results, Exists: true}, nil
+		return PropertyAccessResult{Value: results, Exists: true}, nil
 
 	case map[string]any:
 		// Extract the key from the object
 		value, exists := v[extractKey]
-		return NavigationResult{Value: value, Exists: exists}, nil
+		return PropertyAccessResult{Value: value, Exists: exists}, nil
 
 	default:
-		return NavigationResult{Value: nil, Exists: false}, nil
+		return PropertyAccessResult{Value: nil, Exists: false}, nil
 	}
 }
 
@@ -1445,35 +1457,6 @@ func (n *navigator) parseArrayIndex(indexStr string) int {
 	return -2 // Invalid index marker
 }
 
-// tryConvertToArray tries to convert a map to an array if it has numeric keys
-func (n *navigator) tryConvertToArray(m map[string]any) ([]any, bool) {
-	if len(m) == 0 {
-		return []any{}, true
-	}
-
-	// Check if all keys are numeric and sequential
-	maxIndex := -1
-	for key := range m {
-		if index, err := strconv.Atoi(key); err == nil && index >= 0 {
-			if index > maxIndex {
-				maxIndex = index
-			}
-		} else {
-			return nil, false // Non-numeric key found
-		}
-	}
-
-	// Create array with proper size
-	arr := make([]any, maxIndex+1)
-	for key, value := range m {
-		if index, err := strconv.Atoi(key); err == nil {
-			arr[index] = value
-		}
-	}
-
-	return arr, true
-}
-
 // isBoundaryCase determines if a navigation failure is a boundary case
 func (n *navigator) isBoundaryCase(data any, segment PathSegmentInfo) bool {
 	switch segment.Type {
@@ -1488,22 +1471,11 @@ func (n *navigator) isBoundaryCase(data any, segment PathSegmentInfo) bool {
 
 // isPropertyBoundaryCase checks if property access failure is a boundary case
 func (n *navigator) isPropertyBoundaryCase(data any, property string) bool {
-	// Check if data is a valid object type that could have properties
 	switch data.(type) {
-	case map[string]any, map[any]any:
-		return true // Property doesn't exist on valid object - boundary case
-	case nil:
-		return true // Accessing property on nil - boundary case
-	case []any:
-		// Check if this is a numeric property access on array
-		if n.isNumericProperty(property) {
-			return true // Numeric property on array - boundary case
-		}
-		return true // Non-numeric property on array - boundary case
-	case string, float64, int, bool:
-		return true // Accessing property on primitive types - boundary case
+	case map[string]any, map[any]any, nil, []any, string, float64, int, bool:
+		return true
 	default:
-		return false // Unknown type - structural error
+		return false
 	}
 }
 
@@ -2149,61 +2121,6 @@ func (p *Processor) isNilOrEmpty(data any) bool {
 		return len(v) == 0
 	default:
 		return false
-	}
-}
-
-// Data conversion utilities
-
-// convertToStringMap converts a map[any]any to map[string]any
-func (p *Processor) convertToStringMap(data map[any]any) map[string]any {
-	result := make(map[string]any)
-	for key, value := range data {
-		if strKey, ok := key.(string); ok {
-			result[strKey] = value
-		} else {
-			result[fmt.Sprintf("%v", key)] = value
-		}
-	}
-	return result
-}
-
-// convertToAnyMap converts a map[string]any to map[any]any
-func (p *Processor) convertToAnyMap(data map[string]any) map[any]any {
-	result := make(map[any]any)
-	for key, value := range data {
-		result[key] = value
-	}
-	return result
-}
-
-// ensureStringMap ensures data is a map[string]any
-func (p *Processor) ensureStringMap(data any) (map[string]any, bool) {
-	switch v := data.(type) {
-	case map[string]any:
-		return v, true
-	case map[any]any:
-		return p.convertToStringMap(v), true
-	default:
-		return nil, false
-	}
-}
-
-// ensureArray ensures data is a []any
-func (p *Processor) ensureArray(data any) ([]any, bool) {
-	switch v := data.(type) {
-	case []any:
-		return v, true
-	default:
-		// Try to convert using reflection
-		rv := reflect.ValueOf(data)
-		if rv.Kind() == reflect.Slice {
-			result := make([]any, rv.Len())
-			for i := 0; i < rv.Len(); i++ {
-				result[i] = rv.Index(i).Interface()
-			}
-			return result, true
-		}
-		return nil, false
 	}
 }
 

@@ -87,19 +87,20 @@ func (it *Iterator) Next() (any, bool) {
 }
 
 // IterableValue wraps a value to provide convenient access methods
+// Note: Simplified to avoid resource leaks from holding processor/iterator references
 type IterableValue struct {
-	data      any
-	processor *Processor
-	iterator  *Iterator
+	data any
+}
+
+// NewIterableValue creates an IterableValue from data
+func NewIterableValue(data any) *IterableValue {
+	return &IterableValue{data: data}
 }
 
 // NewIterableValueWithIterator creates an IterableValue with an iterator
+// Deprecated: Use NewIterableValue instead - iterator reference is not needed
 func NewIterableValueWithIterator(data any, processor *Processor, iterator *Iterator) *IterableValue {
-	return &IterableValue{
-		data:      data,
-		processor: processor,
-		iterator:  iterator,
-	}
+	return &IterableValue{data: data}
 }
 
 // GetString returns a string value by key or path

@@ -1,4 +1,4 @@
-//go:build ignore
+//go:build example
 
 package main
 
@@ -128,22 +128,31 @@ func demonstrateExtraction(data string) {
 	fmt.Printf("   Department names: %v\n", deptNames)
 
 	// Extract all team names (nested)
-	teamNames, _ := json.Get(data, "departments{teams{name}}")
+	teamNames, _ := json.Get(data, "departments{teams}{name}")
 	fmt.Printf("   Team names (nested): %v\n", teamNames)
 
 	// Extract all member names from first department
-	memberNames, _ := json.Get(data, "departments[0].teams{members{name}}")
+	memberNames, _ := json.Get(data, "departments[0].teams{members}{name}")
 	fmt.Printf("   Member names: %v\n", memberNames)
 }
 
 func demonstrateFlatExtraction(data string) {
 	// Flat extraction - flattens all nested arrays into single array
-	allMembers, _ := json.Get(data, "departments{teams{flat:members{name}}}")
-	fmt.Printf("   All members (flat): %v\n", allMembers)
+	// Note: For complex nested structures with multiple extraction levels,
+	// using flat: at each level separately is recommended
 
-	// Extract all skills across entire organization
-	allSkills, _ := json.Get(data, "departments{teams{flat:members{flat:skills}}}")
-	fmt.Printf("   All skills (flat): %v\n", allSkills)
+	// Extract all teams (flat) from all departments
+	allTeams, _ := json.Get(data, "departments{flat:teams}")
+	fmt.Printf("   All teams (flat): %v\n", allTeams)
+
+	// Extract all team names from flattened teams
+	teamNames, _ := json.Get(data, "departments{flat:teams}{name}")
+	fmt.Printf("   All team names (flat): %v\n", teamNames)
+
+	// Extract all skills from all members (using chained flat extractions)
+	// This demonstrates extracting from deeply nested structures
+	allSkills, _ := json.Get(data, "departments{teams}{members}{flat:skills}")
+	fmt.Printf("   All skills by department: %v\n", allSkills)
 }
 
 func demonstrateIteration(data string) {
