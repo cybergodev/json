@@ -57,10 +57,18 @@ func (urm *UnifiedResourceManager) GetStringBuilder() *strings.Builder {
 }
 
 func (urm *UnifiedResourceManager) PutStringBuilder(sb *strings.Builder) {
-	if sb != nil && sb.Cap() <= 8192 {
-		sb.Reset()
-		urm.stringBuilderPool.Put(sb)
-		atomic.AddInt64(&urm.allocatedBuilders, -1)
+	// Stricter size limits to prevent memory bloat
+	const maxBuilderCap = 4096  // Reduced from 8192
+	const minBuilderCap = 128   // Reduced from default
+
+	if sb != nil {
+		c := sb.Cap()
+		if c >= minBuilderCap && c <= maxBuilderCap {
+			sb.Reset()
+			urm.stringBuilderPool.Put(sb)
+			atomic.AddInt64(&urm.allocatedBuilders, -1)
+		}
+		// oversized builders are discarded to prevent pool bloat
 	}
 }
 
@@ -72,7 +80,11 @@ func (urm *UnifiedResourceManager) GetPathSegments() []internal.PathSegment {
 }
 
 func (urm *UnifiedResourceManager) PutPathSegments(segments []internal.PathSegment) {
-	if segments != nil && cap(segments) <= 64 && cap(segments) >= 4 {
+	// Stricter segment pool limits
+	const maxSegmentCap = 32  // Reduced from 64
+	const minSegmentCap = 4   // Keep minimum
+
+	if segments != nil && cap(segments) >= minSegmentCap && cap(segments) <= maxSegmentCap {
 		segments = segments[:0]
 		urm.pathSegmentPool.Put(segments)
 		atomic.AddInt64(&urm.allocatedSegments, -1)
@@ -87,7 +99,11 @@ func (urm *UnifiedResourceManager) GetBuffer() []byte {
 }
 
 func (urm *UnifiedResourceManager) PutBuffer(buf []byte) {
-	if buf != nil && cap(buf) <= 16384 && cap(buf) >= 512 {
+	// Stricter buffer size limits
+	const maxBufferCap = 8192  // Reduced from 16384
+	const minBufferCap = 256   // Reduced from 512
+
+	if buf != nil && cap(buf) >= minBufferCap && cap(buf) <= maxBufferCap {
 		buf = buf[:0]
 		urm.bufferPool.Put(buf)
 		atomic.AddInt64(&urm.allocatedBuffers, -1)

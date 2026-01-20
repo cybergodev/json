@@ -62,7 +62,8 @@ func (e *JsonsError) Is(target error) bool {
 	}
 
 	// Check if target is the same type
-	if targetErr, ok := target.(*JsonsError); ok {
+	var targetErr *JsonsError
+	if errors.As(target, &targetErr) {
 		return e.Op == targetErr.Op && e.Err == targetErr.Err
 	}
 
@@ -112,71 +113,54 @@ func newTimeoutError(operation, path string, duration time.Duration) error {
 	return &JsonsError{Op: operation, Path: path, Message: fmt.Sprintf("operation timed out after %v", duration), Err: ErrOperationTimeout}
 }
 
-// ErrorClassifier provides error classification for better error handling
-type ErrorClassifier struct{}
-
-// NewErrorClassifier creates a new error classifier
-func NewErrorClassifier() *ErrorClassifier {
-	return &ErrorClassifier{}
-}
-
 // IsRetryable determines if an error is retryable
-func (ec *ErrorClassifier) IsRetryable(err error) bool {
+func IsRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
-
-	// Check for specific error types that are retryable
 	if errors.Is(err, ErrOperationTimeout) || errors.Is(err, ErrConcurrencyLimit) {
 		return true
 	}
-
-	// JsonsError with specific operations that might be retryable
-	if jsErr, ok := err.(*JsonsError); ok {
+	var jsErr *JsonsError
+	if errors.As(err, &jsErr) {
 		switch jsErr.Op {
 		case "cache_operation", "concurrent_operation":
 			return true
 		}
 	}
-
 	return false
 }
 
 // IsSecurityRelated determines if an error is security-related
-func (ec *ErrorClassifier) IsSecurityRelated(err error) bool {
+func IsSecurityRelated(err error) bool {
 	if err == nil {
 		return false
 	}
-
 	return errors.Is(err, ErrSecurityViolation)
 }
 
 // IsUserError determines if an error is caused by user input
-func (ec *ErrorClassifier) IsUserError(err error) bool {
+func IsUserError(err error) bool {
 	if err == nil {
 		return false
 	}
-
 	userErrors := []error{
 		ErrInvalidJSON, ErrPathNotFound, ErrTypeMismatch,
 		ErrInvalidPath, ErrUnsupportedPath,
 	}
-
 	for _, userErr := range userErrors {
 		if errors.Is(err, userErr) {
 			return true
 		}
 	}
-
 	return false
 }
 
 // GetErrorSuggestion provides suggestions for common errors
-func (ec *ErrorClassifier) GetErrorSuggestion(err error) string {
+func GetErrorSuggestion(err error) string {
 	if err == nil {
 		return ""
 	}
-
 	if errors.Is(err, ErrInvalidJSON) {
 		return "Check JSON syntax - ensure proper quotes, brackets, and commas"
 	}
@@ -201,7 +185,6 @@ func (ec *ErrorClassifier) GetErrorSuggestion(err error) string {
 	if errors.Is(err, ErrSecurityViolation) {
 		return "Input contains potentially dangerous patterns - review and sanitize"
 	}
-
 	return "Check the error message for specific details"
 }
 

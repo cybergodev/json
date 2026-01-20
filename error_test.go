@@ -83,8 +83,6 @@ func TestErrorHandling(t *testing.T) {
 func TestErrorClassifier(t *testing.T) {
 	helper := NewTestHelper(t)
 
-	classifier := NewErrorClassifier()
-
 	t.Run("IsSecurityRelated", func(t *testing.T) {
 		tests := []struct {
 			name     string
@@ -97,7 +95,7 @@ func TestErrorClassifier(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				result := classifier.IsSecurityRelated(tt.err)
+				result := IsSecurityRelated(tt.err)
 				helper.AssertEqual(tt.expected, result)
 			})
 		}
@@ -117,7 +115,7 @@ func TestErrorClassifier(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				result := classifier.IsUserError(tt.err)
+				result := IsUserError(tt.err)
 				helper.AssertEqual(tt.expected, result)
 			})
 		}
@@ -137,7 +135,7 @@ func TestErrorClassifier(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				result := classifier.IsRetryable(tt.err)
+				result := IsRetryable(tt.err)
 				helper.AssertEqual(tt.expected, result)
 			})
 		}
@@ -157,7 +155,7 @@ func TestErrorClassifier(t *testing.T) {
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				suggestion := classifier.GetErrorSuggestion(tt.err)
+				suggestion := GetErrorSuggestion(tt.err)
 				helper.AssertNotNil(suggestion)
 				helper.AssertTrue(
 					len(suggestion) > 0,
@@ -371,9 +369,6 @@ func TestErrorRecovery(t *testing.T) {
 	helper := NewTestHelper(t)
 
 	t.Run("RetryAfterTimeout", func(t *testing.T) {
-		// This tests the error classifier identifies retryable errors
-		classifier := NewErrorClassifier()
-
 		retryableErrors := []error{
 			ErrOperationTimeout,
 			ErrConcurrencyLimit,
@@ -381,14 +376,12 @@ func TestErrorRecovery(t *testing.T) {
 
 		for _, err := range retryableErrors {
 			t.Run(err.Error(), func(t *testing.T) {
-				helper.AssertTrue(classifier.IsRetryable(err))
+				helper.AssertTrue(IsRetryable(err))
 			})
 		}
 	})
 
 	t.Run("NoRetryForInvalidData", func(t *testing.T) {
-		classifier := NewErrorClassifier()
-
 		nonRetryableErrors := []error{
 			ErrInvalidJSON,
 			ErrInvalidPath,
@@ -397,7 +390,7 @@ func TestErrorRecovery(t *testing.T) {
 
 		for _, err := range nonRetryableErrors {
 			t.Run(err.Error(), func(t *testing.T) {
-				helper.AssertFalse(classifier.IsRetryable(err))
+				helper.AssertFalse(IsRetryable(err))
 			})
 		}
 	})

@@ -630,7 +630,7 @@ type CacheKey struct {
 	Options   string
 }
 
-// RateLimiter interface for rate limiting
+// RateLimiter interface for rate limiting (reserved for future use)
 type RateLimiter interface {
 	Allow() bool
 	Wait(ctx context.Context) error

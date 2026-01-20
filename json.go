@@ -44,7 +44,6 @@ var (
 	defaultProcessorMu sync.RWMutex
 )
 
-// getDefaultProcessor returns the global default processor with double-checked locking
 func getDefaultProcessor() *Processor {
 	defaultProcessorMu.RLock()
 	if defaultProcessor != nil && !defaultProcessor.IsClosed() {
@@ -101,32 +100,26 @@ func GetTyped[T any](jsonStr, path string, opts ...*ProcessorOptions) (T, error)
 	return GetTypedWithProcessor[T](getDefaultProcessor(), jsonStr, path, opts...)
 }
 
-// GetString retrieves a string value from JSON
 func GetString(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
 	return GetTyped[string](jsonStr, path, opts...)
 }
 
-// GetInt retrieves an int value from JSON
 func GetInt(jsonStr, path string, opts ...*ProcessorOptions) (int, error) {
 	return GetTyped[int](jsonStr, path, opts...)
 }
 
-// GetFloat64 retrieves a float64 value from JSON
 func GetFloat64(jsonStr, path string, opts ...*ProcessorOptions) (float64, error) {
 	return GetTyped[float64](jsonStr, path, opts...)
 }
 
-// GetBool retrieves a bool value from JSON
 func GetBool(jsonStr, path string, opts ...*ProcessorOptions) (bool, error) {
 	return GetTyped[bool](jsonStr, path, opts...)
 }
 
-// GetArray retrieves an array from JSON
 func GetArray(jsonStr, path string, opts ...*ProcessorOptions) ([]any, error) {
 	return GetTyped[[]any](jsonStr, path, opts...)
 }
 
-// GetObject retrieves an object from JSON
 func GetObject(jsonStr, path string, opts ...*ProcessorOptions) (map[string]any, error) {
 	return GetTyped[map[string]any](jsonStr, path, opts...)
 }
@@ -142,13 +135,11 @@ func GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOp
 
 // GetTypedWithDefault retrieves a typed value with a default fallback
 func GetTypedWithDefault[T any](jsonStr, path string, defaultValue T, opts ...*ProcessorOptions) T {
-	// First get the raw value to check if it was null in JSON
 	rawValue, rawErr := Get(jsonStr, path, opts...)
 	if rawErr != nil || rawValue == nil {
 		return defaultValue
 	}
 
-	// Now get the typed value
 	value, err := GetTyped[T](jsonStr, path, opts...)
 	if err != nil {
 		return defaultValue

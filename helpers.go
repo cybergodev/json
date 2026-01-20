@@ -314,7 +314,8 @@ func handleLargeNumberConversion[T any](value any, path string) (conversionResul
 }
 
 
-// Type conversion helper functions
+// Type conversion helper functions are now in type_conversion.go
+// These functions are deprecated; use the UnifiedTypeConversion system instead
 
 func convertToInt(value any) (int, error) {
 	if result, ok := ConvertToInt(value); ok {
@@ -346,20 +347,6 @@ func convertToBool(value any) (bool, error) {
 		return result, nil
 	}
 	return false, fmt.Errorf("cannot convert %T to bool", value)
-}
-
-func convertToArray(value any) ([]any, error) {
-	if arr, ok := value.([]any); ok {
-		return arr, nil
-	}
-	return nil, fmt.Errorf("cannot convert %T to []any", value)
-}
-
-func convertToObject(value any) (map[string]any, error) {
-	if obj, ok := value.(map[string]any); ok {
-		return obj, nil
-	}
-	return nil, fmt.Errorf("cannot convert %T to map[string]any", value)
 }
 
 // IteratorControl represents control flags for iteration

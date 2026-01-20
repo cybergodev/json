@@ -353,16 +353,17 @@ func getEncoderBuffer() *bytes.Buffer {
 }
 
 // putEncoderBuffer returns a bytes.Buffer to the encoder pool
-// PERFORMANCE FIX: Stricter size limits prevent memory bloat
+// Consistent with resource_manager.go limits to prevent memory bloat
 func putEncoderBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 8 * 1024 // CRITICAL FIX: Reduced from 16KB to 8KB
-	const minPoolBufferSize = 256      // CRITICAL FIX: Reduced from 512 to 256
+	const maxPoolBufferSize = 8 * 1024 // 8KB max
+	const minPoolBufferSize = 256      // 256B min
 	if buf != nil {
 		c := buf.Cap()
 		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
-			buf.Reset() // Ensure clean state
+			buf.Reset()
 			encoderBufferPool.Put(buf)
 		}
+		// oversized buffers are discarded
 	}
 }
 

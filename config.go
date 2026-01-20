@@ -22,12 +22,12 @@ func DefaultConfig() *Config {
 		CreatePaths:               false,
 		CleanupNulls:              false,
 		CompactArrays:             false,
-		EnableMetrics:    false,
-		EnableHealthCheck: false,
-		AllowComments:    false,
-		PreserveNumbers:  false,
-		ValidateInput:    true,
-		ValidateFilePath: true,
+		EnableMetrics:             false,
+		EnableHealthCheck:         false,
+		AllowComments:             false,
+		PreserveNumbers:           false,
+		ValidateInput:             true,
+		ValidateFilePath:          true,
 	}
 }
 
@@ -116,17 +116,17 @@ func DefaultEncodeConfig() *EncodeConfig {
 
 // NewPrettyConfig returns configuration for pretty-printed JSON
 func NewPrettyConfig() *EncodeConfig {
-	config := DefaultEncodeConfig()
-	config.Pretty = true
-	config.Indent = "  "
-	return config
+	cfg := DefaultEncodeConfig()
+	cfg.Pretty = true
+	cfg.Indent = "  "
+	return cfg
 }
 
 // NewCompactConfig returns configuration for compact JSON
 func NewCompactConfig() *EncodeConfig {
-	config := DefaultEncodeConfig()
-	config.Pretty = false
-	return config
+	cfg := DefaultEncodeConfig()
+	cfg.Pretty = false
+	return cfg
 }
 
 // Clone creates a deep copy of the configuration
