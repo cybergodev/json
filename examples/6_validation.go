@@ -72,7 +72,7 @@ func demonstrateFormatValidation() {
 
 	fmt.Println("   Format validation results:")
 	for _, tc := range testCases {
-		valid := json.IsValidJson(tc.data)
+		valid := json.IsValidJSON(tc.data)
 		status := "✓ valid"
 		if !valid {
 			status = "✗ invalid"
@@ -225,7 +225,7 @@ func demonstrateSecurityValidation() {
 
 	fmt.Println("   Security validation with HighSecurityConfig:")
 	for _, tc := range testCases {
-		valid := json.IsValidJson(tc.data)
+		valid := json.IsValidJSON(tc.data)
 		status := "✓"
 		if !valid {
 			status = "✗"

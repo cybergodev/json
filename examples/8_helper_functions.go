@@ -14,7 +14,7 @@ import (
 // for validation, comparison, merging, and data manipulation.
 //
 // Topics covered:
-// - IsValidJson and IsValidPath
+// - IsValidJSON and IsValidPath
 // - DeepCopy for cloning JSON data
 // - CompareJson for JSON comparison
 // - MergeJson for combining JSON objects
@@ -75,9 +75,9 @@ func demonstrateValidation() {
 		{"Empty string", ``},
 	}
 
-	fmt.Println("   IsValidJson results:")
+	fmt.Println("   IsValidJSON results:")
 	for _, tc := range testCases {
-		valid := json.IsValidJson(tc.data)
+		valid := json.IsValidJSON(tc.data)
 		status := "✓"
 		if !valid {
 			status = "✗"

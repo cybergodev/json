@@ -115,7 +115,7 @@ func demonstrateHTMLEscaping() {
 
 	data := HTMLContent{
 		Title:   "Hello <script>alert('XSS')</script>",
-		Content: "Visit <a href='http://example.com'>here</a>",
+		Content: "Visit <a href='https://example.com'>here</a>",
 	}
 
 	// With HTML escaping (default, safe for web)

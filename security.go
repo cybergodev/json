@@ -89,21 +89,50 @@ func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 		return newSecurityError("validate_json_security", "null byte injection detected")
 	}
 
-	// Check dangerous patterns
+	// Use tokenization-based validation instead of simple Contains
 	lowerJSON := strings.ToLower(jsonStr)
-	dangerousPatterns := []string{
-		"__proto__", "constructor", "prototype",
-		"<script", "javascript:", "vbscript:",
-		"eval(", "function(",
+
+	// Check for dangerous JavaScript patterns with word boundaries
+	dangerousPatterns := []struct {
+		pattern string
+		name    string
+	}{
+		{"__proto__", "prototype pollution"},
+		{"constructor[", "constructor access"},
+		{"prototype.", "prototype manipulation"},
+		{"<script", "script tag injection"},
+		{"javascript:", "javascript protocol"},
+		{"vbscript:", "vbscript protocol"},
+		{"eval(", "dynamic code execution"},
+		{"function(", "function expression"},
+		{"setTimeout(", "timer manipulation"},
+		{"setInterval(", "interval manipulation"},
+		{"require(", "code injection"},
 	}
 
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(lowerJSON, pattern) {
-			return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", pattern))
+	for _, dp := range dangerousPatterns {
+		if idx := strings.Index(lowerJSON, dp.pattern); idx != -1 {
+			// Verify it's not part of a larger safe word by checking boundaries
+			if sv.isDangerousContext(lowerJSON, idx, len(dp.pattern)) {
+				return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
+			}
 		}
 	}
 
 	return nil
+}
+
+// isDangerousContext checks if a pattern match is in a dangerous context
+func (sv *SecurityValidator) isDangerousContext(s string, idx, patternLen int) bool {
+	// Check if the pattern is standalone (not part of a larger word)
+	before := idx == 0 || !isWordChar(s[idx-1])
+	after := idx+patternLen >= len(s) || !isWordChar(s[idx+patternLen])
+	return before && after
+}
+
+// isWordChar returns true if the character is part of a word
+func isWordChar(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 }
 
 func (sv *SecurityValidator) validatePathSecurity(path string) error {

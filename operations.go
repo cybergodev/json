@@ -8,13 +8,9 @@ import (
 
 	"github.com/cybergodev/json/internal"
 )
-
-// ExtractionGroup represents a group of consecutive extraction operations
 type ExtractionGroup struct {
 	Segments []PathSegment
 }
-
-// detectConsecutiveExtractions detects if there are consecutive extraction operations
 func (p *Processor) detectConsecutiveExtractions(segments []PathSegment) []ExtractionGroup {
 	var groups []ExtractionGroup
 	var currentGroup []PathSegment
@@ -36,8 +32,6 @@ func (p *Processor) detectConsecutiveExtractions(segments []PathSegment) []Extra
 
 	return groups
 }
-
-// handleArrayAccess handles array access with negative index support
 func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAccessResult {
 	var arrayData any = data
 	if segment.Key != "" {
@@ -61,13 +55,9 @@ func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAcc
 
 	return PropertyAccessResult{Value: nil, Exists: false}
 }
-
-// parseArrayIndex delegates to centralized ArrayHelper
 func (p *Processor) parseArrayIndex(indexStr string) int {
 	return globalArrayHelper.ParseArrayIndex(indexStr)
 }
-
-// handleArraySlice handles array slicing operations
 func (p *Processor) handleArraySlice(data any, segment PathSegment) PropertyAccessResult {
 	arr, ok := data.([]any)
 	if !ok {
@@ -77,8 +67,6 @@ func (p *Processor) handleArraySlice(data any, segment PathSegment) PropertyAcce
 	result := p.performArraySlice(arr, segment.Start, segment.End, segment.Step)
 	return PropertyAccessResult{Value: result, Exists: true}
 }
-
-// performArraySlice performs array slicing with step support
 func (p *Processor) performArraySlice(arr []any, start, end, step *int) []any {
 	if len(arr) == 0 {
 		return []any{}
@@ -116,8 +104,6 @@ func (p *Processor) performArraySlice(arr []any, start, end, step *int) []any {
 	}
 	return p.reverseSlice(arr, actualStart, actualEnd, actualStep)
 }
-
-// forwardSlice performs forward array slicing
 func (p *Processor) forwardSlice(arr []any, start, end, step int) []any {
 	if start < 0 {
 		start = 0
@@ -135,8 +121,6 @@ func (p *Processor) forwardSlice(arr []any, start, end, step int) []any {
 	}
 	return result
 }
-
-// reverseSlice performs reverse array slicing
 func (p *Processor) reverseSlice(arr []any, start, end, step int) []any {
 	if start >= len(arr) {
 		start = len(arr) - 1
@@ -151,8 +135,6 @@ func (p *Processor) reverseSlice(arr []any, start, end, step int) []any {
 	}
 	return result
 }
-
-// parseSliceParameters parses slice parameters from a string like "1:5:2"
 func (p *Processor) parseSliceParameters(segmentValue string, arrayLength int) (start, end, step int, err error) {
 	// Remove brackets if present
 	if strings.HasPrefix(segmentValue, "[") && strings.HasSuffix(segmentValue, "]") {
@@ -198,8 +180,6 @@ func (p *Processor) parseSliceParameters(segmentValue string, arrayLength int) (
 
 	return start, end, step, nil
 }
-
-// parseSliceParametersWithExtension parses slice parameters with array extension support
 func (p *Processor) parseSliceParametersWithExtension(segmentValue string, arrayLength int) (start, end, step int, err error) {
 	start, end, step, err = p.parseSliceParameters(segmentValue, arrayLength)
 	if err != nil {
@@ -224,13 +204,9 @@ func (p *Processor) parseSliceParametersWithExtension(segmentValue string, array
 
 	return start, end, step, nil
 }
-
-// isSliceSyntax checks if a segment contains slice syntax (contains colons)
 func (p *Processor) isSliceSyntax(segment string) bool {
 	return strings.Contains(segment, ":")
 }
-
-// parseSliceSegment parses a slice segment and populates its properties
 func (p *Processor) parseSliceSegment(segment *PathSegment) error {
 	if segment == nil {
 		return fmt.Errorf("segment cannot be nil")
@@ -249,14 +225,10 @@ func (p *Processor) parseSliceSegment(segment *PathSegment) error {
 
 	return nil
 }
-
-// parseSliceFromSegment extracts slice parameters from segment value
 func (p *Processor) parseSliceFromSegment(segmentValue string) (start, end, step int) {
 	start, end, step, _ = p.parseSliceParameters(segmentValue, 0)
 	return start, end, step
 }
-
-// isArrayIndex checks if a segment represents an array index
 func (p *Processor) isArrayIndex(segment string) bool {
 	// Remove brackets if present
 	if strings.HasPrefix(segment, "[") && strings.HasSuffix(segment, "]") {
@@ -267,20 +239,14 @@ func (p *Processor) isArrayIndex(segment string) bool {
 	_, err := strconv.Atoi(segment)
 	return err == nil
 }
-
-// isNumericIndex checks if a string represents a numeric index
 func (p *Processor) isNumericIndex(segment string) bool {
 	_, err := strconv.Atoi(segment)
 	return err == nil
 }
-
-// isNumericProperty checks if a property name is numeric
 func (p *Processor) isNumericProperty(property string) bool {
 	_, err := strconv.Atoi(property)
 	return err == nil
 }
-
-// navigateToArrayIndex navigates to a specific array index
 func (p *Processor) navigateToArrayIndex(current any, index int, createPaths bool) (any, error) {
 	switch v := current.(type) {
 	case []any:
@@ -292,8 +258,6 @@ func (p *Processor) navigateToArrayIndex(current any, index int, createPaths boo
 		return nil, fmt.Errorf("cannot access array index %d on type %T", index, current)
 	}
 }
-
-// navigateToArrayIndexWithNegative navigates to array index with negative index support
 func (p *Processor) navigateToArrayIndexWithNegative(current any, index int, createPaths bool) (any, error) {
 	switch v := current.(type) {
 	case []any:
@@ -314,8 +278,6 @@ func (p *Processor) navigateToArrayIndexWithNegative(current any, index int, cre
 		return nil, fmt.Errorf("cannot access array index %d on type %T", index, current)
 	}
 }
-
-// extendAndSetArray extends an array and sets a value at the specified index
 func (p *Processor) extendAndSetArray(arr []any, index int, value any) error {
 	if index < 0 {
 		return fmt.Errorf("cannot extend array with negative index: %d", index)
@@ -333,8 +295,6 @@ func (p *Processor) extendAndSetArray(arr []any, index int, value any) error {
 	arr[index] = value
 	return nil
 }
-
-// assignValueToSlice assigns a value to a slice range
 func (p *Processor) assignValueToSlice(arr []any, start, end, step int, value any) error {
 	if start < 0 || end > len(arr) || start >= end {
 		return fmt.Errorf("invalid slice range: [%d:%d] for array length %d", start, end, len(arr))
@@ -351,8 +311,6 @@ func (p *Processor) assignValueToSlice(arr []any, start, end, step int, value an
 
 	return nil
 }
-
-// cleanupArrayNulls removes null values from an array
 func (p *Processor) cleanupArrayNulls(arr []any) {
 	writeIndex := 0
 	for readIndex := 0; readIndex < len(arr); readIndex++ {
@@ -372,8 +330,6 @@ func (p *Processor) cleanupArrayNulls(arr []any) {
 	// Truncate the slice
 	arr = arr[:writeIndex]
 }
-
-// cleanupArrayWithReconstruction cleans up an array and returns a new one
 func (p *Processor) cleanupArrayWithReconstruction(arr []any, compactArrays bool) []any {
 	if !compactArrays {
 		return arr
@@ -394,8 +350,6 @@ func (p *Processor) cleanupArrayWithReconstruction(arr []any, compactArrays bool
 
 	return result
 }
-
-// extendArrayInPath extends an array at a specific path
 func (p *Processor) extendArrayInPath(data any, segments []PathSegment, currentLen, requiredLen int) error {
 	if requiredLen <= currentLen {
 		return nil // No extension needed
@@ -449,13 +403,9 @@ func (p *Processor) extendArrayInPath(data any, segments []PathSegment, currentL
 
 	return nil
 }
-
-// extendArrayAtPath extends an array at the specified path
 func (p *Processor) extendArrayAtPath(data any, segments []PathSegment, currentLen, requiredLen int) error {
 	return p.extendArrayInPath(data, segments, currentLen, requiredLen)
 }
-
-// replaceArrayInParentContext replaces an array in its parent context
 func (p *Processor) replaceArrayInParentContext(data any, segments []PathSegment, arrayIndex int, newArray []any) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
@@ -513,1393 +463,6 @@ func (p *Processor) replaceArrayInParentContext(data any, segments []PathSegment
 
 	return nil
 }
-
-// arrayOperations provides array-related operations
-type arrayOperations struct {
-	utils *processorUtils
-}
-
-// NewArrayOperations creates a new array operations instance
-func NewArrayOperations(utils *processorUtils) *arrayOperations {
-	return &arrayOperations{
-		utils: utils,
-	}
-}
-
-// HandleArrayAccess handles array index access
-func (ao *arrayOperations) HandleArrayAccess(data any, index int) PropertyAccessResult {
-	arr, ok := data.([]any)
-	if !ok {
-		return PropertyAccessResult{Value: nil, Exists: false}
-	}
-
-	// Handle negative indices
-	normalizedIndex := ao.HandleNegativeIndex(index, len(arr))
-
-	// Check bounds
-	if !ao.ValidateArrayBounds(normalizedIndex, len(arr)) {
-		return PropertyAccessResult{Value: nil, Exists: false}
-	}
-
-	return PropertyAccessResult{Value: arr[normalizedIndex], Exists: true}
-}
-
-// HandleArraySlice handles array slice operations
-func (ao *arrayOperations) HandleArraySlice(data any, start, end, step int) PropertyAccessResult {
-	arr, ok := data.([]any)
-	if !ok {
-		return PropertyAccessResult{Value: nil, Exists: false}
-	}
-
-	// Normalize parameters
-	normalizedStart := ao.HandleNegativeIndex(start, len(arr))
-	normalizedEnd := ao.HandleNegativeIndex(end, len(arr))
-
-	// Clamp to valid bounds
-	normalizedStart = ao.clampIndex(normalizedStart, len(arr))
-	normalizedEnd = ao.clampIndex(normalizedEnd, len(arr))
-
-	// Ensure start <= end for positive step
-	if step > 0 && normalizedStart > normalizedEnd {
-		normalizedStart = normalizedEnd
-	}
-
-	// Perform the slice operation
-	slicedArray := ao.performArraySlice(arr, normalizedStart, normalizedEnd, step)
-	return PropertyAccessResult{Value: slicedArray, Exists: true}
-}
-
-// ParseArrayIndex delegates to centralized ArrayHelper
-func (ao *arrayOperations) ParseArrayIndex(indexStr string) int {
-	return globalArrayHelper.ParseArrayIndex(indexStr)
-}
-
-// HandleNegativeIndex delegates to centralized ArrayHelper
-func (ao *arrayOperations) HandleNegativeIndex(index, length int) int {
-	return globalArrayHelper.NormalizeIndex(index, length)
-}
-
-// ValidateArrayBounds delegates to centralized ArrayHelper
-func (ao *arrayOperations) ValidateArrayBounds(index, length int) bool {
-	return globalArrayHelper.ValidateBounds(index, length)
-}
-
-// performArraySlice performs the actual array slicing with step support
-func (ao *arrayOperations) performArraySlice(arr []any, start, end, step int) []any {
-	if step == 0 {
-		step = 1 // Avoid division by zero
-	}
-
-	if step == 1 {
-		// Simple slice without step
-		if start >= 0 && end <= len(arr) && start <= end {
-			return arr[start:end]
-		}
-		return []any{}
-	}
-
-	// Slice with step
-	var result []any
-	if step > 0 {
-		// Forward iteration
-		for i := start; i < end && i < len(arr); i += step {
-			if i >= 0 {
-				result = append(result, arr[i])
-			}
-		}
-	} else {
-		// Backward iteration
-		for i := start; i > end && i >= 0; i += step {
-			if i < len(arr) {
-				result = append(result, arr[i])
-			}
-		}
-	}
-
-	return result
-}
-
-// clampIndex delegates to centralized ArrayHelper
-func (ao *arrayOperations) clampIndex(index, length int) int {
-	return globalArrayHelper.ClampIndex(index, length)
-}
-
-// ParseSliceParameters parses slice parameters from a string like "[start:end:step]"
-func (ao *arrayOperations) ParseSliceParameters(sliceStr string, arrayLength int) (start, end, step int, err error) {
-	// Default values
-	start = 0
-	end = arrayLength
-	step = 1
-
-	// Remove brackets
-	if strings.HasPrefix(sliceStr, "[") && strings.HasSuffix(sliceStr, "]") {
-		sliceStr = sliceStr[1 : len(sliceStr)-1]
-	}
-
-	// Split by colons
-	parts := strings.Split(sliceStr, ":")
-	if len(parts) < 2 {
-		return 0, 0, 0, fmt.Errorf("slice must have at least start:end format")
-	}
-
-	// Parse start
-	if parts[0] != "" {
-		if start, err = strconv.Atoi(parts[0]); err != nil {
-			return 0, 0, 0, fmt.Errorf("invalid start index: %s", parts[0])
-		}
-	}
-
-	// Parse end
-	if parts[1] != "" {
-		if end, err = strconv.Atoi(parts[1]); err != nil {
-			return 0, 0, 0, fmt.Errorf("invalid end index: %s", parts[1])
-		}
-	}
-
-	// Parse step (optional)
-	if len(parts) > 2 && parts[2] != "" {
-		if step, err = strconv.Atoi(parts[2]); err != nil {
-			return 0, 0, 0, fmt.Errorf("invalid step: %s", parts[2])
-		}
-		if step == 0 {
-			return 0, 0, 0, fmt.Errorf("step cannot be zero")
-		}
-	}
-
-	return start, end, step, nil
-}
-
-// HandleComplexArrayAccess handles complex array access patterns like "property[index]"
-func (ao *arrayOperations) HandleComplexArrayAccess(data any, segmentValue string) PropertyAccessResult {
-	// Find bracket positions
-	bracketStart := strings.IndexByte(segmentValue, '[')
-	bracketEnd := strings.IndexByte(segmentValue, ']')
-
-	if bracketStart == -1 || bracketEnd == -1 || bracketEnd <= bracketStart {
-		return PropertyAccessResult{Value: nil, Exists: false}
-	}
-
-	property := segmentValue[:bracketStart]
-	indexStr := segmentValue[bracketStart+1 : bracketEnd]
-
-	// First access the property if specified
-	var arrayData any = data
-	if property != "" {
-		if obj, ok := data.(map[string]any); ok {
-			if val, exists := obj[property]; exists {
-				arrayData = val
-			} else {
-				return PropertyAccessResult{Value: nil, Exists: false}
-			}
-		}
-	}
-
-	// Parse and handle array access
-	index := ao.ParseArrayIndex(indexStr)
-	if index == InvalidArrayIndex {
-		return PropertyAccessResult{Value: nil, Exists: false}
-	}
-
-	return ao.HandleArrayAccess(arrayData, index)
-}
-
-// HandleComplexArraySlice handles complex array slice patterns like "property[start:end:step]"
-func (ao *arrayOperations) HandleComplexArraySlice(data any, segmentValue string) PropertyAccessResult {
-	// Find bracket positions
-	bracketStart := strings.IndexByte(segmentValue, '[')
-	bracketEnd := strings.IndexByte(segmentValue, ']')
-
-	if bracketStart == -1 || bracketEnd == -1 || bracketEnd <= bracketStart {
-		return PropertyAccessResult{Value: nil, Exists: false}
-	}
-
-	property := segmentValue[:bracketStart]
-	sliceStr := segmentValue[bracketStart : bracketEnd+1]
-
-	// First access the property if specified
-	var arrayData any = data
-	if property != "" {
-		if obj, ok := data.(map[string]any); ok {
-			if val, exists := obj[property]; exists {
-				arrayData = val
-			} else {
-				return PropertyAccessResult{Value: nil, Exists: false}
-			}
-		}
-	}
-
-	// Get array length for slice parsing
-	arr, ok := arrayData.([]any)
-	if !ok {
-		return PropertyAccessResult{Value: nil, Exists: false}
-	}
-
-	// Parse slice parameters
-	start, end, step, err := ao.ParseSliceParameters(sliceStr, len(arr))
-	if err != nil {
-		return PropertyAccessResult{Value: nil, Exists: false}
-	}
-
-	return ao.HandleArraySlice(arrayData, start, end, step)
-}
-
-// ExtendArray delegates to centralized ArrayHelper
-func (ao *arrayOperations) ExtendArray(arr []any, targetLength int) []any {
-	return globalArrayHelper.ExtendArray(arr, targetLength)
-}
-
-// CompactArray delegates to centralized ArrayHelper
-func (ao *arrayOperations) CompactArray(arr []any) []any {
-	return globalArrayHelper.CompactArray(arr)
-}
-
-// ReverseArray reverses an array in place
-func (ao *arrayOperations) ReverseArray(arr []any) {
-	for i, j := 0, len(arr)-1; i < j; i, j = i+1, j-1 {
-		arr[i], arr[j] = arr[j], arr[i]
-	}
-}
-
-// IsValidSliceRange checks if a slice range is valid
-func (ao *arrayOperations) IsValidSliceRange(start, end, step, arrayLength int) bool {
-	// Normalize negative indices
-	normalizedStart := ao.HandleNegativeIndex(start, arrayLength)
-	normalizedEnd := ao.HandleNegativeIndex(end, arrayLength)
-
-	// Check bounds
-	if normalizedStart < 0 || normalizedStart > arrayLength {
-		return false
-	}
-	if normalizedEnd < 0 || normalizedEnd > arrayLength {
-		return false
-	}
-
-	// Check step
-	if step == 0 {
-		return false
-	}
-
-	// For positive step, start should be <= end
-	if step > 0 && normalizedStart > normalizedEnd {
-		return false
-	}
-
-	// For negative step, start should be >= end
-	if step < 0 && normalizedStart < normalizedEnd {
-		return false
-	}
-
-	return true
-}
-
-// GetArrayElement delegates to centralized ArrayHelper
-func (ao *arrayOperations) GetArrayElement(arr []any, index int) (any, bool) {
-	return globalArrayHelper.GetElement(arr, index)
-}
-
-// SetArrayElement safely sets an element in an array with bounds checking
-func (ao *arrayOperations) SetArrayElement(arr []any, index int, value any) error {
-	if !globalArrayHelper.SetElement(arr, index, value) {
-		return fmt.Errorf("array index %d out of bounds for array of length %d", index, len(arr))
-	}
-	return nil
-}
-
-// DeletionTarget represents a specific location in the original data structure that needs to be deleted
-type DeletionTarget struct {
-	Container any    // The container (array or object) that holds the value to delete
-	Key       any    // The key (string for objects, int for arrays) to delete
-	Path      string // The path to this target for debugging
-}
-
-// ComplexDeleteProcessor handles complex path deletions with reverse mapping
-type ComplexDeleteProcessor struct {
-	processor *Processor
-}
-
-// NewComplexDeleteProcessor creates a new complex delete processor
-func NewComplexDeleteProcessor(p *Processor) *ComplexDeleteProcessor {
-	return &ComplexDeleteProcessor{processor: p}
-}
-
-// DeleteWithReverseMapping performs deletion using reverse mapping for complex paths
-func (cdp *ComplexDeleteProcessor) DeleteWithReverseMapping(data any, path string) error {
-	// For complex paths with extraction followed by array operations,
-	// we interpret this as deleting the entire extracted field from all matching objects
-
-	// Check if this path has extraction followed by array operations
-	if cdp.hasExtractionWithArrayOps(path) {
-		return cdp.deleteExtractedFieldsFromAllObjects(data, path)
-	}
-
-	// Parse the path into segments for other cases
-	segments, err := internal.ParsePath(path)
-	if err != nil {
-		return fmt.Errorf("failed to parse path '%s': %w", path, err)
-	}
-
-	if len(segments) == 0 {
-		return fmt.Errorf("empty path")
-	}
-
-	// Check if this is a complex path that needs reverse mapping
-	if cdp.needsReverseMapping(segments) {
-		return cdp.deleteWithReverseMapping(data, segments)
-	}
-
-	// Fall back to standard deletion for simple paths
-	return cdp.processor.deleteValueWithInternalSegments(data, segments)
-}
-
-// needsReverseMapping determines if a path requires reverse mapping
-func (cdp *ComplexDeleteProcessor) needsReverseMapping(segments []internal.PathSegment) bool {
-	// Look for extraction followed by array index/slice
-	for i := 0; i < len(segments)-1; i++ {
-		if segments[i].Type == internal.ExtractSegment {
-			nextSegment := segments[i+1]
-			if nextSegment.Type == internal.ArrayIndexSegment || nextSegment.Type == internal.ArraySliceSegment {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// deleteWithReverseMapping performs the actual reverse mapping deletion
-func (cdp *ComplexDeleteProcessor) deleteWithReverseMapping(data any, segments []internal.PathSegment) error {
-	// Find the last extraction segment that is followed by array operations
-	lastExtractionIndex := -1
-	for i := len(segments) - 1; i >= 0; i-- {
-		if segments[i].Type == internal.ExtractSegment {
-			// Check if there are array operations after this extraction
-			if i < len(segments)-1 {
-				nextSegment := segments[i+1]
-				if nextSegment.Type == internal.ArrayIndexSegment || nextSegment.Type == internal.ArraySliceSegment {
-					lastExtractionIndex = i
-					break
-				}
-			}
-		}
-	}
-
-	if lastExtractionIndex == -1 {
-		// No extraction with post-operations found, use standard deletion
-		return cdp.processor.deleteValueWithInternalSegments(data, segments)
-	}
-
-	// Split segments: everything before the last extraction, the extraction itself, and post-extraction
-	preextractionSegments := segments[:lastExtractionIndex]
-	extractionSegment := segments[lastExtractionIndex]
-	postextractionSegments := segments[lastExtractionIndex+1:]
-
-	// Navigate to the container that holds the data to be extracted
-	container, err := cdp.navigateToContainer(data, preextractionSegments)
-	if err != nil {
-		return fmt.Errorf("failed to navigate to extraction container: %w", err)
-	}
-
-	// Find all deletion targets using reverse mapping
-	targets, err := cdp.findDeletionTargets(container, extractionSegment, postextractionSegments)
-	if err != nil {
-		return fmt.Errorf("failed to find deletion targets: %w", err)
-	}
-
-	// Execute deletions on all targets
-	return cdp.executeDeletions(targets)
-}
-
-// navigateToContainer navigates to the container that holds the data to be extracted
-func (cdp *ComplexDeleteProcessor) navigateToContainer(data any, segments []internal.PathSegment) (any, error) {
-	current := data
-	for _, segment := range segments {
-		switch segment.Type {
-		case internal.PropertySegment:
-			if obj, ok := current.(map[string]any); ok {
-				if next, exists := obj[segment.Key]; exists {
-					current = next
-				} else {
-					return nil, fmt.Errorf("property '%s' not found", segment.Key)
-				}
-			} else {
-				return nil, fmt.Errorf("cannot access property '%s' on type %T", segment.Key, current)
-			}
-		case internal.ArrayIndexSegment:
-			if arr, ok := current.([]any); ok {
-				index := segment.Index
-				if index < 0 {
-					index = len(arr) + index
-				}
-				if index >= 0 && index < len(arr) {
-					current = arr[index]
-				} else {
-					return nil, fmt.Errorf("array index %d out of bounds", segment.Index)
-				}
-			} else {
-				return nil, fmt.Errorf("cannot access array index on type %T", current)
-			}
-		case internal.ExtractSegment:
-			// For pre-extraction segments, we need to handle extraction differently
-			// This should not happen in pre-extraction segments, but let's handle it gracefully
-			return nil, fmt.Errorf("unexpected extraction segment in pre-extraction navigation")
-		default:
-			return nil, fmt.Errorf("unsupported segment type in pre-extraction: %v", segment.Type)
-		}
-	}
-	return current, nil
-}
-
-// findDeletionTargets finds all specific locations that need to be deleted
-func (cdp *ComplexDeleteProcessor) findDeletionTargets(container any, extractionSegment internal.PathSegment, postextractionSegments []internal.PathSegment) ([]DeletionTarget, error) {
-	var targets []DeletionTarget
-
-	// Handle different container types
-	switch v := container.(type) {
-	case []any:
-		// Extract from array elements
-		for i, item := range v {
-			itemTargets, err := cdp.findTargetsInItem(item, extractionSegment, postextractionSegments, fmt.Sprintf("[%d]", i))
-			if err != nil {
-				continue // Skip items that don't match
-			}
-			targets = append(targets, itemTargets...)
-		}
-	case map[string]any:
-		// Extract from single object
-		itemTargets, err := cdp.findTargetsInItem(v, extractionSegment, postextractionSegments, "")
-		if err != nil {
-			return nil, err
-		}
-		targets = append(targets, itemTargets...)
-	default:
-		return nil, fmt.Errorf("cannot extract from type %T", container)
-	}
-
-	return targets, nil
-}
-
-// findTargetsInItem finds deletion targets within a single item
-func (cdp *ComplexDeleteProcessor) findTargetsInItem(item any, extractionSegment internal.PathSegment, postextractionSegments []internal.PathSegment, basePath string) ([]DeletionTarget, error) {
-	var targets []DeletionTarget
-
-	// Get the extracted data
-	extractedData, err := cdp.performExtraction(item, extractionSegment)
-	if err != nil {
-		return nil, err
-	}
-
-	// Apply post-extraction operations to find specific targets
-	if len(postextractionSegments) == 0 {
-		// No post-extraction operations, delete the entire extracted field
-		if obj, ok := item.(map[string]any); ok {
-			targets = append(targets, DeletionTarget{
-				Container: obj,
-				Key:       extractionSegment.Key,
-				Path:      joinPath(basePath, extractionSegment.Key),
-			})
-		}
-		return targets, nil
-	}
-
-	// Handle post-extraction operations
-	return cdp.findTargetsWithPostExtraction(item, extractedData, extractionSegment, postextractionSegments, basePath)
-}
-
-// performExtraction performs the extraction operation on an item
-func (cdp *ComplexDeleteProcessor) performExtraction(item any, extractionSegment internal.PathSegment) (any, error) {
-	if obj, ok := item.(map[string]any); ok {
-		if value, exists := obj[extractionSegment.Key]; exists {
-			return value, nil
-		}
-		return nil, fmt.Errorf("extraction key '%s' not found", extractionSegment.Key)
-	}
-	return nil, fmt.Errorf("cannot extract from type %T", item)
-}
-
-// findTargetsWithPostExtraction handles post-extraction operations to find specific deletion targets
-func (cdp *ComplexDeleteProcessor) findTargetsWithPostExtraction(originalItem, extractedData any, extractionSegment internal.PathSegment, postextractionSegments []internal.PathSegment, basePath string) ([]DeletionTarget, error) {
-	var targets []DeletionTarget
-
-	// The key insight: when we have {field}[index] or {field}[slice], we need to understand
-	// that this represents a conceptual operation that doesn't map directly to the original structure.
-	// The most reasonable interpretation is to delete the entire field that was extracted from.
-
-	if len(postextractionSegments) == 1 {
-		postSegment := postextractionSegments[0]
-
-		switch postSegment.Type {
-		case internal.ArrayIndexSegment:
-			// Handle {field}[index] - delete the entire field since we can't partially delete extracted results
-			if obj, ok := originalItem.(map[string]any); ok {
-				// Check if the field exists and contains the data that would match the index operation
-				if _, exists := obj[extractionSegment.Key]; exists {
-					// For flat extractions, we still delete the entire field
-					targets = append(targets, DeletionTarget{
-						Container: obj,
-						Key:       extractionSegment.Key,
-						Path:      basePath + "." + extractionSegment.Key,
-					})
-				}
-			}
-		case internal.ArraySliceSegment:
-			// Handle {field}[start:end] - delete the entire field since we can't partially delete extracted results
-			if obj, ok := originalItem.(map[string]any); ok {
-				if _, exists := obj[extractionSegment.Key]; exists {
-					targets = append(targets, DeletionTarget{
-						Container: obj,
-						Key:       extractionSegment.Key,
-						Path:      basePath + "." + extractionSegment.Key,
-					})
-				}
-			}
-		}
-	}
-
-	return targets, nil
-}
-
-// executeDeletions executes all the deletion operations
-func (cdp *ComplexDeleteProcessor) executeDeletions(targets []DeletionTarget) error {
-	for _, target := range targets {
-		switch container := target.Container.(type) {
-		case map[string]any:
-			if key, ok := target.Key.(string); ok {
-				delete(container, key)
-			}
-		case []any:
-			if index, ok := target.Key.(int); ok && index >= 0 && index < len(container) {
-				// For arrays, we need to use a deletion marker or remove the element
-				// Using deletion marker approach similar to existing code
-				container[index] = deletedMarker
-			}
-		}
-	}
-	return nil
-}
-
-// hasExtractionWithArrayOps checks if path has extraction followed by array operations
-func (cdp *ComplexDeleteProcessor) hasExtractionWithArrayOps(path string) bool {
-	// Check for any pattern that has extraction followed by array operations
-	return strings.Contains(path, "}[")
-}
-
-// deleteExtractedFieldsFromAllObjects deletes the extracted field from all matching objects
-func (cdp *ComplexDeleteProcessor) deleteExtractedFieldsFromAllObjects(data any, path string) error {
-	// Check if this is a nested extraction pattern like {members}[0]{name}
-	if cdp.hasNestedExtractionAfterArray(path) {
-		return cdp.deleteFromNestedExtraction(data, path)
-	}
-
-	// Check if this is an array index/slice operation on extracted data
-	if cdp.isArrayOperationOnExtraction(path) {
-		return cdp.deleteFromExtractedArrays(data, path)
-	}
-
-	// Extract the field name from the path
-	fieldName := cdp.extractFieldNameFromPath(path)
-	if fieldName == "" {
-		return fmt.Errorf("could not extract field name from path: %s", path)
-	}
-
-	// Find the base path (everything before the extraction)
-	basePath := cdp.extractBasePath(path)
-
-	// Navigate to all objects that contain the field and delete it
-	return cdp.deleteFieldFromAllMatchingObjects(data, basePath, fieldName)
-}
-
-// extractFieldNameFromPath extracts the field name from complex paths
-func (cdp *ComplexDeleteProcessor) extractFieldNameFromPath(path string) string {
-	// Look for patterns like {name}[, {flat:name}[
-	if idx := strings.LastIndex(path, "{"); idx >= 0 {
-		if endIdx := strings.Index(path[idx:], "}"); endIdx >= 0 {
-			fieldPart := path[idx+1 : idx+endIdx]
-			// Handle flat: prefix
-			if strings.HasPrefix(fieldPart, "flat:") {
-				return strings.TrimPrefix(fieldPart, "flat:")
-			}
-			return fieldPart
-		}
-	}
-	return ""
-}
-
-// extractBasePath extracts the base path before the final extraction
-func (cdp *ComplexDeleteProcessor) extractBasePath(path string) string {
-	// Find the last complete extraction pattern {field}[...] and remove everything after the }
-	// For path like "company.departments{teams}{members}{flat:name}[0]"
-	// We want to return "company.departments{teams}{members}"
-
-	// Find the position of the last }[ pattern
-	lastBraceArrayIdx := strings.LastIndex(path, "}[")
-	if lastBraceArrayIdx >= 0 {
-		// Find the corresponding opening brace for this closing brace
-		braceCount := 0
-		for i := lastBraceArrayIdx; i >= 0; i-- {
-			if path[i] == '}' {
-				braceCount++
-			} else if path[i] == '{' {
-				braceCount--
-				if braceCount == 0 {
-					// Found the matching opening brace, return everything before it
-					return path[:i]
-				}
-			}
-		}
-	}
-
-	// Fallback: find the last { and return everything before it
-	if idx := strings.LastIndex(path, "{"); idx >= 0 {
-		return path[:idx]
-	}
-	return path
-}
-
-// deleteFieldFromAllMatchingObjects deletes a field from all objects that match the base path
-func (cdp *ComplexDeleteProcessor) deleteFieldFromAllMatchingObjects(data any, basePath, fieldName string) error {
-	// Navigate to the base path and find all objects
-	objects, err := cdp.findAllObjectsAtPath(data, basePath)
-	if err != nil {
-		return fmt.Errorf("failed to find objects at path '%s': %w", basePath, err)
-	}
-
-	// Delete the field from each object
-	for _, obj := range objects {
-		if objMap, ok := obj.(map[string]any); ok {
-			delete(objMap, fieldName)
-		}
-	}
-
-	return nil
-}
-
-// findAllObjectsAtPath finds all objects that match the given path pattern
-func (cdp *ComplexDeleteProcessor) findAllObjectsAtPath(data any, path string) ([]any, error) {
-	var objects []any
-
-	// Use the processor's navigation capabilities to find objects dynamically
-	// instead of hardcoding specific paths
-	if path == "" {
-		return objects, nil
-	}
-
-	// Parse the path to understand the structure
-	segments, err := internal.ParsePath(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse path '%s': %w", path, err)
-	}
-
-	// Navigate through the path and collect all matching objects
-	return cdp.navigateAndCollectObjects(data, segments, 0)
-}
-
-// navigateAndCollectObjects recursively navigates through path segments and collects matching objects
-func (cdp *ComplexDeleteProcessor) navigateAndCollectObjects(current any, segments []internal.PathSegment, segmentIndex int) ([]any, error) {
-	var objects []any
-
-	// If we've processed all segments, return the current object
-	if segmentIndex >= len(segments) {
-		if current != nil {
-			objects = append(objects, current)
-		}
-		return objects, nil
-	}
-
-	segment := segments[segmentIndex]
-
-	switch segment.Type {
-	case internal.PropertySegment:
-		// Navigate to property
-		if objMap, ok := current.(map[string]any); ok {
-			if value, exists := objMap[segment.Key]; exists {
-				return cdp.navigateAndCollectObjects(value, segments, segmentIndex+1)
-			}
-		}
-
-	case internal.ArrayIndexSegment:
-		// Navigate to array index
-		if arr, ok := current.([]any); ok {
-			index := segment.Index
-			if segment.IsNegative {
-				index = len(arr) + index
-			}
-			if index >= 0 && index < len(arr) {
-				return cdp.navigateAndCollectObjects(arr[index], segments, segmentIndex+1)
-			}
-		}
-
-	case internal.ExtractSegment:
-		// Extract from all objects in array or single object
-		switch v := current.(type) {
-		case []any:
-			// Extract from all objects in the array
-			for _, item := range v {
-				if objMap, ok := item.(map[string]any); ok {
-					if segmentIndex == len(segments)-1 {
-						// This is the last segment, collect the objects that contain the field
-						if _, exists := objMap[segment.Key]; exists {
-							objects = append(objects, objMap)
-						}
-					} else {
-						// Continue navigation
-						if value, exists := objMap[segment.Key]; exists {
-							subObjects, err := cdp.navigateAndCollectObjects(value, segments, segmentIndex+1)
-							if err != nil {
-								continue // Skip this item on error
-							}
-							objects = append(objects, subObjects...)
-						}
-					}
-				}
-			}
-		case map[string]any:
-			// Extract from single object
-			if segmentIndex == len(segments)-1 {
-				// This is the last segment, collect the object if it contains the field
-				if _, exists := v[segment.Key]; exists {
-					objects = append(objects, v)
-				}
-			} else {
-				// Continue navigation
-				if value, exists := v[segment.Key]; exists {
-					return cdp.navigateAndCollectObjects(value, segments, segmentIndex+1)
-				}
-			}
-		}
-	}
-
-	return objects, nil
-}
-
-// isArrayOperationOnExtraction checks if the path represents an array operation on extracted data
-func (cdp *ComplexDeleteProcessor) isArrayOperationOnExtraction(path string) bool {
-	// Look for patterns like {field}[index] where we want to delete from arrays, not delete the field
-	// Also check for nested operations like {field}[index]{subfield}
-
-	// Check for specific known patterns that represent actual array fields
-	arrayFieldPatterns := []string{"{tasks}[", "{items}[", "{elements}[", "{members}[", "{teams}["}
-	for _, pattern := range arrayFieldPatterns {
-		if strings.Contains(path, pattern) {
-			return true
-		}
-	}
-
-	// Check for scalar field patterns that should be treated as array operations on extracted data
-	// These patterns indicate operations on extracted scalar values, like {name}[0] or {flat:name}[0]
-	scalarFieldPatterns := []string{"{name}[", "{flat:name}[", "{id}[", "{title}[", "{value}["}
-	for _, pattern := range scalarFieldPatterns {
-		if strings.Contains(path, pattern) {
-			return true
-		}
-	}
-
-	// Also check for nested operations like {field}[index]{subfield}
-	return cdp.hasNestedExtractionAfterArray(path)
-}
-
-// hasNestedExtractionAfterArray checks if path has pattern like {field}[index]{subfield}
-func (cdp *ComplexDeleteProcessor) hasNestedExtractionAfterArray(path string) bool {
-	// Look for pattern: }[something]{something}
-	if idx := strings.Index(path, "}["); idx >= 0 {
-		remaining := path[idx+2:]
-		if closeBracket := strings.Index(remaining, "]"); closeBracket >= 0 {
-			afterBracket := remaining[closeBracket+1:]
-			return strings.Contains(afterBracket, "{") && strings.Contains(afterBracket, "}")
-		}
-	}
-	return false
-}
-
-// deleteFromExtractedArrays handles deletion from arrays that were extracted
-func (cdp *ComplexDeleteProcessor) deleteFromExtractedArrays(data any, path string) error {
-	// Check if this is a nested extraction like {field}[index]{subfield}
-	if cdp.hasNestedExtractionAfterArray(path) {
-		return cdp.deleteFromNestedExtraction(data, path)
-	}
-
-	fieldName := cdp.extractFieldNameFromPath(path)
-	if fieldName == "" {
-		return fmt.Errorf("could not extract field name from path: %s", path)
-	}
-
-	// Extract the array index or slice info
-	arrayOp := cdp.extractArrayOperation(path)
-	if arrayOp == "" {
-		return fmt.Errorf("could not extract array operation from path: %s", path)
-	}
-
-	// Find the base path (everything before the extraction)
-	basePath := cdp.extractBasePath(path)
-
-	// Navigate to all objects that contain the field
-	objects, err := cdp.findAllObjectsAtPath(data, basePath)
-	if err != nil {
-		return fmt.Errorf("failed to find objects at path '%s': %w", basePath, err)
-	}
-
-	// For paths like {field}[index], we need to understand what this means:
-	// 1. If the field is an array, delete the element at the specified index from each array
-	// 2. If the field is a scalar, delete the field from the Nth object (where N is the index)
-
-	// Parse the array operation to get the index
-	index, isSlice, err := cdp.parseArrayOperation(arrayOp)
-	if err != nil {
-		return fmt.Errorf("failed to parse array operation '%s': %w", arrayOp, err)
-	}
-
-	if isSlice {
-		// For slice operations, we need more complex logic
-		return cdp.handleSliceOperationOnExtractedData(objects, fieldName, arrayOp)
-	}
-
-	// For simple index operations
-	return cdp.handleIndexOperationOnExtractedData(objects, fieldName, index)
-}
-
-// parseArrayOperation parses an array operation string and returns index and whether it's a slice
-func (cdp *ComplexDeleteProcessor) parseArrayOperation(operation string) (int, bool, error) {
-	if strings.Contains(operation, ":") {
-		// This is a slice operation
-		return 0, true, nil
-	}
-
-	// Simple index operation
-	if operation == "-1" {
-		return -1, false, nil
-	}
-
-	index, err := strconv.Atoi(operation)
-	if err != nil {
-		return 0, false, fmt.Errorf("invalid array index: %s", operation)
-	}
-
-	return index, false, nil
-}
-
-// handleIndexOperationOnExtractedData handles index operations on extracted data
-func (cdp *ComplexDeleteProcessor) handleIndexOperationOnExtractedData(objects []any, fieldName string, index int) error {
-	// For index operations like {tasks}[0], we need to distinguish between:
-	// 1. If the field is an array: delete the element at the specified index from each array
-	// 2. If the field is a scalar: delete the field from the Nth object that contains the field
-
-	var objectsWithField []map[string]any
-
-	// Flatten the nested structure and collect all objects that have the field
-	cdp.flattenAndCollectObjects(objects, fieldName, &objectsWithField)
-
-	if len(objectsWithField) == 0 {
-		return nil // No objects have the field
-	}
-
-	// Check if the field is an array in the first object that has it
-	// If it's an array, we should delete from the array, not delete the field
-	firstObject := objectsWithField[0]
-	if fieldValue, exists := firstObject[fieldName]; exists {
-		if _, isArray := fieldValue.([]any); isArray {
-			// The field is an array, delete the element at the specified index from all arrays
-			return cdp.deleteFromArrayFields(objectsWithField, fieldName, index)
-		}
-	}
-
-	// The field is not an array, use the original logic:
-	// Delete the field from the Nth object that contains the field
-
-	// Handle negative indices
-	if index < 0 {
-		index = len(objectsWithField) + index
-	}
-
-	// Check bounds
-	if index < 0 || index >= len(objectsWithField) {
-		return nil // Index out of bounds, do nothing
-	}
-
-	// Delete the field from the specified object
-	delete(objectsWithField[index], fieldName)
-	return nil
-}
-
-// deleteFromArrayFields deletes an element at the specified index from array fields
-func (cdp *ComplexDeleteProcessor) deleteFromArrayFields(objects []map[string]any, fieldName string, index int) error {
-	for _, obj := range objects {
-		if fieldValue, exists := obj[fieldName]; exists {
-			if arr, isArray := fieldValue.([]any); isArray {
-				// Handle negative indices
-				actualIndex := index
-				if actualIndex < 0 {
-					actualIndex = len(arr) + actualIndex
-				}
-
-				// Check bounds
-				if actualIndex >= 0 && actualIndex < len(arr) {
-					// Remove the element at the specified index
-					newArr := make([]any, 0, len(arr)-1)
-					newArr = append(newArr, arr[:actualIndex]...)
-					newArr = append(newArr, arr[actualIndex+1:]...)
-					obj[fieldName] = newArr
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// flattenAndCollectObjects recursively flattens nested arrays and collects objects with the specified field
-func (cdp *ComplexDeleteProcessor) flattenAndCollectObjects(data []any, fieldName string, result *[]map[string]any) {
-	for _, item := range data {
-		switch v := item.(type) {
-		case map[string]any:
-			// This is an object, check if it has the field
-			if _, exists := v[fieldName]; exists {
-				*result = append(*result, v)
-			}
-		case []any:
-			// This is an array, recursively flatten it
-			cdp.flattenAndCollectObjects(v, fieldName, result)
-		}
-	}
-}
-
-// handleSliceOperationOnExtractedData handles slice operations on extracted data
-func (cdp *ComplexDeleteProcessor) handleSliceOperationOnExtractedData(objects []any, fieldName string, operation string) error {
-	// For slice operations like {name}[0:2], we interpret this as:
-	// Delete the field from objects at the specified slice range
-
-	var objectsWithField []map[string]any
-
-	// Flatten the nested structure and collect all objects that have the field
-	cdp.flattenAndCollectObjects(objects, fieldName, &objectsWithField)
-
-	if len(objectsWithField) == 0 {
-		return nil // No objects have the field
-	}
-
-	// Parse slice operation
-	start, end, err := cdp.parseSliceOperation(operation, len(objectsWithField))
-	if err != nil {
-		return fmt.Errorf("failed to parse slice operation '%s': %w", operation, err)
-	}
-
-	// Delete the field from objects in the slice range
-	for i := start; i < end && i < len(objectsWithField); i++ {
-		delete(objectsWithField[i], fieldName)
-	}
-
-	return nil
-}
-
-// parseSliceOperation parses a slice operation string like "0:2", ":3", "1:", etc.
-func (cdp *ComplexDeleteProcessor) parseSliceOperation(operation string, arrayLen int) (int, int, error) {
-	parts := strings.Split(operation, ":")
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid slice operation: %s", operation)
-	}
-
-	var start, end int
-	var err error
-
-	// Parse start
-	if parts[0] == "" {
-		start = 0
-	} else {
-		start, err = strconv.Atoi(parts[0])
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid start index: %s", parts[0])
-		}
-		if start < 0 {
-			start = arrayLen + start
-		}
-	}
-
-	// Parse end
-	if parts[1] == "" {
-		end = arrayLen
-	} else {
-		end, err = strconv.Atoi(parts[1])
-		if err != nil {
-			return 0, 0, fmt.Errorf("invalid end index: %s", parts[1])
-		}
-		if end < 0 {
-			end = arrayLen + end
-		}
-	}
-
-	// Ensure bounds
-	if start < 0 {
-		start = 0
-	}
-	if end > arrayLen {
-		end = arrayLen
-	}
-	if start > end {
-		start = end
-	}
-
-	return start, end, nil
-}
-
-// extractArrayOperation extracts the array operation part from the path
-func (cdp *ComplexDeleteProcessor) extractArrayOperation(path string) string {
-	// Look for [index] or [start:end] patterns
-	if startIdx := strings.LastIndex(path, "["); startIdx >= 0 {
-		if endIdx := strings.Index(path[startIdx:], "]"); endIdx >= 0 {
-			return path[startIdx+1 : startIdx+endIdx]
-		}
-	}
-	return ""
-}
-
-// applyArrayDeletion applies the deletion operation to an array
-func (cdp *ComplexDeleteProcessor) applyArrayDeletion(arr []any, operation string) ([]any, error) {
-	if len(arr) == 0 {
-		return arr, nil // Nothing to delete from empty array
-	}
-
-	// Handle simple index like "0", "1", "-1"
-	if !strings.Contains(operation, ":") {
-		// Simple index deletion
-		var index int
-		if operation == "-1" {
-			index = len(arr) - 1
-		} else {
-			// Parse the index
-			if _, err := fmt.Sscanf(operation, "%d", &index); err != nil {
-				return nil, fmt.Errorf("invalid array index: %s", operation)
-			}
-			if index < 0 {
-				index = len(arr) + index
-			}
-		}
-
-		// Check bounds
-		if index < 0 || index >= len(arr) {
-			return arr, nil // Index out of bounds, return original array
-		}
-
-		// Remove the element at index
-		result := make([]any, 0, len(arr)-1)
-		result = append(result, arr[:index]...)
-		result = append(result, arr[index+1:]...)
-		return result, nil
-	}
-
-	// Handle slice operations like "0:1", ":2", "-1:", etc.
-	return cdp.applySliceDeletion(arr, operation)
-}
-
-// applySliceDeletion handles slice deletion operations
-func (cdp *ComplexDeleteProcessor) applySliceDeletion(arr []any, operation string) ([]any, error) {
-	// Parse slice notation like ":2", "1:3", "2:", etc.
-	parts := strings.Split(operation, ":")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid slice operation: %s", operation)
-	}
-
-	var start, end int
-	var err error
-
-	// Parse start index
-	if parts[0] == "" {
-		start = 0
-	} else {
-		start, err = strconv.Atoi(parts[0])
-		if err != nil {
-			return nil, fmt.Errorf("invalid start index in slice: %s", parts[0])
-		}
-		if start < 0 {
-			start = len(arr) + start
-		}
-	}
-
-	// Parse end index
-	if parts[1] == "" {
-		end = len(arr)
-	} else {
-		end, err = strconv.Atoi(parts[1])
-		if err != nil {
-			return nil, fmt.Errorf("invalid end index in slice: %s", parts[1])
-		}
-		if end < 0 {
-			end = len(arr) + end
-		}
-	}
-
-	// Validate bounds
-	if start < 0 {
-		start = 0
-	}
-	if end > len(arr) {
-		end = len(arr)
-	}
-	if start >= end {
-		return arr, nil // Nothing to delete
-	}
-
-	// Remove elements from start to end (exclusive)
-	result := make([]any, 0, len(arr)-(end-start))
-	result = append(result, arr[:start]...)
-	result = append(result, arr[end:]...)
-	return result, nil
-}
-
-// deleteFromNestedExtraction handles paths like {field}[index]{subfield}
-func (cdp *ComplexDeleteProcessor) deleteFromNestedExtraction(data any, path string) error {
-	// Parse path like "company.departments{teams}{members}[0]{name}"
-	// 1. Extract "company.departments{teams}" as base path
-	// 2. Extract "members" as array field
-	// 3. Extract "0" as array index
-	// 4. Extract "name" as subfield to delete
-
-	// Find the pattern }[...]{...}
-	arrayStartIdx := strings.Index(path, "}[")
-	if arrayStartIdx < 0 {
-		return fmt.Errorf("invalid nested extraction path: %s", path)
-	}
-
-	// Split into parts: before }[, array operation, after ]{
-	beforeArray := path[:arrayStartIdx+1] // includes the }
-	remaining := path[arrayStartIdx+2:]   // after }[
-
-	closeBracket := strings.Index(remaining, "]")
-	if closeBracket < 0 {
-		return fmt.Errorf("invalid array operation in path: %s", path)
-	}
-
-	arrayOp := remaining[:closeBracket]
-	afterArray := remaining[closeBracket+1:] // after ]
-
-	// Extract the subfield from afterArray (should be like {name})
-	if !strings.HasPrefix(afterArray, "{") || !strings.HasSuffix(afterArray, "}") {
-		return fmt.Errorf("invalid subfield extraction in path: %s", afterArray)
-	}
-
-	subfield := afterArray[1 : len(afterArray)-1] // remove { and }
-
-	// Extract the array field name from the last extraction in beforeArray
-	// For "company.departments{teams}{members}", we want "members"
-	arrayFieldName := cdp.extractLastFieldNameFromPath(beforeArray)
-	if arrayFieldName == "" {
-		return fmt.Errorf("could not extract array field name from: %s", beforeArray)
-	}
-
-	// Extract the base path (everything before the last extraction)
-	// For "company.departments{teams}{members}", we want "company.departments{teams}"
-	basePath := cdp.extractBasePathBeforeLastExtraction(beforeArray)
-
-	// Navigate to all objects that contain the array field
-	// For nested extraction, we need to find the actual container objects, not the extracted results
-	objects, err := cdp.findContainerObjectsForField(data, basePath, arrayFieldName)
-	if err != nil {
-		return fmt.Errorf("failed to find container objects: %w", err)
-	}
-
-	// Parse array operation - could be single index or slice
-	if strings.Contains(arrayOp, ":") {
-		// Handle slice operation like "0:2", "1:", ":3"
-		return cdp.deleteFromNestedExtractionSlice(objects, arrayFieldName, arrayOp, subfield)
-	}
-
-	// Handle single index operation like "0", "-1"
-	index, err := strconv.Atoi(arrayOp)
-	if err != nil {
-		return fmt.Errorf("invalid array index '%s': %w", arrayOp, err)
-	}
-	return cdp.deleteFromNestedExtractionIndex(objects, arrayFieldName, index, subfield)
-}
-
-// parseArrayIndex parses array index from operation string
-func (cdp *ComplexDeleteProcessor) parseArrayIndex(arr []any, operation string) (int, error) {
-	if operation == "-1" {
-		return len(arr) - 1, nil
-	}
-
-	index, err := strconv.Atoi(operation)
-	if err != nil {
-		return -1, fmt.Errorf("invalid array index: %s", operation)
-	}
-
-	if index < 0 {
-		index = len(arr) + index
-	}
-
-	return index, nil
-}
-
-// extractLastFieldNameFromPath extracts the last field name from a path with extractions
-// For "company.departments{teams}{members}", returns "members"
-func (cdp *ComplexDeleteProcessor) extractLastFieldNameFromPath(path string) string {
-	// Find the last occurrence of {
-	lastBraceStart := strings.LastIndex(path, "{")
-	if lastBraceStart == -1 {
-		return ""
-	}
-
-	// Find the corresponding }
-	braceEnd := strings.Index(path[lastBraceStart:], "}")
-	if braceEnd == -1 {
-		return ""
-	}
-
-	// Extract the field name
-	fieldName := path[lastBraceStart+1 : lastBraceStart+braceEnd]
-
-	// Handle flat: prefix
-	if strings.HasPrefix(fieldName, "flat:") {
-		return strings.TrimPrefix(fieldName, "flat:")
-	}
-
-	return fieldName
-}
-
-// extractBasePathBeforeLastExtraction extracts the base path before the last extraction
-// For "company.departments{teams}{members}", returns "company.departments{teams}"
-func (cdp *ComplexDeleteProcessor) extractBasePathBeforeLastExtraction(path string) string {
-	// Find the last occurrence of {
-	lastBraceStart := strings.LastIndex(path, "{")
-	if lastBraceStart == -1 {
-		return path // No extractions found
-	}
-
-	// Return everything before the last extraction
-	return path[:lastBraceStart]
-}
-
-// deleteFromNestedExtractionIndex handles single index deletion in nested extraction
-func (cdp *ComplexDeleteProcessor) deleteFromNestedExtractionIndex(objects []any, arrayFieldName string, index int, subfield string) error {
-	for _, obj := range objects {
-		if objMap, ok := obj.(map[string]any); ok {
-			if arrayField, exists := objMap[arrayFieldName]; exists {
-				if arr, ok := arrayField.([]any); ok {
-					// Handle negative indices
-					actualIndex := index
-					if actualIndex < 0 {
-						actualIndex = len(arr) + actualIndex
-					}
-
-					// Access the element at index and delete the subfield
-					if actualIndex >= 0 && actualIndex < len(arr) {
-						if element, ok := arr[actualIndex].(map[string]any); ok {
-							delete(element, subfield)
-						}
-					}
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// deleteFromNestedExtractionSlice handles slice deletion in nested extraction
-func (cdp *ComplexDeleteProcessor) deleteFromNestedExtractionSlice(objects []any, arrayFieldName string, sliceOp string, subfield string) error {
-	for _, obj := range objects {
-		if objMap, ok := obj.(map[string]any); ok {
-			if arrayField, exists := objMap[arrayFieldName]; exists {
-				if arr, ok := arrayField.([]any); ok {
-					// Parse slice operation
-					start, end, err := cdp.parseSliceOperation(sliceOp, len(arr))
-					if err != nil {
-						continue // Skip invalid slice operations
-					}
-
-					// Delete subfield from elements in the slice range
-					for i := start; i < end && i < len(arr); i++ {
-						if element, ok := arr[i].(map[string]any); ok {
-							delete(element, subfield)
-						}
-					}
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// findContainerObjectsForField finds all objects that contain the specified field
-// This is different from findAllObjectsAtPath which returns extracted results
-func (cdp *ComplexDeleteProcessor) findContainerObjectsForField(data any, basePath, fieldName string) ([]any, error) {
-	// For nested extraction like "company.departments{teams}", we need to navigate
-	// to the actual objects that contain the field, not the extracted results
-
-	// Parse the base path to understand the structure
-	if strings.Contains(basePath, "{") {
-		// This is an extraction path, we need to find the source objects
-		return cdp.findSourceObjectsFromExtractionPath(data, basePath, fieldName)
-	}
-
-	// Simple path, use existing logic
-	return cdp.findAllObjectsAtPath(data, basePath)
-}
-
-// findSourceObjectsFromExtractionPath finds source objects from an extraction path
-func (cdp *ComplexDeleteProcessor) findSourceObjectsFromExtractionPath(data any, extractionPath, targetField string) ([]any, error) {
-	// For "company.departments{teams}", we need to:
-	// 1. Navigate to "company.departments"
-	// 2. For each department, get the teams array
-	// 3. For each team in teams array, check if it has the targetField
-
-	// Extract the base path before extraction
-	lastBraceStart := strings.LastIndex(extractionPath, "{")
-	if lastBraceStart == -1 {
-		return nil, fmt.Errorf("no extraction found in path: %s", extractionPath)
-	}
-
-	basePathBeforeExtraction := extractionPath[:lastBraceStart]
-	basePathBeforeExtraction = strings.TrimSuffix(basePathBeforeExtraction, ".")
-
-	// Navigate to the base path
-	var containers []any
-	if basePathBeforeExtraction == "" {
-		containers = []any{data}
-	} else {
-		baseContainers, err := cdp.findAllObjectsAtPath(data, basePathBeforeExtraction)
-		if err != nil {
-			return nil, fmt.Errorf("failed to navigate to base path '%s': %w", basePathBeforeExtraction, err)
-		}
-		containers = baseContainers
-	}
-
-	// Now find all objects that contain the target field
-	var result []any
-	for _, container := range containers {
-		objects := cdp.findObjectsWithField(container, targetField)
-		result = append(result, objects...)
-	}
-
-	return result, nil
-}
-
-// findObjectsWithField recursively finds all objects that contain the specified field
-func (cdp *ComplexDeleteProcessor) findObjectsWithField(data any, fieldName string) []any {
-	var result []any
-
-	switch v := data.(type) {
-	case map[string]any:
-		// Check if this object has the field
-		if _, exists := v[fieldName]; exists {
-			result = append(result, v)
-		}
-		// Recursively check nested objects and arrays
-		for _, value := range v {
-			result = append(result, cdp.findObjectsWithField(value, fieldName)...)
-		}
-	case []any:
-		// Check each item in the array
-		for _, item := range v {
-			result = append(result, cdp.findObjectsWithField(item, fieldName)...)
-		}
-	}
-
-	return result
-}
-
-// getArrayLength helper function for debugging
-func getArrayLength(data any) int {
-	if arr, ok := data.([]any); ok {
-		return len(arr)
-	}
-	return -1
-}
-
-// deleteValueAtPath deletes a value at the specified path
 func (p *Processor) deleteValueAtPath(data any, path string) error {
 	// Handle JSON Pointer format
 	if strings.HasPrefix(path, "/") {
@@ -1914,8 +477,6 @@ func (p *Processor) deleteValueAtPath(data any, path string) error {
 	// Use dot notation for simple paths
 	return p.deleteValueDotNotation(data, path)
 }
-
-// deleteValueDotNotation deletes a value using dot notation
 func (p *Processor) deleteValueDotNotation(data any, path string) error {
 	// Parse path
 	segments, err := p.parsePath(path)
@@ -1954,8 +515,6 @@ func (p *Processor) deleteValueDotNotation(data any, path string) error {
 	finalSegment := segments[len(segments)-1]
 	return p.deletePropertyValue(current, finalSegment)
 }
-
-// deleteValueJSONPointer deletes a value using JSON Pointer format
 func (p *Processor) deleteValueJSONPointer(data any, path string) error {
 	if path == "/" {
 		return fmt.Errorf("cannot delete root")
@@ -2001,8 +560,6 @@ func (p *Processor) deleteValueJSONPointer(data any, path string) error {
 
 	return p.deletePropertyValue(current, finalSegment)
 }
-
-// deletePropertyValue deletes a property from a container
 func (p *Processor) deletePropertyValue(current any, property string) error {
 	switch v := current.(type) {
 	case map[string]any:
@@ -2029,8 +586,6 @@ func (p *Processor) deletePropertyValue(current any, property string) error {
 		return fmt.Errorf("cannot delete property '%s' from type %T", property, current)
 	}
 }
-
-// deleteValueComplexPath handles complex path deletions
 func (p *Processor) deleteValueComplexPath(data any, path string) error {
 	// Parse path into segments
 	segments := p.getPathSegments()
@@ -2061,8 +616,6 @@ func (p *Processor) deleteValueComplexPath(data any, path string) error {
 
 	return p.deleteValueWithInternalSegments(data, internalSegments)
 }
-
-// requiresComplexDeletion checks if segments require complex deletion
 func (p *Processor) requiresComplexDeletion(segments []internal.PathSegment) bool {
 	for _, segment := range segments {
 		switch segment.Type {
@@ -2072,8 +625,6 @@ func (p *Processor) requiresComplexDeletion(segments []internal.PathSegment) boo
 	}
 	return false
 }
-
-// deleteValueWithInternalSegments deletes using internal path segments
 func (p *Processor) deleteValueWithInternalSegments(data any, segments []internal.PathSegment) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
@@ -2093,8 +644,6 @@ func (p *Processor) deleteValueWithInternalSegments(data any, segments []interna
 	finalSegment := segments[len(segments)-1]
 	return p.deleteValueForSegment(current, finalSegment)
 }
-
-// navigateSegmentForDeletion navigates to a segment for deletion
 func (p *Processor) navigateSegmentForDeletion(current any, segment PathSegment) (any, error) {
 	switch segment.TypeString() {
 	case "property":
@@ -2111,8 +660,6 @@ func (p *Processor) navigateSegmentForDeletion(current any, segment PathSegment)
 		return nil, fmt.Errorf("unsupported segment type for deletion: %v", segment.TypeString())
 	}
 }
-
-// navigatePropertyForDeletion navigates to a property for deletion
 func (p *Processor) navigatePropertyForDeletion(current any, property string) (any, error) {
 	switch v := current.(type) {
 	case map[string]any:
@@ -2129,8 +676,6 @@ func (p *Processor) navigatePropertyForDeletion(current any, property string) (a
 		return nil, fmt.Errorf("cannot access property '%s' on type %T", property, current)
 	}
 }
-
-// navigateArrayIndexForDeletion navigates to an array index for deletion
 func (p *Processor) navigateArrayIndexForDeletion(current any, indexStr string) (any, error) {
 	arr, ok := current.([]any)
 	if !ok {
@@ -2153,8 +698,6 @@ func (p *Processor) navigateArrayIndexForDeletion(current any, indexStr string) 
 
 	return arr[index], nil
 }
-
-// deleteValueForSegment deletes a value for a specific segment
 func (p *Processor) deleteValueForSegment(current any, segment PathSegment) error {
 	switch segment.TypeString() {
 	case "property":
@@ -2169,8 +712,6 @@ func (p *Processor) deleteValueForSegment(current any, segment PathSegment) erro
 		return fmt.Errorf("unsupported segment type for deletion: %v", segment.TypeString())
 	}
 }
-
-// deletePropertyFromContainer deletes a property from a container
 func (p *Processor) deletePropertyFromContainer(current any, property string) error {
 	switch v := current.(type) {
 	case map[string]any:
@@ -2189,8 +730,6 @@ func (p *Processor) deletePropertyFromContainer(current any, property string) er
 		return fmt.Errorf("cannot delete property '%s' from type %T", property, current)
 	}
 }
-
-// deleteArrayElement deletes an element from an array
 func (p *Processor) deleteArrayElement(current any, indexStr string) error {
 	arr, ok := current.([]any)
 	if !ok {
@@ -2215,8 +754,6 @@ func (p *Processor) deleteArrayElement(current any, indexStr string) error {
 	arr[index] = DeletedMarker
 	return nil
 }
-
-// deleteArrayElementByIndex deletes an element from an array by index
 func (p *Processor) deleteArrayElementByIndex(current any, index int) error {
 	arr, ok := current.([]any)
 	if !ok {
@@ -2236,10 +773,6 @@ func (p *Processor) deleteArrayElementByIndex(current any, index int) error {
 	arr[index] = DeletedMarker
 	return nil
 }
-
-// DeletedMarker is a special type to mark deleted array elements
-
-// deleteArraySlice deletes a slice from an array
 func (p *Processor) deleteArraySlice(current any, segment PathSegment) error {
 	arr, ok := current.([]any)
 	if !ok {
@@ -2272,8 +805,6 @@ func (p *Processor) deleteArraySlice(current any, segment PathSegment) error {
 
 	return nil
 }
-
-// deleteExtractedValues deletes values based on extraction
 func (p *Processor) deleteExtractedValues(current any, segment PathSegment) error {
 	field := segment.Key
 	if field == "" {
@@ -2298,8 +829,6 @@ func (p *Processor) deleteExtractedValues(current any, segment PathSegment) erro
 
 	return fmt.Errorf("cannot perform extraction deletion on type %T", current)
 }
-
-// deleteValueComplexSegments handles complex segment deletion
 func (p *Processor) deleteValueComplexSegments(data any, segments []PathSegment, segmentIndex int) error {
 	if segmentIndex >= len(segments) {
 		return nil
@@ -2320,8 +849,6 @@ func (p *Processor) deleteValueComplexSegments(data any, segments []PathSegment,
 		return fmt.Errorf("unsupported complex segment type: %v", segment.TypeString())
 	}
 }
-
-// deleteComplexProperty handles complex property deletion
 func (p *Processor) deleteComplexProperty(data any, segment PathSegment, segments []PathSegment, segmentIndex int) error {
 	if segmentIndex == len(segments)-1 {
 		// Last segment, delete the property
@@ -2344,8 +871,6 @@ func (p *Processor) deleteComplexProperty(data any, segment PathSegment, segment
 		return fmt.Errorf("cannot access property '%s' on type %T", segment.Key, data)
 	}
 }
-
-// deleteComplexArray handles complex array deletion
 func (p *Processor) deleteComplexArray(data any, segment PathSegment, segments []PathSegment, segmentIndex int) error {
 	arr, ok := data.([]any)
 	if !ok {
@@ -2372,8 +897,6 @@ func (p *Processor) deleteComplexArray(data any, segment PathSegment, segments [
 	// Navigate to next level
 	return p.deleteValueComplexSegments(arr[index], segments, segmentIndex+1)
 }
-
-// deleteComplexSlice handles complex slice deletion
 func (p *Processor) deleteComplexSlice(data any, segment PathSegment, segments []PathSegment, segmentIndex int) error {
 	arr, ok := data.([]any)
 	if !ok {
@@ -2409,8 +932,6 @@ func (p *Processor) deleteComplexSlice(data any, segment PathSegment, segments [
 
 	return nil
 }
-
-// deleteComplexExtract handles complex extraction deletion
 func (p *Processor) deleteComplexExtract(data any, segment PathSegment, segments []PathSegment, segmentIndex int) error {
 	field := segment.Key
 	if field == "" {
@@ -2452,8 +973,6 @@ func (p *Processor) deleteComplexExtract(data any, segment PathSegment, segments
 
 	return fmt.Errorf("cannot perform extraction on type %T", data)
 }
-
-// hasConsecutiveExtractions checks for consecutive extractions starting at index
 func (p *Processor) hasConsecutiveExtractions(segments []PathSegment, startIndex int) bool {
 	if startIndex+1 >= len(segments) {
 		return false
@@ -2462,8 +981,6 @@ func (p *Processor) hasConsecutiveExtractions(segments []PathSegment, startIndex
 	return segments[startIndex].TypeString() == "extract" &&
 		segments[startIndex+1].TypeString() == "extract"
 }
-
-// deleteConsecutiveExtractions handles consecutive extraction deletions
 func (p *Processor) deleteConsecutiveExtractions(data any, segments []PathSegment, segmentIndex int) error {
 	// Find all consecutive extraction segments
 	var extractionSegments []PathSegment
@@ -2477,8 +994,6 @@ func (p *Processor) deleteConsecutiveExtractions(data any, segments []PathSegmen
 
 	return p.processConsecutiveExtractionsForDeletion(data, extractionSegments, remainingSegments)
 }
-
-// processConsecutiveExtractionsForDeletion processes consecutive extractions for deletion
 func (p *Processor) processConsecutiveExtractionsForDeletion(data any, extractionSegments []PathSegment, remainingSegments []PathSegment) error {
 	if len(extractionSegments) == 0 {
 		return nil
@@ -2510,8 +1025,6 @@ func (p *Processor) processConsecutiveExtractionsForDeletion(data any, extractio
 
 	return nil
 }
-
-// deleteDeepExtractedValues handles deep extraction deletion
 func (p *Processor) deleteDeepExtractedValues(data any, extractKey string, remainingSegments []PathSegment) error {
 	if arr, ok := data.([]any); ok {
 		for _, item := range arr {
@@ -2529,13 +1042,9 @@ func (p *Processor) deleteDeepExtractedValues(data any, extractKey string, remai
 
 	return nil
 }
-
-// cleanupNullValues removes null values from data structures
 func (p *Processor) cleanupNullValues(data any) {
 	p.cleanupNullValuesRecursive(data)
 }
-
-// cleanupNullValuesRecursive recursively cleans up null values
 func (p *Processor) cleanupNullValuesRecursive(data any) {
 	switch v := data.(type) {
 	case map[string]any:
@@ -2555,8 +1064,6 @@ func (p *Processor) cleanupNullValuesRecursive(data any) {
 		}
 	}
 }
-
-// isEmptyContainer checks if a container is empty
 func (p *Processor) isEmptyContainer(data any) bool {
 	switch v := data.(type) {
 	case map[string]any:
@@ -2571,8 +1078,6 @@ func (p *Processor) isEmptyContainer(data any) bool {
 		return false
 	}
 }
-
-// isContainer checks if data is a container type
 func (p *Processor) isContainer(data any) bool {
 	switch data.(type) {
 	case map[string]any, map[any]any, []any:
@@ -2581,13 +1086,9 @@ func (p *Processor) isContainer(data any) bool {
 		return false
 	}
 }
-
-// cleanupNullValuesWithReconstruction cleans up nulls and returns new data
 func (p *Processor) cleanupNullValuesWithReconstruction(data any, compactArrays bool) any {
 	return p.cleanupNullValuesRecursiveWithReconstruction(data, compactArrays)
 }
-
-// cleanupNullValuesRecursiveWithReconstruction recursively cleans with reconstruction
 func (p *Processor) cleanupNullValuesRecursiveWithReconstruction(data any, compactArrays bool) any {
 	switch v := data.(type) {
 	case map[string]any:
@@ -2618,8 +1119,6 @@ func (p *Processor) cleanupNullValuesRecursiveWithReconstruction(data any, compa
 		return data
 	}
 }
-
-// cleanupDeletedMarkers removes deleted markers from data
 func (p *Processor) cleanupDeletedMarkers(data any) any {
 	switch v := data.(type) {
 	case []any:
@@ -2644,587 +1143,6 @@ func (p *Processor) cleanupDeletedMarkers(data any) any {
 		return data
 	}
 }
-
-// deleteOperations provides deletion operations
-type deleteOperations struct {
-	utils      *processorUtils
-	pathParser *pathParser
-	navigator  *navigator
-	arrayOps   *arrayOperations
-}
-
-// NewDeleteOperations creates a new delete operations instance
-func NewDeleteOperations(utils *processorUtils, pathParser *pathParser, navigator *navigator, arrayOps *arrayOperations) *deleteOperations {
-	return &deleteOperations{
-		utils:      utils,
-		pathParser: pathParser,
-		navigator:  navigator,
-		arrayOps:   arrayOps,
-	}
-}
-
-// DeleteValue deletes a value at the specified path
-func (do *deleteOperations) DeleteValue(data any, path string) error {
-	if path == "" || path == "." {
-		return fmt.Errorf("cannot delete root value")
-	}
-
-	segments, err := do.pathParser.ParsePath(path)
-	if err != nil {
-		return fmt.Errorf("failed to parse path '%s': %w", path, err)
-	}
-
-	return do.DeleteValueWithSegments(data, segments)
-}
-
-// DeleteValueWithSegments deletes a value using parsed path segments
-func (do *deleteOperations) DeleteValueWithSegments(data any, segments []PathSegmentInfo) error {
-	if len(segments) == 0 {
-		return fmt.Errorf("no segments to process")
-	}
-
-	return do.deleteValueComplexSegments(data, segments, 0)
-}
-
-// MarkForDeletion marks a value for deletion (using deletion marker)
-func (do *deleteOperations) MarkForDeletion(data any, path string) error {
-	segments, err := do.pathParser.ParsePath(path)
-	if err != nil {
-		return fmt.Errorf("failed to parse path '%s': %w", path, err)
-	}
-
-	return do.markSegmentsForDeletion(data, segments, 0)
-}
-
-// CleanupDeletedValues removes all deletion markers from the data structure
-func (do *deleteOperations) CleanupDeletedValues(data any) any {
-	return do.cleanupDeletedMarkersRecursive(data)
-}
-
-// CompactArray removes null values and compacts an array
-func (do *deleteOperations) CompactArray(arr []any) []any {
-	if len(arr) == 0 {
-		return arr
-	}
-
-	var result []any
-	for _, item := range arr {
-		if item != nil && item != DeletedMarker {
-			result = append(result, item)
-		}
-	}
-
-	return result
-}
-
-// deleteValueComplexSegments handles deletion for complex path segments
-func (do *deleteOperations) deleteValueComplexSegments(data any, segments []PathSegmentInfo, segmentIndex int) error {
-	if segmentIndex >= len(segments) {
-		return nil
-	}
-
-	segment := segments[segmentIndex]
-
-	// Special handling for consecutive extraction segments
-	if segment.Type == "extract" && do.hasConsecutiveExtractions(segments, segmentIndex) {
-		return do.deleteConsecutiveExtractions(data, segments, segmentIndex)
-	}
-
-	// Handle different segment types
-	switch segment.Type {
-	case "property":
-		return do.deleteComplexProperty(data, segment, segments, segmentIndex)
-	case "array":
-		return do.deleteComplexArray(data, segment, segments, segmentIndex)
-	case "slice":
-		return do.deleteComplexSlice(data, segment, segments, segmentIndex)
-	case "extract":
-		return do.deleteComplexExtract(data, segment, segments, segmentIndex)
-	default:
-		return fmt.Errorf("unsupported segment type for deletion: %s", segment.Type)
-	}
-}
-
-// deleteComplexProperty handles property deletion in complex paths
-func (do *deleteOperations) deleteComplexProperty(data any, segment PathSegmentInfo, segments []PathSegmentInfo, segmentIndex int) error {
-	switch v := data.(type) {
-	case map[string]any:
-		if next, exists := v[segment.Key]; exists {
-			if segmentIndex+1 >= len(segments) {
-				// This is the final segment, delete the property
-				delete(v, segment.Key)
-				return nil
-			}
-			// Continue with the next segment
-			return do.deleteValueComplexSegments(next, segments, segmentIndex+1)
-		}
-		// Property not found - ignore deletion
-		return nil
-	case map[any]any:
-		if next, exists := v[segment.Key]; exists {
-			if segmentIndex+1 >= len(segments) {
-				delete(v, segment.Key)
-				return nil
-			}
-			return do.deleteValueComplexSegments(next, segments, segmentIndex+1)
-		}
-		return nil
-	case []any:
-		// Handle numeric property on array (dot notation array access)
-		if index := do.parseArrayIndex(segment.Key); index != -999999 {
-			if index < 0 {
-				index = len(v) + index
-			}
-			if index >= 0 && index < len(v) {
-				if segmentIndex+1 >= len(segments) {
-					v[index] = DeletedMarker
-					return nil
-				}
-				if v[index] != nil {
-					return do.deleteValueComplexSegments(v[index], segments, segmentIndex+1)
-				}
-			}
-		}
-		return nil
-	default:
-		// Cannot access property on this type - ignore deletion
-		return nil
-	}
-}
-
-// deleteComplexArray handles array deletion in complex paths
-func (do *deleteOperations) deleteComplexArray(data any, segment PathSegmentInfo, segments []PathSegmentInfo, segmentIndex int) error {
-	arr, ok := data.([]any)
-	if !ok {
-		// Not an array - ignore deletion
-		return nil
-	}
-
-	index := segment.Index
-	// Handle negative indices
-	if index < 0 {
-		index = len(arr) + index
-	}
-
-	// Check bounds after negative index conversion
-	if index >= 0 && index < len(arr) {
-		if segmentIndex+1 >= len(segments) {
-			// This is the final segment, delete the array element
-			arr[index] = DeletedMarker
-			return nil
-		}
-		// Continue with the next segment
-		if arr[index] != nil {
-			return do.deleteValueComplexSegments(arr[index], segments, segmentIndex+1)
-		}
-	}
-	// Index out of bounds - ignore deletion
-	return nil
-}
-
-// deleteComplexSlice handles slice deletion in complex paths
-func (do *deleteOperations) deleteComplexSlice(data any, segment PathSegmentInfo, segments []PathSegmentInfo, segmentIndex int) error {
-	arr, ok := data.([]any)
-	if !ok {
-		// Not an array - ignore deletion
-		return nil
-	}
-
-	start, end, step := do.parseSliceParameters(segment)
-	length := len(arr)
-
-	// Handle negative indices
-	if start < 0 {
-		start = length + start
-	}
-	if end < 0 {
-		end = length + end
-	}
-
-	// Clamp to bounds
-	if start < 0 {
-		start = 0
-	}
-	if end > length {
-		end = length
-	}
-
-	// Process each element in the slice range
-	for i := start; i < end; i += step {
-		if i < len(arr) {
-			if segmentIndex+1 >= len(segments) {
-				// This is the final segment, delete the array element
-				arr[i] = DeletedMarker
-			} else {
-				// Continue with the next segment
-				if arr[i] != nil {
-					err := do.deleteValueComplexSegments(arr[i], segments, segmentIndex+1)
-					if err != nil {
-						// Continue processing other elements even if one fails
-						continue
-					}
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// deleteComplexExtract handles extraction deletion in complex paths
-func (do *deleteOperations) deleteComplexExtract(data any, segment PathSegmentInfo, segments []PathSegmentInfo, segmentIndex int) error {
-	extractKey := segment.Key
-	if extractKey == "" {
-		return fmt.Errorf("extract key is required for deletion")
-	}
-
-	switch v := data.(type) {
-	case []any:
-		// Delete the extracted property from all objects in the array
-		for _, item := range v {
-			if obj, ok := item.(map[string]any); ok {
-				if segmentIndex+1 >= len(segments) {
-					// This is the final segment, delete the property
-					delete(obj, extractKey)
-				} else {
-					// Continue with the next segment
-					if next, exists := obj[extractKey]; exists && next != nil {
-						err := do.deleteValueComplexSegments(next, segments, segmentIndex+1)
-						if err != nil {
-							// Continue processing other objects even if one fails
-							continue
-						}
-					}
-				}
-			} else if itemArr, ok := item.([]any); ok {
-				// Handle nested arrays
-				for _, nestedItem := range itemArr {
-					if nestedObj, ok := nestedItem.(map[string]any); ok {
-						if segmentIndex+1 >= len(segments) {
-							delete(nestedObj, extractKey)
-						} else {
-							if next, exists := nestedObj[extractKey]; exists && next != nil {
-								err := do.deleteValueComplexSegments(next, segments, segmentIndex+1)
-								if err != nil {
-									continue
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-		return nil
-	case map[string]any:
-		if segmentIndex+1 >= len(segments) {
-			// This is the final segment, delete the property
-			delete(v, extractKey)
-			return nil
-		}
-		// Continue with the next segment
-		if next, exists := v[extractKey]; exists && next != nil {
-			return do.deleteValueComplexSegments(next, segments, segmentIndex+1)
-		}
-		return nil
-	default:
-		// Cannot extract from this type - ignore deletion
-		return nil
-	}
-}
-
-// hasConsecutiveExtractions checks if there are consecutive extraction segments
-func (do *deleteOperations) hasConsecutiveExtractions(segments []PathSegmentInfo, startIndex int) bool {
-	if startIndex+1 >= len(segments) {
-		return false
-	}
-	return segments[startIndex+1].Type == "extract"
-}
-
-// deleteConsecutiveExtractions handles deletion for consecutive extraction operations
-func (do *deleteOperations) deleteConsecutiveExtractions(data any, segments []PathSegmentInfo, segmentIndex int) error {
-	// Find all consecutive extraction segments
-	extractionSegments := []PathSegmentInfo{}
-	currentIndex := segmentIndex
-
-	for currentIndex < len(segments) && segments[currentIndex].Type == "extract" {
-		extractionSegments = append(extractionSegments, segments[currentIndex])
-		currentIndex++
-	}
-
-	// Get remaining segments after all extractions
-	remainingSegments := segments[currentIndex:]
-
-	// Process the consecutive extractions
-	return do.processConsecutiveExtractions(data, extractionSegments, remainingSegments, 0)
-}
-
-// processConsecutiveExtractions recursively processes multiple extraction levels
-func (do *deleteOperations) processConsecutiveExtractions(data any, extractionSegments []PathSegmentInfo, remainingSegments []PathSegmentInfo, extractionIndex int) error {
-	if extractionIndex >= len(extractionSegments) {
-		// All extractions processed, handle remaining segments if any
-		if len(remainingSegments) > 0 {
-			return do.deleteValueComplexSegments(data, remainingSegments, 0)
-		}
-		return nil
-	}
-
-	currentExtraction := extractionSegments[extractionIndex]
-	extractKey := currentExtraction.Extract
-
-	if extractKey == "" {
-		return nil
-	}
-
-	switch v := data.(type) {
-	case []any:
-		// Process each item in the array
-		for _, item := range v {
-			if obj, ok := item.(map[string]any); ok {
-				if extractionIndex+1 >= len(extractionSegments) && len(remainingSegments) == 0 {
-					// This is the final extraction and no remaining segments, delete the property
-					delete(obj, extractKey)
-				} else {
-					// Continue with next extraction or remaining segments
-					if next, exists := obj[extractKey]; exists && next != nil {
-						err := do.processConsecutiveExtractions(next, extractionSegments, remainingSegments, extractionIndex+1)
-						if err != nil {
-							// Continue processing other objects even if one fails
-							continue
-						}
-					}
-				}
-			} else if itemArr, ok := item.([]any); ok {
-				// Handle nested arrays
-				err := do.processConsecutiveExtractions(itemArr, extractionSegments, remainingSegments, extractionIndex)
-				if err != nil {
-					continue
-				}
-			}
-		}
-		return nil
-	case map[string]any:
-		if extractionIndex+1 >= len(extractionSegments) && len(remainingSegments) == 0 {
-			// This is the final extraction and no remaining segments, delete the property
-			delete(v, extractKey)
-			return nil
-		}
-		// Continue with next extraction or remaining segments
-		if next, exists := v[extractKey]; exists && next != nil {
-			return do.processConsecutiveExtractions(next, extractionSegments, remainingSegments, extractionIndex+1)
-		}
-		return nil
-	default:
-		// Cannot extract from this type
-		return nil
-	}
-}
-
-// markSegmentsForDeletion marks segments for deletion using deletion markers
-func (do *deleteOperations) markSegmentsForDeletion(data any, segments []PathSegmentInfo, segmentIndex int) error {
-	if segmentIndex >= len(segments) {
-		return nil
-	}
-
-	segment := segments[segmentIndex]
-
-	switch segment.Type {
-	case "property":
-		return do.markPropertyForDeletion(data, segment, segments, segmentIndex)
-	case "array":
-		return do.markArrayForDeletion(data, segment, segments, segmentIndex)
-	case "slice":
-		return do.markSliceForDeletion(data, segment, segments, segmentIndex)
-	case "extract":
-		return do.markExtractForDeletion(data, segment, segments, segmentIndex)
-	default:
-		return fmt.Errorf("unsupported segment type for marking deletion: %s", segment.Type)
-	}
-}
-
-// markPropertyForDeletion marks a property for deletion
-func (do *deleteOperations) markPropertyForDeletion(data any, segment PathSegmentInfo, segments []PathSegmentInfo, segmentIndex int) error {
-	switch v := data.(type) {
-	case map[string]any:
-		if segmentIndex+1 >= len(segments) {
-			// Final segment, mark for deletion
-			v[segment.Key] = DeletedMarker
-			return nil
-		}
-		// Continue to next segment
-		if next, exists := v[segment.Key]; exists && next != nil {
-			return do.markSegmentsForDeletion(next, segments, segmentIndex+1)
-		}
-		return nil
-	case []any:
-		if index := do.parseArrayIndex(segment.Key); index != -999999 {
-			if index < 0 {
-				index = len(v) + index
-			}
-			if index >= 0 && index < len(v) {
-				if segmentIndex+1 >= len(segments) {
-					v[index] = DeletedMarker
-					return nil
-				}
-				if v[index] != nil {
-					return do.markSegmentsForDeletion(v[index], segments, segmentIndex+1)
-				}
-			}
-		}
-		return nil
-	default:
-		return nil
-	}
-}
-
-// markArrayForDeletion marks an array element for deletion
-func (do *deleteOperations) markArrayForDeletion(data any, segment PathSegmentInfo, segments []PathSegmentInfo, segmentIndex int) error {
-	arr, ok := data.([]any)
-	if !ok {
-		return nil
-	}
-
-	index := segment.Index
-	if index < 0 {
-		index = len(arr) + index
-	}
-
-	if index >= 0 && index < len(arr) {
-		if segmentIndex+1 >= len(segments) {
-			arr[index] = DeletedMarker
-			return nil
-		}
-		if arr[index] != nil {
-			return do.markSegmentsForDeletion(arr[index], segments, segmentIndex+1)
-		}
-	}
-	return nil
-}
-
-// markSliceForDeletion marks array slice elements for deletion
-func (do *deleteOperations) markSliceForDeletion(data any, segment PathSegmentInfo, segments []PathSegmentInfo, segmentIndex int) error {
-	arr, ok := data.([]any)
-	if !ok {
-		return nil
-	}
-
-	start, end, step := do.parseSliceParameters(segment)
-	length := len(arr)
-
-	if start < 0 {
-		start = length + start
-	}
-	if end < 0 {
-		end = length + end
-	}
-	if start < 0 {
-		start = 0
-	}
-	if end > length {
-		end = length
-	}
-
-	for i := start; i < end; i += step {
-		if i < len(arr) {
-			if segmentIndex+1 >= len(segments) {
-				arr[i] = DeletedMarker
-			} else if arr[i] != nil {
-				do.markSegmentsForDeletion(arr[i], segments, segmentIndex+1)
-			}
-		}
-	}
-	return nil
-}
-
-// markExtractForDeletion marks extracted values for deletion
-func (do *deleteOperations) markExtractForDeletion(data any, segment PathSegmentInfo, segments []PathSegmentInfo, segmentIndex int) error {
-	extractKey := segment.Key
-	if extractKey == "" {
-		return nil
-	}
-
-	switch v := data.(type) {
-	case []any:
-		for _, item := range v {
-			if obj, ok := item.(map[string]any); ok {
-				if segmentIndex+1 >= len(segments) {
-					obj[extractKey] = DeletedMarker
-				} else if next, exists := obj[extractKey]; exists && next != nil {
-					do.markSegmentsForDeletion(next, segments, segmentIndex+1)
-				}
-			}
-		}
-		return nil
-	case map[string]any:
-		if segmentIndex+1 >= len(segments) {
-			v[extractKey] = DeletedMarker
-			return nil
-		}
-		if next, exists := v[extractKey]; exists && next != nil {
-			return do.markSegmentsForDeletion(next, segments, segmentIndex+1)
-		}
-		return nil
-	default:
-		return nil
-	}
-}
-
-// cleanupDeletedMarkersRecursive recursively removes deletion markers
-func (do *deleteOperations) cleanupDeletedMarkersRecursive(data any) any {
-	switch v := data.(type) {
-	case map[string]any:
-		result := make(map[string]any)
-		for key, value := range v {
-			if value != DeletedMarker {
-				cleanedValue := do.cleanupDeletedMarkersRecursive(value)
-				result[key] = cleanedValue
-			}
-		}
-		return result
-	case []any:
-		var result []any
-		for _, item := range v {
-			if item != DeletedMarker {
-				cleanedItem := do.cleanupDeletedMarkersRecursive(item)
-				result = append(result, cleanedItem)
-			}
-		}
-		return result
-	default:
-		return data
-	}
-}
-
-// parseArrayIndex parses an array index from a string
-func (do *deleteOperations) parseArrayIndex(indexStr string) int {
-	indexStr = strings.Trim(indexStr, "[]")
-	if index, err := strconv.Atoi(indexStr); err == nil {
-		return index
-	}
-	return -999999 // Invalid index marker
-}
-
-// parseSliceParameters parses slice parameters from a segment
-func (do *deleteOperations) parseSliceParameters(segment PathSegmentInfo) (start, end, step int) {
-	start = 0
-	end = -1 // Will be set to array length
-	step = 1
-
-	if segment.Start != nil {
-		start = *segment.Start
-	}
-	if segment.End != nil {
-		end = *segment.End
-	}
-	if segment.Step != nil {
-		step = *segment.Step
-		if step == 0 {
-			step = 1
-		}
-	}
-
-	return start, end, step
-}
-
-// handleExtraction handles extraction syntax with flattening
 func (p *Processor) handleExtraction(data any, segment PathSegment) (any, error) {
 	field := segment.Key
 	if field == "" {
@@ -3261,8 +1179,6 @@ func (p *Processor) handleExtraction(data any, segment PathSegment) (any, error)
 	// This matches the expected behavior in tests
 	return nil, nil
 }
-
-// flattenValue recursively flattens nested arrays into a single flat array
 func (p *Processor) flattenValue(value any, results *[]any) {
 	if arr, ok := value.([]any); ok {
 		// If it's an array, recursively flatten each element
@@ -3274,8 +1190,6 @@ func (p *Processor) flattenValue(value any, results *[]any) {
 		*results = append(*results, value)
 	}
 }
-
-// handleStructAccess handles struct field access using reflection
 func (p *Processor) handleStructAccess(data any, fieldName string) any {
 	if data == nil {
 		return nil
@@ -3313,8 +1227,6 @@ func (p *Processor) handleStructAccess(data any, fieldName string) any {
 
 	return nil
 }
-
-// handleDeepExtractionInNavigation handles deep extraction patterns
 func (p *Processor) handleDeepExtractionInNavigation(data any, segments []PathSegment) (any, error) {
 	// Group consecutive extraction segments
 	extractionGroups := p.detectConsecutiveExtractions(segments)
@@ -3334,8 +1246,6 @@ func (p *Processor) handleDeepExtractionInNavigation(data any, segments []PathSe
 
 	return current, nil
 }
-
-// hasDeepExtractionPattern checks if segments contain deep extraction patterns
 func (p *Processor) hasDeepExtractionPattern(segments []PathSegment) bool {
 	extractionCount := 0
 	for _, segment := range segments {
@@ -3348,8 +1258,6 @@ func (p *Processor) hasDeepExtractionPattern(segments []PathSegment) bool {
 	}
 	return false
 }
-
-// hasMixedExtractionOperations checks for mixed extraction operations
 func (p *Processor) hasMixedExtractionOperations(segments []PathSegment) bool {
 	hasFlat := false
 	hasRegular := false
@@ -3370,8 +1278,6 @@ func (p *Processor) hasMixedExtractionOperations(segments []PathSegment) bool {
 
 	return false
 }
-
-// getValueWithDistributedOperation handles distributed operations
 func (p *Processor) getValueWithDistributedOperation(data any, path string) (any, error) {
 	// Parse the path to identify distributed operation patterns
 	segments := p.getPathSegments()
@@ -3451,8 +1357,6 @@ func (p *Processor) getValueWithDistributedOperation(data any, path string) (any
 
 	return results, nil
 }
-
-// extractIndividualArrays extracts individual arrays from data using extraction segment
 func (p *Processor) extractIndividualArrays(data any, extractionSegment PathSegment) ([]any, error) {
 	field := extractionSegment.Key
 	if field == "" {
@@ -3477,8 +1381,6 @@ func (p *Processor) extractIndividualArrays(data any, extractionSegment PathSegm
 
 	return results, nil
 }
-
-// applySingleArrayOperation applies an array operation to a single array
 func (p *Processor) applySingleArrayOperation(array any, segment PathSegment) any {
 	if arr, ok := array.([]any); ok {
 		result := p.handleArrayAccess(arr, segment)
@@ -3488,8 +1390,6 @@ func (p *Processor) applySingleArrayOperation(array any, segment PathSegment) an
 	}
 	return nil
 }
-
-// applySingleArraySlice applies a slice operation to a single array
 func (p *Processor) applySingleArraySlice(array any, segment PathSegment) any {
 	if arr, ok := array.([]any); ok {
 		result := p.handleArraySlice(arr, segment)
@@ -3499,8 +1399,6 @@ func (p *Processor) applySingleArraySlice(array any, segment PathSegment) any {
 	}
 	return nil
 }
-
-// findTargetArrayForDistributedOperation finds the target array for distributed operations
 func (p *Processor) findTargetArrayForDistributedOperation(item any) []any {
 	// This method would contain logic to find the target array within an item
 	// For now, return the item if it's an array
@@ -3509,8 +1407,6 @@ func (p *Processor) findTargetArrayForDistributedOperation(item any) []any {
 	}
 	return nil
 }
-
-// handlePostExtractionArrayAccess handles array access after extraction
 func (p *Processor) handlePostExtractionArrayAccess(data any, segment PathSegment) any {
 	// Check if data is an array of arrays (result of extraction)
 	if arr, ok := data.([]any); ok {
@@ -3532,13 +1428,9 @@ func (p *Processor) handlePostExtractionArrayAccess(data any, segment PathSegmen
 	// For single array, apply operation directly
 	return p.applySingleArrayOperation(data, segment)
 }
-
-// handleDistributedArrayAccess handles distributed array access operations
 func (p *Processor) handleDistributedArrayAccess(data any, segment PathSegment) any {
 	return p.handlePostExtractionArrayAccess(data, segment)
 }
-
-// handlePostExtractionArraySlice handles array slicing after extraction
 func (p *Processor) handlePostExtractionArraySlice(data any, segment PathSegment) any {
 	// Check if data is an array of arrays (result of extraction)
 	if arr, ok := data.([]any); ok {
@@ -3560,10 +1452,6 @@ func (p *Processor) handlePostExtractionArraySlice(data any, segment PathSegment
 	// For single array, apply operation directly
 	return p.applySingleArraySlice(data, segment)
 }
-
-// ConsecutiveExtractionGroup represents a group of consecutive extraction operations
-
-// processConsecutiveExtractions processes a sequence of consecutive extractions
 func (p *Processor) processConsecutiveExtractions(data any, extractionSegments []PathSegment, remainingSegments []PathSegment) (any, error) {
 	current := data
 
@@ -3578,8 +1466,6 @@ func (p *Processor) processConsecutiveExtractions(data any, extractionSegments [
 
 	return current, nil
 }
-
-// buildExtractionContext builds context for distributed operations
 func (p *Processor) buildExtractionContext(data any, segments []PathSegment) (*ExtractionContext, error) {
 	// Find extraction segments and build context
 	var extractionSegments []PathSegment
@@ -3611,8 +1497,6 @@ func (p *Processor) buildExtractionContext(data any, segments []PathSegment) (*E
 		OperationType:      "get",
 	}, nil
 }
-
-// collectSourceContainers collects containers that contain the target arrays
 func (p *Processor) collectSourceContainers(data any, extractionSegments []PathSegment) ([]any, error) {
 	var containers []any
 
@@ -3628,13 +1512,9 @@ func (p *Processor) collectSourceContainers(data any, extractionSegments []PathS
 
 	return containers, nil
 }
-
-// collectContainersForExtraction collects containers for extraction operations
 func (p *Processor) collectContainersForExtraction(data any, extractionSegments []PathSegment, containers *[]any) error {
 	return p.collectContainersRecursive(data, extractionSegments, 0, containers)
 }
-
-// collectContainersRecursive recursively collects containers
 func (p *Processor) collectContainersRecursive(current any, segments []PathSegment, segmentIndex int, containers *[]any) error {
 	if segmentIndex >= len(segments) {
 		*containers = append(*containers, current)
@@ -3669,8 +1549,6 @@ func (p *Processor) collectContainersRecursive(current any, segments []PathSegme
 
 	return nil
 }
-
-// flattenContainersRecursive flattens containers recursively
 func (p *Processor) flattenContainersRecursive(arr []any, containers *[]any) {
 	for _, item := range arr {
 		if nestedArr, ok := item.([]any); ok {
@@ -3680,8 +1558,6 @@ func (p *Processor) flattenContainersRecursive(arr []any, containers *[]any) {
 		}
 	}
 }
-
-// ExtractionContext holds context for distributed operations
 type ExtractionContext struct {
 	OriginalContainers []any  // Original containers that hold the target arrays
 	ArrayFieldName     string // Name of the array field being operated on
@@ -3690,391 +1566,6 @@ type ExtractionContext struct {
 }
 
 // extractionOperations provides extraction operations
-type extractionOperations struct {
-	utils *processorUtils
-}
-
-// NewExtractionOperations creates a new extraction operations instance
-func NewExtractionOperations(utils *processorUtils) *extractionOperations {
-	return &extractionOperations{
-		utils: utils,
-	}
-}
-
-// HandleExtraction handles basic extraction operations ({key} syntax)
-func (eo *extractionOperations) HandleExtraction(data any, key string) (any, error) {
-	if key == "" {
-		return nil, fmt.Errorf("extraction key cannot be empty")
-	}
-
-	switch v := data.(type) {
-	case []any:
-		// Extract the specified key from all objects in the array
-		var results []any
-		for _, item := range v {
-			if obj, ok := item.(map[string]any); ok {
-				if value, exists := obj[key]; exists {
-					results = append(results, value)
-				} else {
-					results = append(results, nil)
-				}
-			} else {
-				results = append(results, nil)
-			}
-		}
-		return results, nil
-
-	case map[string]any:
-		// Extract the key from the object
-		if value, exists := v[key]; exists {
-			return value, nil
-		}
-		return nil, nil
-
-	case map[any]any:
-		// Handle generic map
-		if value, exists := v[key]; exists {
-			return value, nil
-		}
-		return nil, nil
-
-	default:
-		return nil, fmt.Errorf("cannot extract from type %T", data)
-	}
-}
-
-// HandleDeepExtraction handles deep extraction operations with multiple levels
-func (eo *extractionOperations) HandleDeepExtraction(data any, keys []string) (any, error) {
-	if len(keys) == 0 {
-		return data, nil
-	}
-
-	current := data
-	for i, key := range keys {
-		result, err := eo.HandleExtraction(current, key)
-		if err != nil {
-			return nil, fmt.Errorf("deep extraction failed at level %d (key: %s): %w", i, key, err)
-		}
-		current = result
-	}
-
-	return current, nil
-}
-
-// HandleConsecutiveExtractions handles consecutive extraction operations like {field1}{field2}
-func (eo *extractionOperations) HandleConsecutiveExtractions(data any, segments []PathSegmentInfo) (any, error) {
-	// Extract only the extraction segments
-	var extractionKeys []string
-	for _, segment := range segments {
-		if segment.Type == "extract" && segment.Key != "" {
-			extractionKeys = append(extractionKeys, segment.Key)
-		}
-	}
-
-	if len(extractionKeys) == 0 {
-		return data, nil
-	}
-
-	return eo.processConsecutiveExtractions(data, extractionKeys, 0)
-}
-
-// DetectConsecutiveExtractions detects groups of consecutive extraction operations
-func (eo *extractionOperations) DetectConsecutiveExtractions(segments []PathSegmentInfo) [][]PathSegmentInfo {
-	var groups [][]PathSegmentInfo
-	var currentGroup []PathSegmentInfo
-
-	for _, segment := range segments {
-		if segment.Type == "extract" {
-			currentGroup = append(currentGroup, segment)
-		} else {
-			if len(currentGroup) > 1 {
-				// Only consider groups with multiple consecutive extractions
-				groups = append(groups, currentGroup)
-			}
-			currentGroup = nil
-		}
-	}
-
-	// Don't forget the last group
-	if len(currentGroup) > 1 {
-		groups = append(groups, currentGroup)
-	}
-
-	return groups
-}
-
-// processConsecutiveExtractions recursively processes consecutive extractions
-func (eo *extractionOperations) processConsecutiveExtractions(data any, keys []string, depth int) (any, error) {
-	if depth >= len(keys) {
-		return data, nil
-	}
-
-	currentKey := keys[depth]
-
-	// Extract current level
-	extracted, err := eo.HandleExtraction(data, currentKey)
-	if err != nil {
-		return nil, fmt.Errorf("consecutive extraction failed at depth %d (key: %s): %w", depth, currentKey, err)
-	}
-
-	// If this is the last key, return the result
-	if depth == len(keys)-1 {
-		return extracted, nil
-	}
-
-	// Continue with next level
-	return eo.processConsecutiveExtractions(extracted, keys, depth+1)
-}
-
-// HandleMixedExtractionOperations handles mixed operations like {field}[0:2]{another}
-func (eo *extractionOperations) HandleMixedExtractionOperations(data any, segments []PathSegmentInfo) (any, error) {
-	current := data
-
-	for i, segment := range segments {
-		switch segment.Type {
-		case "extract":
-			result, err := eo.HandleExtraction(current, segment.Key)
-			if err != nil {
-				return nil, fmt.Errorf("mixed extraction failed at segment %d: %w", i, err)
-			}
-			current = result
-
-		case "array":
-			// Handle array access after extraction
-			arr, ok := current.([]any)
-			if !ok {
-				return nil, fmt.Errorf("expected array for index access at segment %d, got %T", i, current)
-			}
-
-			index := segment.Index
-			if index < 0 {
-				index = len(arr) + index
-			}
-
-			if index < 0 || index >= len(arr) {
-				return nil, fmt.Errorf("array index %d out of bounds at segment %d", segment.Index, i)
-			}
-
-			current = arr[index]
-
-		case "slice":
-			// Handle array slice after extraction
-			arr, ok := current.([]any)
-			if !ok {
-				return nil, fmt.Errorf("expected array for slice access at segment %d, got %T", i, current)
-			}
-
-			start, end, step := eo.parseSliceParameters(segment)
-			current = eo.performSlice(arr, start, end, step)
-
-		case "property":
-			// Handle property access
-			result, err := eo.handlePropertyAccess(current, segment.Key)
-			if err != nil {
-				return nil, fmt.Errorf("property access failed at segment %d: %w", i, err)
-			}
-			current = result
-
-		default:
-			return nil, fmt.Errorf("unsupported segment type in mixed extraction: %s", segment.Type)
-		}
-	}
-
-	return current, nil
-}
-
-// parseSliceParameters parses slice parameters from a segment
-func (eo *extractionOperations) parseSliceParameters(segment PathSegmentInfo) (start, end, step int) {
-	start = 0
-	end = -1 // Will be set to array length
-	step = 1
-
-	if segment.Start != nil {
-		start = *segment.Start
-	}
-	if segment.End != nil {
-		end = *segment.End
-	}
-	if segment.Step != nil {
-		step = *segment.Step
-		if step == 0 {
-			step = 1
-		}
-	}
-
-	return start, end, step
-}
-
-// performSlice performs array slicing
-func (eo *extractionOperations) performSlice(arr []any, start, end, step int) []any {
-	length := len(arr)
-
-	// Handle negative indices
-	if start < 0 {
-		start = length + start
-	}
-	if end < 0 {
-		end = length + end
-	}
-	if end == -1 {
-		end = length
-	}
-
-	// Clamp to bounds
-	if start < 0 {
-		start = 0
-	}
-	if end > length {
-		end = length
-	}
-	if start > end {
-		start = end
-	}
-
-	// Perform slice
-	if step == 1 {
-		return arr[start:end]
-	}
-
-	var result []any
-	for i := start; i < end; i += step {
-		if i < length {
-			result = append(result, arr[i])
-		}
-	}
-	return result
-}
-
-// handlePropertyAccess handles property access for mixed operations
-func (eo *extractionOperations) handlePropertyAccess(data any, property string) (any, error) {
-	switch v := data.(type) {
-	case map[string]any:
-		if value, exists := v[property]; exists {
-			return value, nil
-		}
-		return nil, fmt.Errorf("property '%s' not found", property)
-
-	case map[any]any:
-		if value, exists := v[property]; exists {
-			return value, nil
-		}
-		return nil, fmt.Errorf("property '%s' not found", property)
-
-	default:
-		return nil, fmt.Errorf("cannot access property '%s' on type %T", property, data)
-	}
-}
-
-// ExtractFromArray extracts a specific key from all objects in an array
-func (eo *extractionOperations) ExtractFromArray(arr []any, key string) []any {
-	var results []any
-	for _, item := range arr {
-		if obj, ok := item.(map[string]any); ok {
-			if value, exists := obj[key]; exists {
-				results = append(results, value)
-			} else {
-				results = append(results, nil)
-			}
-		} else {
-			results = append(results, nil)
-		}
-	}
-	return results
-}
-
-// ExtractFromObject extracts a specific key from an object
-func (eo *extractionOperations) ExtractFromObject(obj map[string]any, key string) (any, bool) {
-	value, exists := obj[key]
-	return value, exists
-}
-
-// FlattenExtractionResults flattens nested extraction results
-func (eo *extractionOperations) FlattenExtractionResults(data any) []any {
-	var results []any
-	eo.flattenRecursive(data, &results)
-	return results
-}
-
-// flattenRecursive recursively flattens extraction results
-func (eo *extractionOperations) flattenRecursive(data any, results *[]any) {
-	switch v := data.(type) {
-	case []any:
-		for _, item := range v {
-			if subArr, ok := item.([]any); ok {
-				eo.flattenRecursive(subArr, results)
-			} else {
-				*results = append(*results, item)
-			}
-		}
-	default:
-		*results = append(*results, data)
-	}
-}
-
-// IsExtractionPath checks if a path contains extraction operations
-func (eo *extractionOperations) IsExtractionPath(path string) bool {
-	return strings.Contains(path, "{") && strings.Contains(path, "}")
-}
-
-// CountExtractions counts the number of extraction operations in a path
-func (eo *extractionOperations) CountExtractions(path string) int {
-	return strings.Count(path, "{")
-}
-
-// ValidateExtractionSyntax validates extraction syntax in a path
-func (eo *extractionOperations) ValidateExtractionSyntax(path string) error {
-	openCount := strings.Count(path, "{")
-	closeCount := strings.Count(path, "}")
-
-	if openCount != closeCount {
-		return fmt.Errorf("unmatched extraction braces in path: %s", path)
-	}
-
-	// Check for empty extractions
-	if strings.Contains(path, "{}") {
-		return fmt.Errorf("empty extraction syntax not allowed: %s", path)
-	}
-
-	return nil
-}
-
-// ExtractMultipleKeys extracts multiple keys from data in a single operation
-func (eo *extractionOperations) ExtractMultipleKeys(data any, keys []string) (map[string]any, error) {
-	results := make(map[string]any)
-
-	for _, key := range keys {
-		result, err := eo.HandleExtraction(data, key)
-		if err != nil {
-			results[key] = nil
-		} else {
-			results[key] = result
-		}
-	}
-
-	return results, nil
-}
-
-// FilterExtractionResults filters extraction results based on a predicate
-func (eo *extractionOperations) FilterExtractionResults(data any, predicate func(any) bool) []any {
-	var results []any
-
-	switch v := data.(type) {
-	case []any:
-		for _, item := range v {
-			if predicate(item) {
-				results = append(results, item)
-			}
-		}
-	default:
-		if predicate(data) {
-			results = append(results, data)
-		}
-	}
-
-	return results
-}
-
-// ArrayExtensionNeededError indicates that an array needs to be extended
 type ArrayExtensionNeededError struct {
 	RequiredLength int
 	CurrentLength  int
@@ -4094,7 +1585,6 @@ func (p *Processor) setValueAtPath(data any, path string, value any) error {
 	return p.setValueAtPathWithOptions(data, path, value, false)
 }
 
-// setValueAtPathWithOptions sets a value at the specified path with creation options
 func (p *Processor) setValueAtPathWithOptions(data any, path string, value any, createPaths bool) error {
 	if path == "" || path == "." {
 		return fmt.Errorf("cannot set root value")
@@ -4103,8 +1593,6 @@ func (p *Processor) setValueAtPathWithOptions(data any, path string, value any, 
 	// Use advanced path parsing for full feature support
 	return p.setValueAdvancedPath(data, path, value, createPaths)
 }
-
-// setValueAdvancedPath sets a value using hybrid processing
 func (p *Processor) setValueAdvancedPath(data any, path string, value any, createPaths bool) error {
 	// Handle JSON Pointer format first
 	if strings.HasPrefix(path, "/") {
@@ -4132,8 +1620,6 @@ func (p *Processor) setValueAdvancedPath(data any, path string, value any, creat
 	// Use dot notation with segments for simple paths
 	return p.setValueDotNotationWithCreation(data, path, value, createPaths)
 }
-
-// isSimpleArraySlicePath checks if a path is a simple array slice that needs array extension
 func (p *Processor) isSimpleArraySlicePath(path string) bool {
 	// Check for simple patterns like "property[start:end]" or "property.subprop[start:end]"
 	// These should use legacy handling for array extension support
@@ -4182,8 +1668,6 @@ func (p *Processor) isSimpleArraySlicePath(path string) bool {
 
 	return true
 }
-
-// isSimpleArrayIndexPath checks if a path is a simple array index access that might need extension
 func (p *Processor) isSimpleArrayIndexPath(path string) bool {
 	// Must contain array index syntax
 	if !strings.Contains(path, "[") || !strings.Contains(path, "]") {
@@ -4233,8 +1717,6 @@ func (p *Processor) isSimpleArrayIndexPath(path string) bool {
 
 	return true
 }
-
-// handleArrayExtensionAndSet handles array extension and sets values
 func (p *Processor) handleArrayExtensionAndSet(data any, segments []PathSegment, arrayExtErr *ArrayExtensionNeededError) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided for array extension")
@@ -4264,8 +1746,6 @@ func (p *Processor) handleArrayExtensionAndSet(data any, segments []PathSegment,
 		return fmt.Errorf("expected array or slice segment for array extension, got %s", finalSegment.TypeString())
 	}
 }
-
-// handleArrayIndexExtension handles array extension for simple index access
 func (p *Processor) handleArrayIndexExtension(current any, segment PathSegment, arrayExtErr *ArrayExtensionNeededError) error {
 	// For array index access, current should be the array that needs extension
 	arr, ok := current.([]any)
@@ -4296,8 +1776,6 @@ func (p *Processor) handleArrayIndexExtension(current any, segment PathSegment, 
 	// We need to signal that the parent should handle this
 	return fmt.Errorf("cannot extend array in place for index %d", arrayExtErr.Start)
 }
-
-// handleArraySliceExtension handles array extension for slice access
 func (p *Processor) handleArraySliceExtension(parent any, segment PathSegment, arrayExtErr *ArrayExtensionNeededError) error {
 	// Get the array that needs extension
 	arr, ok := parent.([]any)
@@ -4320,8 +1798,6 @@ func (p *Processor) handleArraySliceExtension(parent any, segment PathSegment, a
 	// This is a limitation of the current approach
 	return fmt.Errorf("slice array extension not fully supported yet")
 }
-
-// replaceArrayInParent replaces an array in its parent container
 func (p *Processor) replaceArrayInParent(data any, parentSegments []PathSegment, newArray []any) error {
 	if len(parentSegments) == 0 {
 		// The array is at the root level - we can't replace it
@@ -4370,8 +1846,6 @@ func (p *Processor) replaceArrayInParent(data any, parentSegments []PathSegment,
 		return fmt.Errorf("unsupported parent segment type for array replacement: %s", parentSegment.TypeString())
 	}
 }
-
-// setValueWithSegments sets a value using parsed segments
 func (p *Processor) setValueWithSegments(data any, segments []PathSegment, value any, createPaths bool) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
@@ -4405,8 +1879,6 @@ func (p *Processor) setValueWithSegments(data any, segments []PathSegment, value
 
 	return err
 }
-
-// setValueForArrayIndexWithExtension sets a value for array index or slice with extension support
 func (p *Processor) setValueForArrayIndexWithExtension(current any, segment PathSegment, value any, rootData any, segments []PathSegment) error {
 	switch segment.TypeString() {
 	case "array":
@@ -4417,8 +1889,6 @@ func (p *Processor) setValueForArrayIndexWithExtension(current any, segment Path
 		return fmt.Errorf("unsupported segment type for array extension: %s", segment.TypeString())
 	}
 }
-
-// setValueForArrayIndexWithAutoExtension handles array index access with extension
 func (p *Processor) setValueForArrayIndexWithAutoExtension(current any, segment PathSegment, value any, rootData any, segments []PathSegment) error {
 	// Get the array index from the segment
 	index := segment.Index
@@ -4447,8 +1917,6 @@ func (p *Processor) setValueForArrayIndexWithAutoExtension(current any, segment 
 		return fmt.Errorf("cannot set array index %d on type %T", index, current)
 	}
 }
-
-// setValueForArraySliceWithAutoExtension handles array slice access with extension
 func (p *Processor) setValueForArraySliceWithAutoExtension(current any, segment PathSegment, value any, rootData any, segments []PathSegment) error {
 	arr, ok := current.([]any)
 	if !ok {
@@ -4474,8 +1942,6 @@ func (p *Processor) setValueForArraySliceWithAutoExtension(current any, segment 
 
 	return nil
 }
-
-// getSliceParameters extracts slice parameters from segment
 func (p *Processor) getSliceParameters(segment PathSegment, arrayLength int) (start, end, step int) {
 	// Default values
 	start = 0
@@ -4515,8 +1981,6 @@ func (p *Processor) getSliceParameters(segment PathSegment, arrayLength int) (st
 
 	return start, end, step
 }
-
-// extendArrayAndSetSliceValue extends an array for slice operations
 func (p *Processor) extendArrayAndSetSliceValue(rootData any, segments []PathSegment, start, end, step int, value any) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
@@ -4602,8 +2066,6 @@ func (p *Processor) extendArrayAndSetSliceValue(rootData any, segments []PathSeg
 		return fmt.Errorf("cannot extend array in parent of type %T", current)
 	}
 }
-
-// extendArrayAndSetValue extends an array at the specified path and sets the value
 func (p *Processor) extendArrayAndSetValue(rootData any, segments []PathSegment, targetIndex int, value any) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
@@ -4686,8 +2148,6 @@ func (p *Processor) extendArrayAndSetValue(rootData any, segments []PathSegment,
 		return fmt.Errorf("cannot extend array in parent of type %T", current)
 	}
 }
-
-// navigateToSegment navigates to a specific segment, creating if necessary
 func (p *Processor) navigateToSegment(current any, segment PathSegment, createPaths bool, allSegments []PathSegment, currentIndex int) (any, error) {
 	switch segment.TypeString() {
 	case "property":
@@ -4711,8 +2171,6 @@ func (p *Processor) navigateToSegment(current any, segment PathSegment, createPa
 		return nil, fmt.Errorf("unsupported segment type: %v", segment.TypeString())
 	}
 }
-
-// navigateToExtraction navigates to an extraction result for Set operations
 func (p *Processor) navigateToExtraction(current any, segment PathSegment, createPaths bool, allSegments []PathSegment, currentIndex int) (any, error) {
 	field := segment.Key
 	if field == "" {
@@ -4745,8 +2203,6 @@ func (p *Processor) navigateToExtraction(current any, segment PathSegment, creat
 
 	return nil, fmt.Errorf("extraction field '%s' not found", field)
 }
-
-// navigateToProperty navigates to a property, creating if necessary
 func (p *Processor) navigateToProperty(current any, property string, createPaths bool, allSegments []PathSegment, currentIndex int) (any, error) {
 	switch v := current.(type) {
 	case map[string]any:
@@ -4780,8 +2236,6 @@ func (p *Processor) navigateToProperty(current any, property string, createPaths
 		return nil, fmt.Errorf("cannot access property '%s' on type %T", property, current)
 	}
 }
-
-// createContainerForNextSegment creates appropriate container for the next segment
 func (p *Processor) createContainerForNextSegment(allSegments []PathSegment, currentIndex int) (any, error) {
 	if currentIndex+1 >= len(allSegments) {
 		// This is the last segment, return nil (will be replaced by the actual value)
@@ -4809,8 +2263,6 @@ func (p *Processor) createContainerForNextSegment(allSegments []PathSegment, cur
 		return make(map[string]any), nil // Default to object
 	}
 }
-
-// setValueForSegment sets a value for a specific segment
 func (p *Processor) setValueForSegment(current any, segment PathSegment, value any, createPaths bool) error {
 	switch segment.TypeString() {
 	case "property":
@@ -4826,8 +2278,6 @@ func (p *Processor) setValueForSegment(current any, segment PathSegment, value a
 		return fmt.Errorf("unsupported segment type for set: %v", segment.TypeString())
 	}
 }
-
-// setValueForProperty sets a value for a property
 func (p *Processor) setValueForProperty(current any, property string, value any, createPaths bool) error {
 	switch v := current.(type) {
 	case map[string]any:
@@ -4845,8 +2295,6 @@ func (p *Processor) setValueForProperty(current any, property string, value any,
 		return fmt.Errorf("cannot set property '%s' on type %T", property, current)
 	}
 }
-
-// setValueForArrayIndex sets a value at an array index
 func (p *Processor) setValueForArrayIndex(current any, index int, value any, createPaths bool) error {
 	switch v := current.(type) {
 	case []any:
@@ -4880,8 +2328,6 @@ func (p *Processor) setValueForArrayIndex(current any, index int, value any, cre
 		return fmt.Errorf("cannot set array index %d on type %T", index, current)
 	}
 }
-
-// setValueForArraySlice sets a value for an array slice
 func (p *Processor) setValueForArraySlice(current any, segment PathSegment, value any, createPaths bool) error {
 	// This method is called on the array itself, so we need to handle array extension differently
 	// The problem is that we can't modify the parent reference from here
@@ -4943,8 +2389,6 @@ func (p *Processor) setValueForArraySlice(current any, segment PathSegment, valu
 	// Assign value to slice (within current bounds)
 	return p.assignValueToSlice(arr, start, end, step, value)
 }
-
-// setValueForExtract sets a value for extraction operations
 func (p *Processor) setValueForExtract(current any, segment PathSegment, value any, createPaths bool) error {
 	field := segment.Key
 	if field == "" {
@@ -4968,8 +2412,6 @@ func (p *Processor) setValueForExtract(current any, segment PathSegment, value a
 
 	return fmt.Errorf("cannot perform extraction set on type %T", current)
 }
-
-// setValueForArrayExtract sets values for array extraction (regular)
 func (p *Processor) setValueForArrayExtract(arr []any, extractKey string, value any) error {
 	for i, item := range arr {
 		if obj, ok := item.(map[string]any); ok {
@@ -4982,8 +2424,6 @@ func (p *Processor) setValueForArrayExtract(arr []any, extractKey string, value 
 	}
 	return nil
 }
-
-// setValueForArrayExtractFlat sets values for flat array extraction
 func (p *Processor) setValueForArrayExtractFlat(arr []any, extractKey string, value any) error {
 	// For flat extraction, we need to handle nested arrays
 	for i, item := range arr {
@@ -5033,13 +2473,9 @@ func (p *Processor) setValueForArrayExtractFlat(arr []any, extractKey string, va
 	}
 	return nil
 }
-
-// setValueDotNotation sets a value using dot notation
 func (p *Processor) setValueDotNotation(data any, path string, value any) error {
 	return p.setValueDotNotationWithCreation(data, path, value, false)
 }
-
-// setValueDotNotationWithCreation sets a value using dot notation with path creation
 func (p *Processor) setValueDotNotationWithCreation(data any, path string, value any, createPaths bool) error {
 	// Parse path into segments
 	segments := p.getPathSegments()
@@ -5049,13 +2485,9 @@ func (p *Processor) setValueDotNotationWithCreation(data any, path string, value
 
 	return p.setValueWithSegments(data, segments, value, createPaths)
 }
-
-// setValueJSONPointer sets a value using JSON Pointer format
 func (p *Processor) setValueJSONPointer(data any, path string, value any) error {
 	return p.setValueJSONPointerWithCreation(data, path, value)
 }
-
-// setValueJSONPointerWithCreation sets a value using JSON Pointer with path creation
 func (p *Processor) setValueJSONPointerWithCreation(data any, path string, value any) error {
 	if path == "/" {
 		return fmt.Errorf("cannot set root value")
@@ -5068,8 +2500,6 @@ func (p *Processor) setValueJSONPointerWithCreation(data any, path string, value
 	// Handle array extension for JSON Pointer
 	return p.setValueJSONPointerWithArrayExtension(data, segments, value)
 }
-
-// setValueJSONPointerWithArrayExtension sets a value using JSON Pointer with array extension support
 func (p *Processor) setValueJSONPointerWithArrayExtension(data any, segments []string, value any) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
@@ -5100,8 +2530,6 @@ func (p *Processor) setValueJSONPointerWithArrayExtension(data any, segments []s
 
 	return p.setJSONPointerFinalValue(current, finalSegment, value)
 }
-
-// createPathSegmentForJSONPointer creates path segments for JSON Pointer format
 func (p *Processor) createPathSegmentForJSONPointer(current any, segment string, allSegments []string, currentIndex int) (any, error) {
 	switch v := current.(type) {
 	case map[string]any:
@@ -5139,8 +2567,6 @@ func (p *Processor) createPathSegmentForJSONPointer(current any, segment string,
 		return nil, fmt.Errorf("cannot navigate through %T with segment %s", current, segment)
 	}
 }
-
-// setPropertyValue sets a property value without path creation
 func (p *Processor) setPropertyValue(current any, property string, value any) error {
 	switch v := current.(type) {
 	case map[string]any:
@@ -5153,8 +2579,6 @@ func (p *Processor) setPropertyValue(current any, property string, value any) er
 		return fmt.Errorf("cannot set property '%s' on type %T", property, current)
 	}
 }
-
-// setPropertyValueWithCreation sets a property value with path creation
 func (p *Processor) setPropertyValueWithCreation(current any, property string, value any) error {
 	switch v := current.(type) {
 	case map[string]any:
@@ -5181,8 +2605,6 @@ func (p *Processor) setPropertyValueWithCreation(current any, property string, v
 		return fmt.Errorf("cannot set property '%s' on type %T", property, current)
 	}
 }
-
-// handleJSONPointerArrayExtension handles array extension for JSON Pointer format
 func (p *Processor) handleJSONPointerArrayExtension(parent any, arr []any, targetIndex int, allSegments []string, currentIndex int) (any, error) {
 	// Create extended array
 	extendedArr := make([]any, targetIndex+1)
@@ -5219,8 +2641,6 @@ func (p *Processor) handleJSONPointerArrayExtension(parent any, arr []any, targe
 	// Return the new container but note that parent won't be updated
 	return newContainer, nil
 }
-
-// createPathSegmentForJSONPointerWithExtension creates path segments for JSON Pointer with array extension
 func (p *Processor) createPathSegmentForJSONPointerWithExtension(current any, segment string, allSegments []string, currentIndex int) (any, error) {
 	switch v := current.(type) {
 	case map[string]any:
@@ -5278,8 +2698,6 @@ func (p *Processor) createPathSegmentForJSONPointerWithExtension(current any, se
 		return nil, fmt.Errorf("cannot navigate through %T with segment %s", current, segment)
 	}
 }
-
-// setJSONPointerFinalValue sets the final value for JSON Pointer with array extension support
 func (p *Processor) setJSONPointerFinalValue(current any, segment string, value any) error {
 	switch v := current.(type) {
 	case map[string]any:
@@ -5316,8 +2734,6 @@ func (p *Processor) setJSONPointerFinalValue(current any, segment string, value 
 		return fmt.Errorf("cannot set value on type %T", current)
 	}
 }
-
-// replaceArrayInJSONPointerParent replaces an array in its JSON Pointer parent context
 func (p *Processor) replaceArrayInJSONPointerParent(parent any, oldArray, newArray []any, index int, newContainer any) (any, error) {
 	// This is a complex operation that would require tracking parent references
 	// For now, we'll try to extend in place if possible
@@ -5331,709 +2747,4 @@ func (p *Processor) replaceArrayInJSONPointerParent(parent any, oldArray, newArr
 
 	// Cannot extend in place
 	return newContainer, nil
-}
-
-// setOperations provides value setting operations
-type setOperations struct {
-	utils      *processorUtils
-	pathParser *pathParser
-	navigator  *navigator
-	arrayOps   *arrayOperations
-}
-
-// NewSetOperations creates a new set operations instance
-func NewSetOperations(utils *processorUtils, pathParser *pathParser, navigator *navigator, arrayOps *arrayOperations) *setOperations {
-	return &setOperations{
-		utils:      utils,
-		pathParser: pathParser,
-		navigator:  navigator,
-		arrayOps:   arrayOps,
-	}
-}
-
-// SetValue sets a value at the specified path
-func (so *setOperations) SetValue(data any, path string, value any, createPaths bool) error {
-	if path == "" || path == "." {
-		return fmt.Errorf("cannot set root value")
-	}
-
-	segments, err := so.pathParser.ParsePath(path)
-	if err != nil {
-		return fmt.Errorf("failed to parse path '%s': %w", path, err)
-	}
-
-	return so.SetValueWithSegments(data, segments, value, createPaths)
-}
-
-// SetValueWithSegments sets a value using parsed path segments
-func (so *setOperations) SetValueWithSegments(data any, segments []PathSegmentInfo, value any, createPaths bool) error {
-	if len(segments) == 0 {
-		return fmt.Errorf("no segments to process")
-	}
-
-	// Handle single segment (direct property/array access)
-	if len(segments) == 1 {
-		return so.setValueForSegment(data, segments[0], value, createPaths)
-	}
-
-	// Navigate to parent segments
-	current := data
-	for i, segment := range segments[:len(segments)-1] {
-		next, err := so.navigateToSegment(current, segment, createPaths, segments, i)
-		if err != nil {
-			return fmt.Errorf("failed to navigate to segment '%s': %w", segment.Key, err)
-		}
-		current = next
-	}
-
-	// Set the final value
-	finalSegment := segments[len(segments)-1]
-	err := so.setValueForSegment(current, finalSegment, value, createPaths)
-
-	// Handle array extension error
-	if arrayExtErr, ok := err.(*ArrayExtensionError); ok && createPaths {
-		return so.handleArrayExtension(data, segments, arrayExtErr)
-	}
-
-	return err
-}
-
-// CreatePath creates missing path segments
-func (so *setOperations) CreatePath(data any, segments []PathSegmentInfo) error {
-	current := data
-	for i, segment := range segments {
-		next, err := so.navigateToSegment(current, segment, true, segments, i)
-		if err != nil {
-			return fmt.Errorf("failed to create path segment '%s': %w", segment.Key, err)
-		}
-		current = next
-	}
-	return nil
-}
-
-// HandleTypeConversion handles type conversion for setting operations
-func (so *setOperations) HandleTypeConversion(data any, requiredType string) (any, error) {
-	switch requiredType {
-	case "array":
-		return so.convertToArray(data)
-	case "object":
-		return so.convertToObject(data)
-	case "string":
-		return so.utils.ConvertToString(data), nil
-	case "number":
-		return so.utils.ConvertToNumber(data)
-	default:
-		return data, nil
-	}
-}
-
-// setValueForSegment sets a value for a specific segment type
-func (so *setOperations) setValueForSegment(current any, segment PathSegmentInfo, value any, createPaths bool) error {
-	switch segment.Type {
-	case "property":
-		return so.setValueForProperty(current, segment.Key, value, createPaths)
-	case "array":
-		return so.setValueForArrayIndex(current, segment.Index, value, createPaths)
-	case "slice":
-		return so.setValueForArraySlice(current, segment, value, createPaths)
-	case "extract":
-		return so.setValueForExtract(current, segment, value, createPaths)
-	default:
-		return fmt.Errorf("unsupported segment type for set operation: %s", segment.Type)
-	}
-}
-
-// setValueForProperty sets a value for a property
-func (so *setOperations) setValueForProperty(current any, property string, value any, createPaths bool) error {
-	switch v := current.(type) {
-	case map[string]any:
-		v[property] = value
-		return nil
-	case map[any]any:
-		v[property] = value
-		return nil
-	case []any:
-		// Check if property is a numeric index for dot notation array access
-		if index := so.parseArrayIndex(property); index != -999999 {
-			// Handle negative indices
-			if index < 0 {
-				index = len(v) + index
-			}
-			// Check bounds after negative index conversion
-			if index < 0 {
-				return fmt.Errorf("negative array index %d out of bounds (length %d)", index, len(v))
-			}
-			if index >= len(v) {
-				if createPaths {
-					// Extend array to accommodate the index
-					return so.extendArrayForIndex(v, index, value)
-				}
-				return fmt.Errorf("array index %d out of bounds (length %d)", index, len(v))
-			}
-			v[index] = value
-			return nil
-		}
-		// Not a numeric index, cannot set property on array
-		if createPaths {
-			return fmt.Errorf("cannot set non-numeric property '%s' on array", property)
-		}
-		return fmt.Errorf("cannot set property '%s' on array", property)
-	default:
-		if createPaths {
-			// Convert to object and set property
-			newObj := make(map[string]any)
-			newObj[property] = value
-			return so.replaceCurrentData(current, newObj)
-		}
-		return fmt.Errorf("cannot set property '%s' on type %T", property, current)
-	}
-}
-
-// setValueForArrayIndex sets a value at a specific array index
-func (so *setOperations) setValueForArrayIndex(current any, index int, value any, createPaths bool) error {
-	arr, ok := current.([]any)
-	if !ok {
-		if createPaths {
-			// Convert to array
-			newArr := make([]any, index+1)
-			newArr[index] = value
-			return so.replaceCurrentData(current, newArr)
-		}
-		return fmt.Errorf("cannot set array index on type %T", current)
-	}
-
-	// Handle negative indices
-	if index < 0 {
-		index = len(arr) + index
-	}
-
-	// Check bounds
-	if index < 0 {
-		return fmt.Errorf("negative array index %d out of bounds (length %d)", index, len(arr))
-	}
-
-	if index >= len(arr) {
-		if createPaths {
-			// Return ArrayExtensionError to signal parent needs to handle extension
-			return &ArrayExtensionError{
-				CurrentLength:  len(arr),
-				RequiredLength: index + 1,
-				TargetIndex:    index,
-				Value:          value,
-			}
-		}
-		return fmt.Errorf("array index %d out of bounds (length %d)", index, len(arr))
-	}
-
-	arr[index] = value
-	return nil
-}
-
-// setValueForArraySlice sets values for an array slice
-func (so *setOperations) setValueForArraySlice(current any, segment PathSegmentInfo, value any, createPaths bool) error {
-	arr, ok := current.([]any)
-	if !ok {
-		if createPaths {
-			// Convert to array
-			newArr := []any{value}
-			return so.replaceCurrentData(current, newArr)
-		}
-		return fmt.Errorf("cannot set array slice on type %T", current)
-	}
-
-	start, end, step := so.parseSliceParameters(segment)
-	length := len(arr)
-
-	// Handle negative indices
-	if start < 0 {
-		start = length + start
-	}
-	if end < 0 {
-		end = length + end
-	}
-
-	// Clamp to bounds
-	if start < 0 {
-		start = 0
-	}
-	if end > length {
-		if createPaths {
-			// Extend array to accommodate the slice
-			newLength := end
-			newArr := make([]any, newLength)
-			copy(newArr, arr)
-			arr = newArr
-		} else {
-			end = length
-		}
-	}
-
-	// Set values in the slice
-	valueArr, ok := value.([]any)
-	if !ok {
-		// Single value, set to all positions in slice
-		for i := start; i < end; i += step {
-			if i < len(arr) {
-				arr[i] = value
-			}
-		}
-	} else {
-		// Array of values, set each position
-		valueIndex := 0
-		for i := start; i < end && valueIndex < len(valueArr); i += step {
-			if i < len(arr) {
-				arr[i] = valueArr[valueIndex]
-				valueIndex++
-			}
-		}
-	}
-
-	return nil
-}
-
-// setValueForExtract sets values for extract operations
-func (so *setOperations) setValueForExtract(current any, segment PathSegmentInfo, value any, createPaths bool) error {
-	switch v := current.(type) {
-	case []any:
-		// Extract operations on arrays - set value to all matching elements
-		return so.setValueForArrayExtract(v, segment.Key, value)
-	case map[string]any:
-		// Extract operations on objects - set value to specific key
-		if segment.Key != "" {
-			v[segment.Key] = value
-			return nil
-		}
-		return fmt.Errorf("extract key is required for object extract operations")
-	case map[any]any:
-		if segment.Key != "" {
-			v[segment.Key] = value
-			return nil
-		}
-		return fmt.Errorf("extract key is required for generic map extract operations")
-	default:
-		if createPaths {
-			// Convert to object and set extract key
-			newObj := make(map[string]any)
-			newObj[segment.Key] = value
-			return so.replaceCurrentData(current, newObj)
-		}
-		return fmt.Errorf("cannot perform extract operation on type %T", current)
-	}
-}
-
-// setValueForArrayExtract sets values for array extraction
-func (so *setOperations) setValueForArrayExtract(arr []any, extractKey string, value any) error {
-	for _, item := range arr {
-		if obj, ok := item.(map[string]any); ok {
-			obj[extractKey] = value
-		} else if genericObj, ok := item.(map[any]any); ok {
-			genericObj[extractKey] = value
-		}
-		// Skip non-object items
-	}
-	return nil
-}
-
-// navigateToSegment navigates to a specific segment, creating path if needed
-func (so *setOperations) navigateToSegment(current any, segment PathSegmentInfo, createPaths bool, segments []PathSegmentInfo, segmentIndex int) (any, error) {
-	switch segment.Type {
-	case "property":
-		return so.navigateToProperty(current, segment.Key, createPaths, segments, segmentIndex)
-	case "array":
-		return so.navigateToArrayIndex(current, segment.Index, createPaths)
-	case "slice":
-		return so.navigateToArraySlice(current, segment, createPaths)
-	case "extract":
-		return so.navigateToExtract(current, segment.Key, createPaths)
-	default:
-		return nil, fmt.Errorf("unsupported segment type for navigation: %s", segment.Type)
-	}
-}
-
-// navigateToProperty navigates to a property, creating if needed
-func (so *setOperations) navigateToProperty(current any, property string, createPaths bool, segments []PathSegmentInfo, segmentIndex int) (any, error) {
-	switch v := current.(type) {
-	case map[string]any:
-		if value, exists := v[property]; exists {
-			return value, nil
-		}
-		if createPaths {
-			// Determine what type to create based on next segment
-			nextContainer := so.determineContainerType(segments, segmentIndex+1)
-			v[property] = nextContainer
-			return nextContainer, nil
-		}
-		return nil, fmt.Errorf("property '%s' not found", property)
-	case map[any]any:
-		if value, exists := v[property]; exists {
-			return value, nil
-		}
-		if createPaths {
-			nextContainer := so.determineContainerType(segments, segmentIndex+1)
-			v[property] = nextContainer
-			return nextContainer, nil
-		}
-		return nil, fmt.Errorf("property '%s' not found", property)
-	case []any:
-		// Check if property is a numeric index
-		if index := so.parseArrayIndex(property); index != -999999 {
-			if index < 0 {
-				index = len(v) + index
-			}
-			if index >= 0 && index < len(v) {
-				return v[index], nil
-			}
-		}
-		return nil, fmt.Errorf("cannot access property '%s' on array", property)
-	default:
-		if createPaths {
-			// Convert to object
-			newObj := make(map[string]any)
-			nextContainer := so.determineContainerType(segments, segmentIndex+1)
-			newObj[property] = nextContainer
-			return nextContainer, nil
-		}
-		return nil, fmt.Errorf("cannot access property '%s' on type %T", property, current)
-	}
-}
-
-// navigateToArrayIndex navigates to an array index, creating if needed
-func (so *setOperations) navigateToArrayIndex(current any, index int, createPaths bool) (any, error) {
-	arr, ok := current.([]any)
-	if !ok {
-		if createPaths {
-			// Convert to array
-			newArr := make([]any, index+1)
-			return newArr[index], nil
-		}
-		return nil, fmt.Errorf("cannot access array index on type %T", current)
-	}
-
-	// Handle negative indices
-	if index < 0 {
-		index = len(arr) + index
-	}
-
-	if index < 0 || index >= len(arr) {
-		if createPaths {
-			// Extend array
-			if index >= len(arr) {
-				newArr := make([]any, index+1)
-				copy(newArr, arr)
-				arr = newArr
-			}
-			return arr[index], nil
-		}
-		return nil, fmt.Errorf("array index %d out of bounds", index)
-	}
-
-	return arr[index], nil
-}
-
-// navigateToArraySlice navigates to an array slice
-func (so *setOperations) navigateToArraySlice(current any, segment PathSegmentInfo, createPaths bool) (any, error) {
-	arr, ok := current.([]any)
-	if !ok {
-		if createPaths {
-			return []any{}, nil
-		}
-		return nil, fmt.Errorf("cannot access array slice on type %T", current)
-	}
-
-	start, end, step := so.parseSliceParameters(segment)
-	result := so.arrayOps.HandleArraySlice(arr, start, end, step)
-	if !result.Exists {
-		return nil, fmt.Errorf("array slice failed")
-	}
-
-	return result.Value, nil
-}
-
-// navigateToExtract navigates to an extract operation
-func (so *setOperations) navigateToExtract(current any, extractKey string, createPaths bool) (any, error) {
-	switch v := current.(type) {
-	case []any:
-		// Extract from array - return array of extracted values
-		var results []any
-		for _, item := range v {
-			if obj, ok := item.(map[string]any); ok {
-				if value, exists := obj[extractKey]; exists {
-					results = append(results, value)
-				} else if createPaths {
-					newValue := make(map[string]any)
-					obj[extractKey] = newValue
-					results = append(results, newValue)
-				} else {
-					results = append(results, nil)
-				}
-			} else if createPaths {
-				// Convert item to object
-				newObj := make(map[string]any)
-				newValue := make(map[string]any)
-				newObj[extractKey] = newValue
-				results = append(results, newValue)
-			} else {
-				results = append(results, nil)
-			}
-		}
-		return results, nil
-	case map[string]any:
-		if value, exists := v[extractKey]; exists {
-			return value, nil
-		}
-		if createPaths {
-			newValue := make(map[string]any)
-			v[extractKey] = newValue
-			return newValue, nil
-		}
-		return nil, fmt.Errorf("extract key '%s' not found", extractKey)
-	default:
-		if createPaths {
-			// Convert to object
-			newObj := make(map[string]any)
-			newValue := make(map[string]any)
-			newObj[extractKey] = newValue
-			return newValue, nil
-		}
-		return nil, fmt.Errorf("cannot perform extract operation on type %T", current)
-	}
-}
-
-// parseArrayIndex parses an array index from a string
-func (so *setOperations) parseArrayIndex(indexStr string) int {
-	// Remove brackets if present
-	indexStr = strings.Trim(indexStr, "[]")
-
-	if index, err := strconv.Atoi(indexStr); err == nil {
-		return index
-	}
-	return -999999 // Invalid index marker
-}
-
-// parseSliceParameters parses slice parameters from a segment
-func (so *setOperations) parseSliceParameters(segment PathSegmentInfo) (start, end, step int) {
-	start = 0
-	end = -1 // Will be set to array length
-	step = 1
-
-	if segment.Start != nil {
-		start = *segment.Start
-	}
-	if segment.End != nil {
-		end = *segment.End
-	}
-	if segment.Step != nil {
-		step = *segment.Step
-		if step == 0 {
-			step = 1
-		}
-	}
-
-	return start, end, step
-}
-
-// determineContainerType determines what type of container to create based on next segment
-func (so *setOperations) determineContainerType(segments []PathSegmentInfo, nextIndex int) any {
-	if nextIndex >= len(segments) {
-		return make(map[string]any) // Default to object
-	}
-
-	nextSegment := segments[nextIndex]
-	switch nextSegment.Type {
-	case "array", "slice":
-		return make([]any, 0)
-	case "extract":
-		return make([]any, 0) // Extract operations typically work on arrays
-	default:
-		return make(map[string]any)
-	}
-}
-
-// convertToArray converts data to array type
-func (so *setOperations) convertToArray(data any) ([]any, error) {
-	if arr, ok := data.([]any); ok {
-		return arr, nil
-	}
-
-	// Try to convert from other types
-	switch v := data.(type) {
-	case map[string]any:
-		// Try to convert map with numeric keys to array
-		return so.tryConvertMapToArray(v)
-	case nil:
-		return make([]any, 0), nil
-	default:
-		// Wrap single value in array
-		return []any{data}, nil
-	}
-}
-
-// convertToObject converts data to object type
-func (so *setOperations) convertToObject(data any) (map[string]any, error) {
-	if obj, ok := data.(map[string]any); ok {
-		return obj, nil
-	}
-
-	if genericObj, ok := data.(map[any]any); ok {
-		// Convert generic map to string map
-		result := make(map[string]any)
-		for k, v := range genericObj {
-			if strKey, ok := k.(string); ok {
-				result[strKey] = v
-			}
-		}
-		return result, nil
-	}
-
-	// For other types, create empty object
-	return make(map[string]any), nil
-}
-
-// tryConvertMapToArray tries to convert a map with numeric keys to an array
-func (so *setOperations) tryConvertMapToArray(m map[string]any) ([]any, error) {
-	// Check if all keys are numeric and consecutive starting from 0
-	maxIndex := -1
-	for key := range m {
-		if index, err := strconv.Atoi(key); err == nil && index >= 0 {
-			if index > maxIndex {
-				maxIndex = index
-			}
-		} else {
-			// Non-numeric key found, cannot convert to array
-			return []any{m}, nil
-		}
-	}
-
-	// If no numeric keys found or gaps in sequence, wrap in array
-	if maxIndex == -1 || len(m) != maxIndex+1 {
-		return []any{m}, nil
-	}
-
-	// Convert to array
-	arr := make([]any, maxIndex+1)
-	for i := 0; i <= maxIndex; i++ {
-		arr[i] = m[strconv.Itoa(i)]
-	}
-	return arr, nil
-}
-
-// handleArrayExtension handles array extension by navigating to parent and replacing array
-func (so *setOperations) handleArrayExtension(data any, segments []PathSegmentInfo, arrayExtErr *ArrayExtensionError) error {
-	if len(segments) == 0 {
-		return fmt.Errorf("no segments provided for array extension")
-	}
-
-	// Navigate to the parent of the array that needs extension
-	current := data
-	for i := 0; i < len(segments)-1; i++ {
-		next, err := so.navigateToSegment(current, segments[i], true, segments, i)
-		if err != nil {
-			return fmt.Errorf("failed to navigate to segment %d during array extension: %w", i, err)
-		}
-		current = next
-	}
-
-	// Get the final segment and the array that needs extension
-	finalSegment := segments[len(segments)-1]
-
-	// Handle different segment types
-	switch finalSegment.Type {
-	case "array":
-		// Direct array access - extend the array in parent container
-		return so.extendArrayInParent(current, finalSegment, arrayExtErr)
-	case "property":
-		// Property access that leads to array - extend the array property
-		return so.extendArrayProperty(current, finalSegment, arrayExtErr)
-	default:
-		return fmt.Errorf("unsupported segment type for array extension: %s", finalSegment.Type)
-	}
-}
-
-// extendArrayInParent extends an array within its parent container
-func (so *setOperations) extendArrayInParent(parent any, segment PathSegmentInfo, arrayExtErr *ArrayExtensionError) error {
-	switch v := parent.(type) {
-	case map[string]any:
-		// Get the current array
-		if currentArr, ok := v[segment.Key].([]any); ok {
-			// Create extended array
-			extendedArr := make([]any, arrayExtErr.RequiredLength)
-			copy(extendedArr, currentArr)
-			// Set the value at target index
-			extendedArr[arrayExtErr.TargetIndex] = arrayExtErr.Value
-			// Replace the array in parent
-			v[segment.Key] = extendedArr
-			return nil
-		}
-		return fmt.Errorf("property %s is not an array", segment.Key)
-	case []any:
-		// Parent is array, extend it directly
-		if segment.Index >= 0 && segment.Index < len(v) {
-			if currentArr, ok := v[segment.Index].([]any); ok {
-				// Create extended array
-				extendedArr := make([]any, arrayExtErr.RequiredLength)
-				copy(extendedArr, currentArr)
-				// Set the value at target index
-				extendedArr[arrayExtErr.TargetIndex] = arrayExtErr.Value
-				// Replace the array in parent
-				v[segment.Index] = extendedArr
-				return nil
-			}
-		}
-		return fmt.Errorf("array index %d is not an array", segment.Index)
-	default:
-		return fmt.Errorf("cannot extend array in parent of type %T", parent)
-	}
-}
-
-// extendArrayProperty extends an array property
-func (so *setOperations) extendArrayProperty(parent any, segment PathSegmentInfo, arrayExtErr *ArrayExtensionError) error {
-	switch v := parent.(type) {
-	case map[string]any:
-		// Get the current array
-		if currentArr, ok := v[segment.Key].([]any); ok {
-			// Create extended array
-			extendedArr := make([]any, arrayExtErr.RequiredLength)
-			copy(extendedArr, currentArr)
-			// Set the value at target index
-			extendedArr[arrayExtErr.TargetIndex] = arrayExtErr.Value
-			// Replace the array in parent
-			v[segment.Key] = extendedArr
-			return nil
-		}
-		// If property doesn't exist or is not an array, create new array
-		newArr := make([]any, arrayExtErr.RequiredLength)
-		newArr[arrayExtErr.TargetIndex] = arrayExtErr.Value
-		v[segment.Key] = newArr
-		return nil
-	default:
-		return fmt.Errorf("cannot set array property on type %T", parent)
-	}
-}
-
-// extendArrayForIndex extends an array to accommodate a specific index
-// Note: This function cannot modify the parent container directly due to Go's value semantics
-// Array extension must be handled at a higher level where parent references are available
-func (so *setOperations) extendArrayForIndex(arr []any, index int, value any) error {
-	if index < 0 {
-		return fmt.Errorf("cannot extend array with negative index: %d", index)
-	}
-	return fmt.Errorf("array extension required for index %d (current length %d) - must be handled by caller", index, len(arr))
-}
-
-// replaceCurrentData replaces current data with new data
-// Note: This function cannot modify the parent container directly due to Go's value semantics
-// Data replacement must be handled at a higher level where parent references are available
-func (so *setOperations) replaceCurrentData(current, newData any) error {
-	return fmt.Errorf("data replacement required: %T -> %T - must be handled by caller", current, newData)
-}
-
-// joinPath efficiently joins path segments
-func joinPath(base, segment string) string {
-	if base == "" {
-		return segment
-	}
-	if segment == "" {
-		return base
-	}
-	return base + "." + segment
 }

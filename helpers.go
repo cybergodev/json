@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// IsValidJson quickly checks if a string is valid JSON
-func IsValidJson(jsonStr string) bool {
+// IsValidJSON quickly checks if a string is valid JSON
+func IsValidJSON(jsonStr string) bool {
 	decoder := NewNumberPreservingDecoder(false)
 	_, err := decoder.DecodeToAny(jsonStr)
 	return err == nil
@@ -175,7 +175,8 @@ func handleNullValue[T any](path string) (T, error) {
 
 	switch targetType {
 	case "string":
-		if result, ok := any("null").(T); ok {
+		// Return empty string for null values
+		if result, ok := any("").(T); ok {
 			return result, nil
 		}
 	case "*string":
@@ -313,47 +314,14 @@ func handleLargeNumberConversion[T any](value any, path string) (conversionResul
 	return conversionResult[T]{value: zero, err: nil}, false
 }
 
-
 // Type conversion helper functions are now in type_conversion.go
-// These functions are deprecated; use the UnifiedTypeConversion system instead
-
-func convertToInt(value any) (int, error) {
-	if result, ok := ConvertToInt(value); ok {
-		return result, nil
-	}
-	return 0, fmt.Errorf("cannot convert %T to int", value)
-}
-
-func convertToInt64(value any) (int64, error) {
-	return SafeConvertToInt64(value)
-}
-
-func convertToFloat64(value any) (float64, error) {
-	if result, ok := ConvertToFloat64(value); ok {
-		return result, nil
-	}
-	return 0, fmt.Errorf("cannot convert %T to float64", value)
-}
-
-func convertToString(value any) string {
-	if value == nil {
-		return ""
-	}
-	return ConvertToString(value)
-}
-
-func convertToBool(value any) (bool, error) {
-	if result, ok := ConvertToBool(value); ok {
-		return result, nil
-	}
-	return false, fmt.Errorf("cannot convert %T to bool", value)
-}
+// Deprecated functions removed - use UnifiedTypeConversion or Convert* functions instead
 
 // IteratorControl represents control flags for iteration
 type IteratorControl int
 
 const (
-	IteratorNormal   IteratorControl = iota
+	IteratorNormal IteratorControl = iota
 	IteratorContinue
 	IteratorBreak
 )
@@ -427,4 +395,3 @@ func tryConvertToArray(m map[string]any) ([]any, bool) {
 
 	return arr, true
 }
-

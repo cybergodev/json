@@ -151,7 +151,7 @@ func demonstrateFlatExtraction(data string) {
 
 	// Extract all skills from all members (using chained flat extractions)
 	// This demonstrates extracting from deeply nested structures
-	allSkills, _ := json.Get(data, "departments{teams}{members}{flat:skills}")
+	allSkills, _ := json.Get(data, "departments{flat:teams}{flat:members}{flat:skills}")
 	fmt.Printf("   All skills by department: %v\n", allSkills)
 }
 

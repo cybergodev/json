@@ -16,12 +16,12 @@ import (
 //
 // Topics covered:
 // - JsonsError structured error information
-// - ErrorClassifier for error categorization
+// - Error classification functions
 // - Error suggestions for common issues
 // - Retry logic for recoverable errors
 // - Error wrapping with context
 //
-// Run: go run examples/4_error_handling.go
+// Run: go run -tags=example examples/4_error_handling.go
 
 func main() {
 	fmt.Println("🚨 JSON Library - Error Handling")
@@ -86,8 +86,6 @@ func demonstrateStructuredErrors() {
 }
 
 func demonstrateErrorClassification() {
-	classifier := json.NewErrorClassifier()
-
 	testCases := []struct {
 		name string
 		err  error
@@ -101,9 +99,9 @@ func demonstrateErrorClassification() {
 
 	fmt.Println("   Error classification results:")
 	for _, tc := range testCases {
-		isSecurity := classifier.IsSecurityRelated(tc.err)
-		isUser := classifier.IsUserError(tc.err)
-		isRetryable := classifier.IsRetryable(tc.err)
+		isSecurity := json.IsSecurityRelated(tc.err)
+		isUser := json.IsUserError(tc.err)
+		isRetryable := json.IsRetryable(tc.err)
 
 		fmt.Printf("   [%s]\n", tc.name)
 		fmt.Printf("     Security-related: %t\n", isSecurity)
@@ -113,9 +111,7 @@ func demonstrateErrorClassification() {
 }
 
 func demonstrateErrorSuggestions() {
-	classifier := json.NewErrorClassifier()
-
-	// Simulate various errs
+	// Simulate various errors
 	errs := []error{
 		json.ErrInvalidJSON,
 		json.ErrPathNotFound,
@@ -128,15 +124,13 @@ func demonstrateErrorSuggestions() {
 
 	fmt.Println("   Error suggestions:")
 	for _, err := range errs {
-		suggestion := classifier.GetErrorSuggestion(err)
+		suggestion := json.GetErrorSuggestion(err)
 		fmt.Printf("\n   [%v]\n", err)
 		fmt.Printf("   💡 Suggestion: %s\n", suggestion)
 	}
 }
 
 func demonstrateRetryLogic() {
-	classifier := json.NewErrorClassifier()
-
 	// Simulate errors and check retry ability
 	testErrors := []struct {
 		name string
@@ -150,7 +144,7 @@ func demonstrateRetryLogic() {
 
 	fmt.Println("   Retry decision for each error:")
 	for _, test := range testErrors {
-		retryable := classifier.IsRetryable(test.err)
+		retryable := json.IsRetryable(test.err)
 		action := "Skip retry"
 		if retryable {
 			action = "Attempt retry"
@@ -172,7 +166,8 @@ func demonstrateErrorWrapping() {
 	fmt.Printf("   Wrapped error 2: %v\n", wrapped2)
 
 	// Unwrap to get original error
-	if errors.Is(baseErr, errors.Unwrap(wrapped1)) {
+	unwrapped := errors.Unwrap(wrapped1)
+	if errors.Is(unwrapped, baseErr) {
 		fmt.Println("\n   ✓ Successfully unwrapped to original error")
 	}
 

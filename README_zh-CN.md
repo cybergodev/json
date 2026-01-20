@@ -179,9 +179,8 @@ json.Foreach(data, func (key any, item *json.IterableValue) {
 })
 
 // 高级迭代变体
-json.ForeachNested(data, callback)           // 嵌套安全迭代
-json.ForeachWithIterator(data, callback)     // 带迭代器访问
-json.ForeachWithPath(data, "users", callback) // 迭代特定路径
+json.ForeachNested(data, callback)                  // 嵌套安全迭代
+json.ForeachWithPath(data, "data.users", callback)  // 迭代特定路径
 
 // 迭代并返回修改后的 JSON - 支持数据修改
 modifiedJson, err := json.ForeachReturn(data, func (key any, item *json.IterableValue) {
@@ -214,8 +213,9 @@ config := &json.EncodeConfig{
     Pretty:       true,
     SortKeys:     true,
     EscapeHTML:   false,
+    MaxDepth:     10,  // 必需：最大编码深度
 }
-jsonStr, err := json.Encode(data, config)
+jsonStr, err := json.Encode(data, config)  // config 参数是可选的
 jsonStr, err := json.EncodePretty(data, config)
 jsonStr, err := json.EncodeCompact(data, config)
 

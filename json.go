@@ -135,17 +135,36 @@ func GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOp
 
 // GetTypedWithDefault retrieves a typed value with a default fallback
 func GetTypedWithDefault[T any](jsonStr, path string, defaultValue T, opts ...*ProcessorOptions) T {
-	rawValue, rawErr := Get(jsonStr, path, opts...)
-	if rawErr != nil || rawValue == nil {
-		return defaultValue
-	}
-
 	value, err := GetTyped[T](jsonStr, path, opts...)
 	if err != nil {
 		return defaultValue
 	}
 
+	// Handle nil values for reference types
+	if isZeroValue(value) {
+		return defaultValue
+	}
+
 	return value
+}
+
+// isZeroValue checks if a value is the zero value for its type
+func isZeroValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch val := v.(type) {
+	case string:
+		return val == ""
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool:
+		return val == 0 || val == false
+	case []any:
+		return len(val) == 0
+	case map[string]any:
+		return len(val) == 0
+	default:
+		return false
+	}
 }
 
 // Type-specific convenience functions with defaults
@@ -232,7 +251,31 @@ func LoadFromFile(filename string) (string, error) {
 }
 
 // SaveToFile saves JSON data to a file with optional formatting
+// This function accepts any Go value and converts it to JSON before saving.
 func SaveToFile(filePath string, data any, pretty ...bool) error {
+	return saveToFileInternal(filePath, data, pretty, false)
+}
+
+// MarshalToFile converts data to JSON and saves it to the specified file.
+// This is a convenience function that combines Marshal and file writing operations.
+//
+// Parameters:
+//   - path: file path where JSON will be saved (directories are created automatically)
+//   - data: any Go value to be marshaled to JSON
+//   - pretty: optional parameter - true for formatted JSON, false for compact (default: false)
+//
+// Returns error if marshaling fails or file cannot be written.
+//
+// Example:
+//
+//	user := map[string]any{"name": "John", "age": 30}
+//	err := json.MarshalToFile("data/user.json", user, true)
+func MarshalToFile(path string, data any, pretty ...bool) error {
+	return saveToFileInternal(path, data, pretty, true)
+}
+
+// saveToFileInternal is the internal implementation for saving JSON to files
+func saveToFileInternal(filePath string, data any, pretty []bool, useJsonCompat bool) error {
 	proc := getDefaultProcessor()
 	if err := proc.validateFilePath(filePath); err != nil {
 		return err
@@ -404,51 +447,6 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 	}
 
 	dst.WriteString(escaped)
-}
-
-// MarshalToFile converts data to JSON and saves it to the specified file.
-// This is a convenience function that combines Marshal and file writing operations.
-//
-// Parameters:
-//   - path: file path where JSON will be saved (directories are created automatically)
-//   - data: any Go value to be marshaled to JSON
-//   - pretty: optional parameter - true for formatted JSON, false for compact (default: false)
-//
-// Returns error if marshaling fails or file cannot be written.
-//
-// Example:
-//
-//	user := map[string]any{"name": "John", "age": 30}
-//	err := json.MarshalToFile("data/user.json", user, true)
-func MarshalToFile(path string, data any, pretty ...bool) error {
-	proc := getDefaultProcessor()
-	if err := proc.validateFilePath(path); err != nil {
-		return err
-	}
-
-	if err := createDirectoryIfNotExists(path); err != nil {
-		return fmt.Errorf("failed to create directory for %s: %w", path, err)
-	}
-
-	shouldFormat := len(pretty) > 0 && pretty[0]
-	var jsonBytes []byte
-	var err error
-
-	if shouldFormat {
-		jsonBytes, err = MarshalIndent(data, "", "  ")
-	} else {
-		jsonBytes, err = Marshal(data)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to marshal data to JSON: %w", err)
-	}
-
-	if err := os.WriteFile(path, jsonBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", path, err)
-	}
-
-	return nil
 }
 
 // UnmarshalFromFile reads JSON data from the specified file and unmarshals it into the provided value.
