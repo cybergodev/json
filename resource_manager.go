@@ -5,30 +5,23 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cybergodev/json/internal"
 )
 
 // UnifiedResourceManager consolidates all resource management for optimal performance
+// sync.Pool is inherently thread-safe, no additional locks needed for pool operations
 type UnifiedResourceManager struct {
-	// String builder pool with optimized sizing
 	stringBuilderPool *sync.Pool
+	pathSegmentPool   *sync.Pool
+	bufferPool        *sync.Pool
 
-	// Path segment pool for efficient path parsing
-	pathSegmentPool *sync.Pool
-
-	// Buffer pool for various operations
-	bufferPool *sync.Pool
-
-	// Resource tracking
 	allocatedBuilders int64
 	allocatedSegments int64
 	allocatedBuffers  int64
 
-	// Cleanup tracking
 	lastCleanup     int64
 	cleanupInterval int64
-
-	// Mutex to protect pool reset operations
-	resetMu sync.RWMutex
 }
 
 // NewUnifiedResourceManager creates a new unified resource manager
@@ -37,144 +30,103 @@ func NewUnifiedResourceManager() *UnifiedResourceManager {
 		stringBuilderPool: &sync.Pool{
 			New: func() any {
 				sb := &strings.Builder{}
-				sb.Grow(512) // Optimized initial size
+				sb.Grow(512)
 				return sb
 			},
 		},
 		pathSegmentPool: &sync.Pool{
 			New: func() any {
-				return make([]PathSegment, 0, 8) // Optimized initial capacity
+				return make([]internal.PathSegment, 0, 8)
 			},
 		},
 		bufferPool: &sync.Pool{
 			New: func() any {
-				return make([]byte, 0, 1024) // Optimized initial capacity
+				return make([]byte, 0, 1024)
 			},
 		},
-		cleanupInterval: 300, // 5 minutes
+		cleanupInterval: 300,
 		lastCleanup:     time.Now().Unix(),
 	}
 }
 
-// GetStringBuilder retrieves a string builder from the pool (thread-safe)
 func (urm *UnifiedResourceManager) GetStringBuilder() *strings.Builder {
-	urm.resetMu.RLock()
 	sb := urm.stringBuilderPool.Get().(*strings.Builder)
-	urm.resetMu.RUnlock()
 	sb.Reset()
 	atomic.AddInt64(&urm.allocatedBuilders, 1)
 	return sb
 }
 
-// PutStringBuilder returns a string builder to the pool (thread-safe)
 func (urm *UnifiedResourceManager) PutStringBuilder(sb *strings.Builder) {
-	if sb != nil && sb.Cap() <= 8192 { // Prevent oversized builders from staying in pool
-		sb.Reset()
-		urm.resetMu.RLock()
-		urm.stringBuilderPool.Put(sb)
-		urm.resetMu.RUnlock()
-		atomic.AddInt64(&urm.allocatedBuilders, -1)
+	// Stricter size limits to prevent memory bloat
+	const maxBuilderCap = 4096  // Reduced from 8192
+	const minBuilderCap = 128   // Reduced from default
+
+	if sb != nil {
+		c := sb.Cap()
+		if c >= minBuilderCap && c <= maxBuilderCap {
+			sb.Reset()
+			urm.stringBuilderPool.Put(sb)
+			atomic.AddInt64(&urm.allocatedBuilders, -1)
+		}
+		// oversized builders are discarded to prevent pool bloat
 	}
 }
 
-// GetPathSegments retrieves a path segments slice from the pool (thread-safe)
-func (urm *UnifiedResourceManager) GetPathSegments() []PathSegment {
-	urm.resetMu.RLock()
-	segments := urm.pathSegmentPool.Get().([]PathSegment)
-	urm.resetMu.RUnlock()
-	segments = segments[:0] // Reset length but keep capacity
+func (urm *UnifiedResourceManager) GetPathSegments() []internal.PathSegment {
+	segments := urm.pathSegmentPool.Get().([]internal.PathSegment)
+	segments = segments[:0]
 	atomic.AddInt64(&urm.allocatedSegments, 1)
 	return segments
 }
 
-// PutPathSegments returns a path segments slice to the pool (thread-safe)
-func (urm *UnifiedResourceManager) PutPathSegments(segments []PathSegment) {
-	if segments != nil && cap(segments) <= 64 && cap(segments) >= 4 { // Keep reasonable sizes
+func (urm *UnifiedResourceManager) PutPathSegments(segments []internal.PathSegment) {
+	// Stricter segment pool limits
+	const maxSegmentCap = 32  // Reduced from 64
+	const minSegmentCap = 4   // Keep minimum
+
+	if segments != nil && cap(segments) >= minSegmentCap && cap(segments) <= maxSegmentCap {
 		segments = segments[:0]
-		urm.resetMu.RLock()
 		urm.pathSegmentPool.Put(segments)
-		urm.resetMu.RUnlock()
 		atomic.AddInt64(&urm.allocatedSegments, -1)
 	}
 }
 
-// GetBuffer retrieves a byte buffer from the pool (thread-safe)
 func (urm *UnifiedResourceManager) GetBuffer() []byte {
-	urm.resetMu.RLock()
 	buf := urm.bufferPool.Get().([]byte)
-	urm.resetMu.RUnlock()
-	buf = buf[:0] // Reset length but keep capacity
+	buf = buf[:0]
 	atomic.AddInt64(&urm.allocatedBuffers, 1)
 	return buf
 }
 
-// PutBuffer returns a byte buffer to the pool (thread-safe)
 func (urm *UnifiedResourceManager) PutBuffer(buf []byte) {
-	if buf != nil && cap(buf) <= 16384 && cap(buf) >= 512 { // Keep reasonable sizes
+	// Stricter buffer size limits
+	const maxBufferCap = 8192  // Reduced from 16384
+	const minBufferCap = 256   // Reduced from 512
+
+	if buf != nil && cap(buf) >= minBufferCap && cap(buf) <= maxBufferCap {
 		buf = buf[:0]
-		urm.resetMu.RLock()
 		urm.bufferPool.Put(buf)
-		urm.resetMu.RUnlock()
 		atomic.AddInt64(&urm.allocatedBuffers, -1)
 	}
 }
 
-// PerformMaintenance performs periodic cleanup and optimization (thread-safe)
+// PerformMaintenance performs periodic cleanup
+// sync.Pool automatically handles cleanup via GC
 func (urm *UnifiedResourceManager) PerformMaintenance() {
 	now := time.Now().Unix()
 	lastCleanup := atomic.LoadInt64(&urm.lastCleanup)
 
-	// Fast path: skip if cleanup interval not reached
 	if now-lastCleanup < urm.cleanupInterval {
 		return
 	}
 
-	// Try to acquire cleanup lock
 	if !atomic.CompareAndSwapInt64(&urm.lastCleanup, lastCleanup, now) {
-		return // Another goroutine is performing cleanup
+		return
 	}
 
-	// Acquire write lock to prevent pool access during reset
-	urm.resetMu.Lock()
-	defer urm.resetMu.Unlock()
-
-	// Reset pools if they exceed thresholds
-	urm.resetPoolIfNeeded(&urm.allocatedBuilders, 50, func() {
-		urm.stringBuilderPool = &sync.Pool{
-			New: func() any {
-				sb := &strings.Builder{}
-				sb.Grow(512)
-				return sb
-			},
-		}
-	})
-
-	urm.resetPoolIfNeeded(&urm.allocatedSegments, 30, func() {
-		urm.pathSegmentPool = &sync.Pool{
-			New: func() any {
-				return make([]PathSegment, 0, 8)
-			},
-		}
-	})
-
-	urm.resetPoolIfNeeded(&urm.allocatedBuffers, 30, func() {
-		urm.bufferPool = &sync.Pool{
-			New: func() any {
-				return make([]byte, 0, 1024)
-			},
-		}
-	})
+	atomic.StoreInt64(&urm.lastCleanup, now)
 }
 
-// resetPoolIfNeeded resets a pool if the counter exceeds the threshold
-func (urm *UnifiedResourceManager) resetPoolIfNeeded(counter *int64, threshold int64, resetFunc func()) {
-	if atomic.LoadInt64(counter) > threshold {
-		resetFunc()
-		atomic.StoreInt64(counter, 0)
-	}
-}
-
-// GetStats returns resource usage statistics
 func (urm *UnifiedResourceManager) GetStats() ResourceManagerStats {
 	return ResourceManagerStats{
 		AllocatedBuilders: atomic.LoadInt64(&urm.allocatedBuilders),
@@ -184,7 +136,6 @@ func (urm *UnifiedResourceManager) GetStats() ResourceManagerStats {
 	}
 }
 
-// ResourceManagerStats provides statistics about resource usage
 type ResourceManagerStats struct {
 	AllocatedBuilders int64 `json:"allocated_builders"`
 	AllocatedSegments int64 `json:"allocated_segments"`
@@ -192,13 +143,11 @@ type ResourceManagerStats struct {
 	LastCleanup       int64 `json:"last_cleanup"`
 }
 
-// Global unified resource manager instance (protected by sync.Once for thread-safe initialization)
 var (
 	globalResourceManager     *UnifiedResourceManager
 	globalResourceManagerOnce sync.Once
 )
 
-// getGlobalResourceManager returns the global resource manager with thread-safe initialization
 func getGlobalResourceManager() *UnifiedResourceManager {
 	globalResourceManagerOnce.Do(func() {
 		globalResourceManager = NewUnifiedResourceManager()

@@ -10,7 +10,7 @@ import (
 )
 
 // TestComprehensiveJSONOperations consolidates ALL JSON operations tests
-// This replaces: array_path_operations_test.go, core_operations_test.go, 
+// This replaces: array_path_operations_test.go, core_operations_test.go,
 // encoding_validation_test.go, config_constants_test.go
 func TestComprehensiveJSONOperations(t *testing.T) {
 	helper := NewTestHelper(t)
@@ -91,7 +91,7 @@ func TestComprehensiveJSONOperations(t *testing.T) {
 
 		t.Run("MultipleOperations", func(t *testing.T) {
 			jsonStr := `{"name":"test","age":30,"city":"NYC"}`
-			
+
 			paths := []string{"name", "age", "city"}
 			results, err := GetMultiple(jsonStr, paths)
 			helper.AssertNoError(err)
@@ -357,8 +357,8 @@ func TestComprehensiveJSONOperations(t *testing.T) {
 				helper.AssertFalse(valid, "Should be invalid: %s", jsonStr)
 			}
 
-			helper.AssertTrue(IsValidJson(`{"valid": true}`))
-			helper.AssertFalse(IsValidJson(`{invalid}`))
+			helper.AssertTrue(IsValidJSON(`{"valid": true}`))
+			helper.AssertFalse(IsValidJSON(`{invalid}`))
 		})
 
 		t.Run("FormattingOperations", func(t *testing.T) {
@@ -1005,7 +1005,7 @@ func TestAdvancedPathOperations(t *testing.T) {
 		}`
 
 		// Test deep extraction
-		result, err := Get(testData, "departments{teams{members}}")
+		result, err := Get(testData, "departments{teams}{members}")
 		helper.AssertNoError(err)
 		helper.AssertNotNil(result)
 	})
@@ -1148,4 +1148,3 @@ func TestIteratorAdvancedFeatures(t *testing.T) {
 		helper.AssertTrue(callCount >= 1)
 	})
 }
-

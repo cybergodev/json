@@ -1,35 +1,447 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
+# ============================================================
+# Development Testing
+# ============================================================
+
+# Go workspace file 
+go.work
+go.work.sum
+
+# Development, debugging and documentation
+dev_test/
+downloads/
+change_logs.md
+
+# ============================================================
+# Sensitive Files and Credentials
+# ============================================================
+
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+.env.development
+.env.staging
+.env.test
+!.env.example
+
+# API keys and certificates
+*.key
+*.pem
+*.crt
+*.cert
+*.p12
+*.pfx
+
+# Cloud service credentials
+aws_credentials.json
+gcp_credentials.json
+azure_credentials.json
+service-account.json
+
+# SSH/GPG
+.ssh/
+.gpg/
+*.asc
+id_rsa*
+id_ed25519*
+
+# OAuth tokens
+.oauth*
+token.json
+access_token.json
+
+# ============================================================
+# AI Editor and Tool Configuration
+# ============================================================
+
+# Cursor IDE
+.cursor/
+
+# GitHub Copilot
+.copilot/
+
+# Claude Code
+.claude/
+
+# Codeium
+.codeium/
+
+# Tabnine
+.tabnine/
+
+# Amazon CodeWhisperer
+.codewhisperer/
+
+# Sourcegraph Cody
+.cody/
+
+# Continue.dev
+.continue/
+
+# Windsurf
+.windsurf/
+
+# Replit AI
+.replit_ai/
+
+# Roo Code
+.roo/
+
+# Gemini Code Assist
+.gemini/
+
+# Generic AI tools
+.ai/
+
+# Trae
+.trae/
+
+# Kiro
+.kiro/
+
+# Augment code
+.augment/
+
+# Comate
+.comate/
+
+# Codeium
+.codeium/
+
+# ============================================================
+# AI Model Files
+# ============================================================
+
+# Model weight files
+*.model
+*.pkl
+*.pickle
+*.joblib
+*.sav
+*.h5
+*.hdf5
+*.pb
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.checkpoint
+*.bin
+*.gguf
+*.safetensors
+*.mar
+*.torchscript
+
+# Model directories
+models/
+checkpoints/
+saved_model/
+tensorflow/
+tf_models/
+pytorch_models/
+torch_model/
+
+# Hugging Face cache
+.huggingface/
+huggingface_cache/
+transformers_cache/
+
+# ============================================================
+# AI Output and Logs
+# ============================================================
+
+# Output results
+outputs/
+results/
+predictions/
+generated/
+ai_output/
+
+# Logs and monitoring
+logs/
+tensorboard_logs/
+mlruns/
+wandb/
+*.log
+*.tlog
+events.out.tfevents.*
+
+# ============================================================
+# Project-Specific AI Files
+# ============================================================
+
+# Prompts and context
+prompts/
+prompt-library/
+*.prompt.md
+*.system-prompt.*
+ai_instructions/
+**/.prompts/
+**/*_context.md
+**/*.context.json
+
+# AI evaluation and benchmarks
+ai_evaluations/
+benchmarks/ai_results/
+experiments/ai/
+prototypes/ai_*
+notebooks/experiments/
+**/*_ai_experiment.ipynb
+
+# AI assisted design
+ai-design-tokens.json
+figma-ai-export/
+
+# ============================================================
+# AI Temporary Files and Cache
+# ============================================================
+
+# AI generated temporary files
+*_ai_generated*.tmp
+*_ai_backup_*
+*.ai_original_backup
+*.pre_ai_*
+
+# AI cache
+.ai_temp/
+.ai_cache/
+.aitmp/
+**/*.ai_completions_cache
+**/.ai-model-cache/
+
+# Python cache
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+*.cover
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+*.ipynb_ai
+
+# ============================================================
+# Python Environment
+# ============================================================
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+venv.bak/
+env.bak/
+
+# Conda environments
+conda-env/
+.conda/
+*.conda
+*.yml
+*.yaml
+
+# Python packaging
+dist/
+build/
+*.egg
+*.whl
+
+# ============================================================
+# Node.js Environment
+# ============================================================
+
+# Dependencies
+node_modules/
+jspm_packages/
+
+# Build output
+dist/
+build/
+out/
+.next/
+.nuxt/
+.vuepress/dist/
+
+# Cache
+.npm/
+.yarn/
+.pnpm-store/
+.eslintcache
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Lock files
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ============================================================
+# Development Tool Configuration
+# ============================================================
+
+# VS Code
+.vscode/
+*.code-workspace
+.vscode-test/
+.vscode/ai-context/
+.vscode/ai-suggestions/
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+*.launch
+
+# Vim
+*.swp
+*.swo
+*.swn
+*~
+.vimrc.local
+
+# Emacs
+*~
+\#*\#
+.\#*
+.dir-locals.el
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd/
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Windows reserved device names (should NOT exist as files)
+nul
+con
+prn
+aux
+
+# Linux
+.directory
+.Trash-*
+.nfs*
+
+# ============================================================
+# Container and Virtualization
+# ============================================================
+
+# Docker
+.docker/
+docker-compose.override.yml
+docker-compose.*.yml
+
+# Kubernetes
+*.kubeconfig
+kubeconfig.*
+
+# Vagrant
+.vagrant/
+Vagrantfile.local
+
+# ============================================================
+# Version Control
+# ============================================================
+
+# Git (excluding .gitignore itself)
+.git/
+*.orig
+*.rej
+
+# SVN
+.svn/
+
+# Mercurial
+.hg/
+
+# ============================================================
 # Binaries for programs and plugins
+# ============================================================
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
-*.test
+# ============================================================
+# Operating System and Temporary Files
+# ============================================================
 
-# Code coverage profiles and other test artifacts
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.cache
+
+# ============================================================
+# Testing and Coverage
+# ============================================================
+
+# Test output
+test-results/
+coverage/
+coverage
+.nyc_output/
+*.lcov
+.coverage.*
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+*.test
 *.out
-coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# ============================================================
+# Miscellaneous
+# ============================================================
 
-# Go workspace file
-go.work
-go.work.sum
+# Document drafts
+DRAFT.md
+TODO.md
+notes.md
 
-# env file
-.env
+# Local configuration files
+*.local
+config.local.*
 
-# Editor/IDE
-.idea/
-.vscode/
+# Log rotation
+*.log.*
 
-# Development Testing Directory
-dev_test/
+# Snapshots and dumps
+*.snap
+*.dump
+*.core

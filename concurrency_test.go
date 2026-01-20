@@ -307,7 +307,7 @@ func TestConcurrentFileOperations(t *testing.T) {
 					}
 
 					// Verify JSON is valid before modifying
-					if !IsValidJson(data) {
+					if !IsValidJSON(data) {
 						// Count but don't fail - corrupted read due to concurrent writes
 						atomic.AddInt64(&errorCount, 1)
 						continue
@@ -321,7 +321,7 @@ func TestConcurrentFileOperations(t *testing.T) {
 					}
 
 					// Only save if we got valid JSON
-					if IsValidJson(newData) {
+					if IsValidJSON(newData) {
 						err = SaveToFile(filePath, newData, false)
 						if err != nil {
 							atomic.AddInt64(&errorCount, 1)
@@ -348,7 +348,7 @@ func TestConcurrentFileOperations(t *testing.T) {
 		// Verify file is still valid JSON
 		finalData, err := LoadFromFile(filePath)
 		helper.AssertNoError(err)
-		if !IsValidJson(finalData) {
+		if !IsValidJSON(finalData) {
 			// If file is corrupted, that's a real failure
 			t.Errorf("Final file is not valid JSON")
 		}

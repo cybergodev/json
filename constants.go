@@ -12,8 +12,8 @@ type ConfigInterface interface {
 	GetMaxConcurrency() int
 	IsMetricsEnabled() bool
 	IsStrictMode() bool
-	AllowComments() bool
-	PreserveNumbers() bool
+	IsCommentsAllowed() bool
+	ShouldPreserveNumbers() bool
 	ShouldCreatePaths() bool
 	ShouldCleanupNulls() bool
 	ShouldCompactArrays() bool
@@ -24,10 +24,10 @@ type ConfigInterface interface {
 const (
 	// Buffer and Pool Sizes - Optimized for production workloads
 	DefaultBufferSize        = 1024
-	MaxPoolBufferSize        = 16384
-	MinPoolBufferSize        = 512
+	MaxPoolBufferSize        = 8192  // 8KB max to prevent memory bloat
+	MinPoolBufferSize        = 256   // 256B min for efficiency
 	DefaultPathSegmentCap    = 8
-	MaxPathSegmentCap        = 128
+	MaxPathSegmentCap        = 32    // Reduced from 128
 	DefaultStringBuilderSize = 256
 
 	// Cache Sizes - Balanced for performance and memory
@@ -37,7 +37,7 @@ const (
 
 	// Operation Limits - Secure defaults with reasonable headroom
 	InvalidArrayIndex        = -999999
-	DefaultMaxJSONSize       = 100 * 1024 * 1024 // 100MB - reasonable for most use cases
+	DefaultMaxJSONSize       = 100 * 1024 * 1024 // 100MB
 	DefaultMaxSecuritySize   = 10 * 1024 * 1024
 	DefaultMaxNestingDepth   = 200
 	DefaultMaxObjectKeys     = 100000

@@ -353,16 +353,17 @@ func getEncoderBuffer() *bytes.Buffer {
 }
 
 // putEncoderBuffer returns a bytes.Buffer to the encoder pool
-// PERFORMANCE FIX: Stricter size limits prevent memory bloat
+// Consistent with resource_manager.go limits to prevent memory bloat
 func putEncoderBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 8 * 1024 // CRITICAL FIX: Reduced from 16KB to 8KB
-	const minPoolBufferSize = 256      // CRITICAL FIX: Reduced from 512 to 256
+	const maxPoolBufferSize = 8 * 1024 // 8KB max
+	const minPoolBufferSize = 256      // 256B min
 	if buf != nil {
 		c := buf.Cap()
 		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
-			buf.Reset() // Ensure clean state
+			buf.Reset()
 			encoderBufferPool.Put(buf)
 		}
+		// oversized buffers are discarded
 	}
 }
 
@@ -962,43 +963,8 @@ func (e *CustomEncoder) isEmpty(v reflect.Value) bool {
 	return false
 }
 
-var (
-	// Global buffer pools for memory efficiency with optimized sizing
-	bytesBufferPool = sync.Pool{
-		New: func() any {
-			buf := &bytes.Buffer{}
-			buf.Grow(2048) // Optimized pre-allocation
-			return buf
-		},
-	}
-)
-
-// getBytesBuffer gets a bytes.Buffer from the pool with enhanced safety
-func getBytesBuffer() *bytes.Buffer {
-	if buf := bytesBufferPool.Get(); buf != nil {
-		if buffer, ok := buf.(*bytes.Buffer); ok {
-			buffer.Reset()
-			return buffer
-		}
-	}
-	// Fallback: create new buffer with optimized capacity
-	buf := bytes.NewBuffer(make([]byte, 0, 2048))
-	return buf
-}
-
-// putBytesBuffer returns a bytes.Buffer to the pool with strict size limits
-// PERFORMANCE FIX: Prevents memory bloat from oversized buffers
-func putBytesBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 8 * 1024 // CRITICAL FIX: Reduced from 16KB to 8KB
-	const minPoolBufferSize = 256      // CRITICAL FIX: Reduced from 512 to 256
-	if buf != nil {
-		c := buf.Cap()
-		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
-			buf.Reset() // Ensure buffer is clean before returning to pool
-			bytesBufferPool.Put(buf)
-		}
-	}
-}
+// Note: bytesBufferPool has been consolidated into encoderBufferPool
+// All calls to getEncoderBuffer/putEncoderBuffer now use encoderBufferPool
 
 // Decoder reads and decodes JSON values from an input stream.
 // This type is fully compatible with encoding/json.Decoder.
@@ -1181,8 +1147,8 @@ func (dec *Decoder) Token() (Token, error) {
 // readValue reads a complete JSON value from the input stream
 func (dec *Decoder) readValue() ([]byte, error) {
 	// Use buffer pool for memory efficiency
-	buf := getBytesBuffer()
-	defer putBytesBuffer(buf)
+	buf := getEncoderBuffer()
+	defer putEncoderBuffer(buf)
 
 	depth := 0
 	inString := false
@@ -1324,8 +1290,8 @@ func (dec *Decoder) parseToken(b byte) (Token, error) {
 // parseString parses a JSON string token
 func (dec *Decoder) parseString() (string, error) {
 	// Use buffer pool for memory efficiency
-	buf := getBytesBuffer()
-	defer putBytesBuffer(buf)
+	buf := getEncoderBuffer()
+	defer putEncoderBuffer(buf)
 
 	for {
 		b, err := dec.buf.ReadByte()
@@ -1449,8 +1415,8 @@ func (dec *Decoder) parseNull() (any, error) {
 // parseNumber parses a JSON number token
 func (dec *Decoder) parseNumber(first byte) (any, error) {
 	// Use buffer pool for memory efficiency
-	buf := getBytesBuffer()
-	defer putBytesBuffer(buf)
+	buf := getEncoderBuffer()
+	defer putEncoderBuffer(buf)
 	buf.WriteByte(first)
 
 	for {

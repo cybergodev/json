@@ -1,4 +1,4 @@
-//go:build ignore
+//go:build example
 
 package main
 
@@ -38,6 +38,7 @@ func main() {
 		Active    bool    `json:"active"`
 		Hidden    string  `json:"-"` // Always omitted
 		CreatedAt string  `json:"created_at"`
+		Hobby     any     `json:"hobby"`
 	}
 
 	user := User{
@@ -47,6 +48,7 @@ func main() {
 		Active:    true,
 		CreatedAt: "2024-01-15T10:30:00Z",
 		Hidden:    "secret",
+		Hobby:     map[string]any{"name": "reading", "level": "advanced"},
 	}
 
 	// 1. PRETTY VS COMPACT
@@ -99,7 +101,7 @@ func demonstratePrettyVsCompact(user interface{}) {
 	fmt.Println(prettyJSON)
 
 	// Compact formatting
-	compactJSON, _ := json.EncodeCompact(user, nil)
+	compactJSON, _ := json.EncodeCompact(user)
 	fmt.Println("\n   Compact JSON:")
 	fmt.Println(compactJSON)
 }
@@ -113,7 +115,7 @@ func demonstrateHTMLEscaping() {
 
 	data := HTMLContent{
 		Title:   "Hello <script>alert('XSS')</script>",
-		Content: "Visit <a href='http://example.com'>here</a>",
+		Content: "Visit <a href='https://example.com'>here</a>",
 	}
 
 	// With HTML escaping (default, safe for web)

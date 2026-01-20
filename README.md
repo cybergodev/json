@@ -179,9 +179,8 @@ json.Foreach(data, func (key any, item *json.IterableValue) {
 })
 
 // Advanced iteration variants
-json.ForeachNested(data, callback)           // Nested-safe iteration
-json.ForeachWithIterator(data, callback)     // With iterator access
-json.ForeachWithPath(data, "users", callback) // Iterate specific path
+json.ForeachNested(data, callback)                  // Nested-safe iteration
+json.ForeachWithPath(data, "data.users", callback)  // Iterate specific path
 
 // Iterate and return modified JSON - supports data modification
 modifiedJson, err := json.ForeachReturn(data, func (key any, item *json.IterableValue) {
@@ -214,8 +213,9 @@ config := &json.EncodeConfig{
     Pretty:       true,
     SortKeys:     true,
     EscapeHTML:   false,
+    MaxDepth:     10,  // Required: maximum encoding depth
 }
-jsonStr, err := json.Encode(data, config)
+jsonStr, err := json.Encode(data, config)  // config is optional
 jsonStr, err := json.EncodePretty(data, config)
 jsonStr, err := json.EncodeCompact(data, config)
 

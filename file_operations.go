@@ -9,10 +9,6 @@ import (
 	"strings"
 )
 
-// ============================================================================
-// File I/O Operations
-// ============================================================================
-
 // LoadFromFile loads JSON data from a file
 func (p *Processor) LoadFromFile(filePath string, opts ...*ProcessorOptions) (any, error) {
 	if err := p.checkClosed(); err != nil {
@@ -174,10 +170,6 @@ func (p *Processor) createDirectoryIfNotExists(filePath string) error {
 func (p *Processor) validateFilePath(filePath string) error {
 	return p.validateFilePathSecure(filePath)
 }
-
-// ============================================================================
-// File Security Validation
-// ============================================================================
 
 // validateFilePathSecure provides enhanced security validation for file paths
 func (p *Processor) validateFilePathSecure(filePath string) error {
