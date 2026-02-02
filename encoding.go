@@ -38,15 +38,7 @@ func (p *Processor) EncodeWithOptions(value any, encOpts *EncodeConfig, opts ...
 	var err error
 
 	// Check if we need to use custom encoding features
-	needsCustomEncoding := encOpts.DisableEscaping ||
-		encOpts.EscapeUnicode ||
-		encOpts.EscapeSlash ||
-		!encOpts.EscapeNewlines ||
-		!encOpts.EscapeTabs ||
-		encOpts.CustomEscapes != nil ||
-		encOpts.SortKeys ||
-		encOpts.OmitEmpty ||
-		!encOpts.EscapeHTML // Add EscapeHTML check
+	needsCustomEncoding := needsCustomEncodingOpts(encOpts)
 
 	if needsCustomEncoding {
 		// Use custom encoder for advanced options
@@ -118,6 +110,21 @@ func (p *Processor) validateDepth(value any, maxDepth, currentDepth int) error {
 	}
 
 	return nil
+}
+
+// needsCustomEncodingOpts checks if the encoding options require custom encoding logic
+func needsCustomEncodingOpts(cfg *EncodeConfig) bool {
+	return cfg.DisableEscaping ||
+		cfg.EscapeUnicode ||
+		cfg.EscapeSlash ||
+		!cfg.EscapeNewlines ||
+		!cfg.EscapeTabs ||
+		cfg.CustomEscapes != nil ||
+		cfg.SortKeys ||
+		cfg.OmitEmpty ||
+		!cfg.EscapeHTML ||
+		cfg.FloatPrecision > 0 ||
+		!cfg.IncludeNulls
 }
 
 // ToJsonString converts any Go value to JSON string with HTML escaping (safe for web)
@@ -274,17 +281,7 @@ func (p *Processor) EncodeWithConfig(value any, config *EncodeConfig, opts ...*P
 	var err error
 
 	// Check if we need to use custom encoding features
-	needsCustomEncoding := config.DisableEscaping ||
-		config.EscapeUnicode ||
-		config.EscapeSlash ||
-		!config.EscapeNewlines ||
-		!config.EscapeTabs ||
-		config.CustomEscapes != nil ||
-		config.SortKeys ||
-		config.OmitEmpty ||
-		!config.EscapeHTML ||
-		config.FloatPrecision > 0 ||
-		!config.IncludeNulls
+	needsCustomEncoding := needsCustomEncodingOpts(config)
 
 	if needsCustomEncoding {
 		// Use custom encoder for advanced options
@@ -324,13 +321,38 @@ func (p *Processor) EncodeWithConfig(value any, config *EncodeConfig, opts ...*P
 	return result, nil
 }
 
-// EncodeWithTags encodes struct with custom JSON tags handling
-func (p *Processor) EncodeWithTags(value any, pretty bool, opts ...*ProcessorOptions) (string, error) {
-	// This is a placeholder for future implementation of custom tag handling
-	// For now, use standard encoding
-	config := DefaultEncodeConfig()
-	config.Pretty = pretty
-	return p.EncodeWithConfig(value, config, opts...)
+// Encode converts any Go value to JSON string
+// This is a convenience method that matches the package-level Encode signature
+func (p *Processor) Encode(value any, config ...*EncodeConfig) (string, error) {
+	var cfg *EncodeConfig
+	if len(config) > 0 {
+		cfg = config[0]
+	}
+	return p.EncodeWithConfig(value, cfg)
+}
+
+// EncodePretty converts any Go value to pretty-formatted JSON string
+// This is a convenience method that matches the package-level EncodePretty signature
+func (p *Processor) EncodePretty(value any, config ...*EncodeConfig) (string, error) {
+	var cfg *EncodeConfig
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	} else {
+		cfg = NewPrettyConfig()
+	}
+	return p.EncodeWithConfig(value, cfg)
+}
+
+// EncodeCompact converts any Go value to compact JSON string
+// This is a convenience method that matches the package-level EncodeCompact signature
+func (p *Processor) EncodeCompact(value any, config ...*EncodeConfig) (string, error) {
+	var cfg *EncodeConfig
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	} else {
+		cfg = NewCompactConfig()
+	}
+	return p.EncodeWithConfig(value, cfg)
 }
 
 // Buffer pools for custom encoder memory optimization

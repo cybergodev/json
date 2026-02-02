@@ -182,21 +182,13 @@ json.Foreach(data, func (key any, item *json.IterableValue) {
 json.ForeachNested(data, callback)                  // Nested-safe iteration
 json.ForeachWithPath(data, "data.users", callback)  // Iterate specific path
 
-// Iterate and return modified JSON - supports data modification
-modifiedJson, err := json.ForeachReturn(data, func (key any, item *json.IterableValue) {
-    // Modify data during iteration
-    if item.GetString("status") == "inactive" {
-        item.Set("status", "active")
-        item.Set("updated_at", time.Now().Format("2006-01-02"))
+// Iterate with control flow - supports early termination
+json.ForeachWithPathAndControl(data, "data.users", func(key any, value any) json.IteratorControl {
+    // Process each item
+    if shouldStop {
+        return json.IteratorBreak  // Stop iteration
     }
-    
-    // Batch update user information
-    if key == "users" {
-        item.SetMultiple(map[string]any{
-            "last_login": time.Now().Unix(),
-            "version": "2.0",
-        })
-    }
+    return json.IteratorContinue  // Continue to next item
 })
 ```
 
@@ -446,18 +438,21 @@ err = json.SaveToFile("output_pretty.json", data, true)
 // Save to file (compact format)
 err = json.SaveToFile("output.json", data, false)
 
-// Load from Reader
+// Load from Reader (using processor)
+processor := json.New()
+defer processor.Close()
+
 file, err := os.Open("large_data.json")
 if err != nil {
     log.Fatal(err)
 }
 defer file.Close()
 
-data, err := json.LoadFromReader(file)
+data, err := processor.LoadFromReader(file)
 
-// Save to Writer
+// Save to Writer (using processor)
 var buffer bytes.Buffer
-err = json.SaveToWriter(&buffer, data, true)
+err = processor.SaveToWriter(&buffer, data, true)
 ```
 
 ### Marshal/Unmarshal File Operations

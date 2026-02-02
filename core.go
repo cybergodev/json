@@ -20,7 +20,7 @@ type PropertyAccessResult struct {
 	Error  error
 }
 
-// RootDataTypeConversionError represents an error that signals root data type conversion is needed
+// RootDataTypeConversionError signals that root data type conversion is needed
 type RootDataTypeConversionError struct {
 	RequiredType string
 	RequiredSize int
@@ -32,14 +32,13 @@ func (e *RootDataTypeConversionError) Error() string {
 		e.CurrentType, e.RequiredType, e.RequiredSize)
 }
 
-// ArrayExtensionError represents an error that signals array extension is needed
+// ArrayExtensionError signals that array extension is needed
 type ArrayExtensionError struct {
 	CurrentLength  int
 	RequiredLength int
 	TargetIndex    int
 	Value          any
 	Message        string
-	ExtendedArray  []any // For storing pre-created extended arrays
 }
 
 func (e *ArrayExtensionError) Error() string {
@@ -212,12 +211,12 @@ type Config struct {
 	CompactArrays    bool `json:"compact_arrays"`
 
 	// Additional options
-	EnableMetrics    bool `json:"enable_metrics"`
+	EnableMetrics     bool `json:"enable_metrics"`
 	EnableHealthCheck bool `json:"enable_health_check"`
-	AllowComments    bool `json:"allow_comments"`
-	PreserveNumbers  bool `json:"preserve_numbers"`
-	ValidateInput    bool `json:"validate_input"`
-	ValidateFilePath bool `json:"validate_file_path"`
+	AllowComments     bool `json:"allow_comments"`
+	PreserveNumbers   bool `json:"preserve_numbers"`
+	ValidateInput     bool `json:"validate_input"`
+	ValidateFilePath  bool `json:"validate_file_path"`
 }
 
 // ProcessorOptions provides per-operation configuration
@@ -537,8 +536,8 @@ type EncodeConfig struct {
 	EscapeTabs      bool `json:"escape_tabs"`
 
 	// Null handling
-	IncludeNulls  bool              `json:"include_nulls"`
-	CustomEscapes map[rune]string   `json:"custom_escapes,omitempty"`
+	IncludeNulls  bool            `json:"include_nulls"`
+	CustomEscapes map[rune]string `json:"custom_escapes,omitempty"`
 }
 
 // Clone creates a deep copy of the EncodeConfig
@@ -640,7 +639,7 @@ type RateLimiter interface {
 // Special marker for deleted values
 var DeletedMarker = &struct{ deleted bool }{deleted: true}
 
-// DefaultConfig moved to config.go
+// Special marker for deleted values
 
 // DefaultOptions returns default processor options
 func DefaultOptions() *ProcessorOptions {
@@ -774,8 +773,6 @@ func (c *Config) GetSecurityLimits() map[string]any {
 	}
 }
 
-// ValidateConfig moved to config.go
-
 // ValidateOptions validates processor options with enhanced checks
 func ValidateOptions(options *ProcessorOptions) error {
 	if options == nil {
@@ -791,8 +788,6 @@ func ValidateOptions(options *ProcessorOptions) error {
 
 	return nil
 }
-
-// DefaultEncodeConfig, NewPrettyConfig, NewCompactConfig moved to config.go
 
 // NewReadableConfig creates a configuration for human-readable JSON with minimal escaping
 func NewReadableConfig() *EncodeConfig {

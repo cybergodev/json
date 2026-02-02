@@ -168,24 +168,24 @@ func GetTypedWithProcessor[T any](processor *Processor, jsonStr, path string, op
 	return finalResult, nil
 }
 
-// handleNullValue handles null values for different target types
+// handleNullValue handles null values for different target types using direct type checking
 func handleNullValue[T any](path string) (T, error) {
 	var zero T
-	targetType := fmt.Sprintf("%T", zero)
 
-	switch targetType {
-	case "string":
+	// Use direct type checking instead of string reflection for better performance
+	switch any(zero).(type) {
+	case string:
 		// Return empty string for null values
 		if result, ok := any("").(T); ok {
 			return result, nil
 		}
-	case "*string":
+	case *string:
 		if result, ok := any((*string)(nil)).(T); ok {
 			return result, nil
 		}
-	case "int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64",
-		"float32", "float64", "bool":
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool:
 		return zero, nil
 	default:
 		return zero, nil
@@ -325,9 +325,6 @@ const (
 	IteratorContinue
 	IteratorBreak
 )
-
-// deletedMarker is an alias for DeletedMarker in core.go
-var deletedMarker = DeletedMarker
 
 // Internal path type checking functions
 func isJSONPointerPath(path string) bool {

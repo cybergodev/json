@@ -1,6 +1,7 @@
 package json
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -132,6 +133,14 @@ func (p *Processor) Valid(jsonStr string, opts ...*ProcessorOptions) (bool, erro
 	return true, nil
 }
 
+// ValidBytes validates JSON format from byte slice (matches encoding/json.Valid signature)
+// This method provides compatibility with the standard library's json.Valid function
+func (p *Processor) ValidBytes(data []byte) bool {
+	jsonStr := string(data)
+	valid, err := p.Valid(jsonStr)
+	return err == nil && valid
+}
+
 // FormatPretty formats JSON string with indentation
 func (p *Processor) FormatPretty(jsonStr string, opts ...*ProcessorOptions) (string, error) {
 	if err := p.checkClosed(); err != nil {
@@ -240,6 +249,89 @@ func (p *Processor) Compact(jsonStr string, opts ...*ProcessorOptions) (string, 
 	return result, nil
 }
 
+// FormatCompact removes whitespace from JSON string (alias for Compact)
+func (p *Processor) FormatCompact(jsonStr string, opts ...*ProcessorOptions) (string, error) {
+	return p.Compact(jsonStr, opts...)
+}
+
+// CompactBuffer appends to dst the JSON-encoded src with insignificant space characters elided.
+//
+// This method provides compatibility with the encoding/json.Compact function signature,
+// with the addition of optional ProcessorOptions for advanced customization.
+//
+// API Design Note:
+//   - Processor.Compact(jsonStr) operates on strings and returns formatted strings
+//   - Processor.CompactBuffer(dst, src) operates on buffers for stream processing
+//   - This naming convention distinguishes string operations from buffer operations
+//   - Both methods support optional ProcessorOptions for consistency
+//
+// For package-level usage with standard library signature, see json.Compact(dst, src).
+func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, opts ...*ProcessorOptions) error {
+	compacted, err := p.Compact(string(src), opts...)
+	if err != nil {
+		return err
+	}
+	_, err = dst.WriteString(compacted)
+	return err
+}
+
+// IndentBuffer appends to dst an indented form of the JSON-encoded src.
+//
+// This method provides compatibility with the encoding/json.Indent function signature,
+// with the addition of optional ProcessorOptions for advanced customization.
+//
+// API Design Note:
+//   - Processor.FormatPretty(jsonStr) operates on strings for pretty formatting
+//   - Processor.IndentBuffer(dst, src, prefix, indent) operates on buffers for stream processing
+//   - This naming convention distinguishes string operations from buffer operations
+//   - Both approaches support optional ProcessorOptions for consistency
+//
+// For package-level usage with standard library signature, see json.Indent(dst, src, prefix, indent).
+func (p *Processor) IndentBuffer(dst *bytes.Buffer, src []byte, prefix, indent string, opts ...*ProcessorOptions) error {
+	var data any
+	if err := p.Unmarshal(src, &data, opts...); err != nil {
+		return err
+	}
+	indented, err := p.MarshalIndent(data, prefix, indent, opts...)
+	if err != nil {
+		return err
+	}
+	_, err = dst.Write(indented)
+	return err
+}
+
+// HTMLEscapeBuffer appends to dst the JSON-encoded src with HTML-safe escaping.
+//
+// This method provides compatibility with the encoding/json.HTMLEscape function signature,
+// with the addition of optional ProcessorOptions for advanced customization.
+//
+// The function replaces &, <, and > with \u0026, \u003c, and \u003e to avoid certain
+// safety problems that can arise when embedding JSON in HTML.
+//
+// API Design Note:
+//   - The "Buffer" suffix distinguishes this buffer operation from potential string operations
+//   - This naming is consistent with CompactBuffer and IndentBuffer
+//   - Processor methods use descriptive names to avoid ambiguity
+//
+// For package-level usage with standard library signature, see json.HTMLEscape(dst, src).
+func (p *Processor) HTMLEscapeBuffer(dst *bytes.Buffer, src []byte, opts ...*ProcessorOptions) {
+	var data any
+	if err := p.Unmarshal(src, &data, opts...); err != nil {
+		dst.Write(src)
+		return
+	}
+
+	config := DefaultEncodeConfig()
+	config.EscapeHTML = true
+	escaped, err := p.EncodeWithConfig(data, config, opts...)
+	if err != nil {
+		dst.Write(src)
+		return
+	}
+
+	dst.WriteString(escaped)
+}
+
 // NumberPreservingDecoder provides JSON decoding with optimized number format preservation
 type NumberPreservingDecoder struct {
 	preserveNumbers bool
@@ -318,8 +410,10 @@ func (d *NumberPreservingDecoder) convertStdJSONNumbers(value any) any {
 }
 
 // stringToBytes converts string to []byte efficiently
-// In modern Go versions, the compiler optimizes this conversion
+// Note: In Go 1.20+, use unsafe.StringData for zero-copy conversion
+// For compatibility and safety, we use the standard conversion
 func stringToBytes(s string) []byte {
+	// TODO: Consider using unsafe.StringData for Go 1.20+ for zero-copy
 	return []byte(s)
 }
 
@@ -746,6 +840,11 @@ func (p *Processor) splitPath(path string, segments []PathSegment) []PathSegment
 	// Clear existing segments
 	segments = segments[:0]
 
+	// Fast path for simple paths (no special characters)
+	if !p.needsPathPreprocessing(path) {
+		return p.splitPathIntoSegments(path, segments)
+	}
+
 	// Preprocess path to handle special cases
 	sb := p.getStringBuilder()
 	defer p.putStringBuilder(sb)
@@ -754,6 +853,17 @@ func (p *Processor) splitPath(path string, segments []PathSegment) []PathSegment
 
 	// Split into segments
 	return p.splitPathIntoSegments(processedPath, segments)
+}
+
+// needsPathPreprocessing checks if a path needs preprocessing
+func (p *Processor) needsPathPreprocessing(path string) bool {
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c == '[' || c == '{' {
+			return true
+		}
+	}
+	return false
 }
 
 // preprocessPath preprocesses the path to handle special syntax
@@ -915,8 +1025,6 @@ func (p *Processor) isDistributedOperationPath(path string) bool {
 
 // isDistributedOperationSegment checks if a segment requires distributed handling
 func (p *Processor) isDistributedOperationSegment(segment PathSegment) bool {
-	// Check segment properties for distributed operation indicators
-	// Note: IsDistributed field was removed as it was never used
 	return segment.Key != ""
 }
 

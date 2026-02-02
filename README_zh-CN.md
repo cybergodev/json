@@ -182,21 +182,13 @@ json.Foreach(data, func (key any, item *json.IterableValue) {
 json.ForeachNested(data, callback)                  // 嵌套安全迭代
 json.ForeachWithPath(data, "data.users", callback)  // 迭代特定路径
 
-// 迭代并返回修改后的 JSON - 支持数据修改
-modifiedJson, err := json.ForeachReturn(data, func (key any, item *json.IterableValue) {
-    // 迭代过程中修改数据
-    if item.GetString("status") == "inactive" {
-        item.Set("status", "active")
-        item.Set("updated_at", time.Now().Format("2006-01-02"))
+// 带控制流的迭代 - 支持提前终止
+json.ForeachWithPathAndControl(data, "data.users", func(key any, value any) json.IteratorControl {
+    // 处理每个项目
+    if shouldStop {
+        return json.IteratorBreak  // 停止迭代
     }
-
-    // 批量更新用户信息
-    if key == "users" {
-        item.SetMultiple(map[string]any{
-            "last_login": time.Now().Unix(),
-            "version": "2.0",
-        })
-    }
+    return json.IteratorContinue  // 继续下一项
 })
 ```
 
@@ -446,18 +438,21 @@ err = json.SaveToFile("output_pretty.json", data, true)
 // 保存到文件（压缩格式）
 err = json.SaveToFile("output.json", data, false)
 
-// 从 Reader 加载
+// 从 Reader 加载（使用处理器）
+processor := json.New()
+defer processor.Close()
+
 file, err := os.Open("large_data.json")
 if err != nil {
     log.Fatal(err)
 }
 defer file.Close()
 
-data, err := json.LoadFromReader(file)
+data, err := processor.LoadFromReader(file)
 
-// 保存到 Writer
+// 保存到 Writer（使用处理器）
 var buffer bytes.Buffer
-err = json.SaveToWriter(&buffer, data, true)
+err = processor.SaveToWriter(&buffer, data, true)
 ```
 
 ### Marshal/Unmarshal 文件操作

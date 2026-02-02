@@ -16,6 +16,9 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
+// deletedMarker is a local reference to the DeletedMarker from core.go
+var deletedMarker = DeletedMarker
+
 // Processor is the main JSON processing engine with thread safety and performance optimization
 type Processor struct {
 	config          *Config
@@ -234,40 +237,17 @@ func calculateHitRatioInternal(hits, misses int64) float64 {
 func (p *Processor) GetStats() Stats {
 	cacheStats := p.cache.GetStats()
 
-	// Extract values from map with type assertions and defaults
-	var cacheSize, cacheMemory, hitCount, missCount int64
-	var hitRatio, memoryEfficiency float64
-
-	if val, ok := cacheStats["entries"].(int64); ok {
-		cacheSize = val
-	}
-	if val, ok := cacheStats["total_memory"].(int64); ok {
-		cacheMemory = val
-	}
-	if val, ok := cacheStats["hit_count"].(int64); ok {
-		hitCount = val
-	}
-	if val, ok := cacheStats["miss_count"].(int64); ok {
-		missCount = val
-	}
-	if val, ok := cacheStats["hit_ratio"].(float64); ok {
-		hitRatio = val
-	}
-	if val, ok := cacheStats["memory_efficiency"].(float64); ok {
-		memoryEfficiency = val
-	}
-
 	return Stats{
-		CacheSize:        cacheSize,
-		CacheMemory:      cacheMemory,
+		CacheSize:        cacheStats.Entries,
+		CacheMemory:      cacheStats.TotalMemory,
 		MaxCacheSize:     p.config.MaxCacheSize,
-		HitCount:         hitCount,
-		MissCount:        missCount,
-		HitRatio:         hitRatio,
+		HitCount:         cacheStats.HitCount,
+		MissCount:        cacheStats.MissCount,
+		HitRatio:         cacheStats.HitRatio,
 		CacheTTL:         p.config.CacheTTL,
 		CacheEnabled:     p.config.EnableCache,
 		IsClosed:         p.IsClosed(),
-		MemoryEfficiency: memoryEfficiency,
+		MemoryEfficiency: cacheStats.MemoryEfficiency,
 		OperationCount:   atomic.LoadInt64(&p.metrics.operationCount),
 		ErrorCount:       atomic.LoadInt64(&p.metrics.errorCount),
 	}
@@ -1614,6 +1594,99 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 	return result, nil
 }
 
+// GetString retrieves a string value from JSON at the specified path
+func (p *Processor) GetString(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
+	return GetTypedWithProcessor[string](p, jsonStr, path, opts...)
+}
+
+// GetInt retrieves an int value from JSON at the specified path
+func (p *Processor) GetInt(jsonStr, path string, opts ...*ProcessorOptions) (int, error) {
+	return GetTypedWithProcessor[int](p, jsonStr, path, opts...)
+}
+
+// GetFloat64 retrieves a float64 value from JSON at the specified path
+func (p *Processor) GetFloat64(jsonStr, path string, opts ...*ProcessorOptions) (float64, error) {
+	return GetTypedWithProcessor[float64](p, jsonStr, path, opts...)
+}
+
+// GetBool retrieves a bool value from JSON at the specified path
+func (p *Processor) GetBool(jsonStr, path string, opts ...*ProcessorOptions) (bool, error) {
+	return GetTypedWithProcessor[bool](p, jsonStr, path, opts...)
+}
+
+// GetArray retrieves an array value from JSON at the specified path
+func (p *Processor) GetArray(jsonStr, path string, opts ...*ProcessorOptions) ([]any, error) {
+	return GetTypedWithProcessor[[]any](p, jsonStr, path, opts...)
+}
+
+// GetObject retrieves an object value from JSON at the specified path
+func (p *Processor) GetObject(jsonStr, path string, opts ...*ProcessorOptions) (map[string]any, error) {
+	return GetTypedWithProcessor[map[string]any](p, jsonStr, path, opts...)
+}
+
+// GetWithDefault retrieves a value from JSON with a default fallback
+func (p *Processor) GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOptions) any {
+	value, err := p.Get(jsonStr, path, opts...)
+	if err != nil || value == nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetStringWithDefault retrieves a string value from JSON with a default fallback
+func (p *Processor) GetStringWithDefault(jsonStr, path, defaultValue string, opts ...*ProcessorOptions) string {
+	value, err := p.GetString(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetIntWithDefault retrieves an int value from JSON with a default fallback
+func (p *Processor) GetIntWithDefault(jsonStr, path string, defaultValue int, opts ...*ProcessorOptions) int {
+	value, err := p.GetInt(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetFloat64WithDefault retrieves a float64 value from JSON with a default fallback
+func (p *Processor) GetFloat64WithDefault(jsonStr, path string, defaultValue float64, opts ...*ProcessorOptions) float64 {
+	value, err := p.GetFloat64(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetBoolWithDefault retrieves a bool value from JSON with a default fallback
+func (p *Processor) GetBoolWithDefault(jsonStr, path string, defaultValue bool, opts ...*ProcessorOptions) bool {
+	value, err := p.GetBool(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetArrayWithDefault retrieves an array value from JSON with a default fallback
+func (p *Processor) GetArrayWithDefault(jsonStr, path string, defaultValue []any, opts ...*ProcessorOptions) []any {
+	value, err := p.GetArray(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetObjectWithDefault retrieves an object value from JSON with a default fallback
+func (p *Processor) GetObjectWithDefault(jsonStr, path string, defaultValue map[string]any, opts ...*ProcessorOptions) map[string]any {
+	value, err := p.GetObject(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
 // GetMultiple retrieves multiple values from JSON using multiple path expressions
 func (p *Processor) GetMultiple(jsonStr string, paths []string, opts ...*ProcessorOptions) (map[string]any, error) {
 	if err := p.checkClosed(); err != nil {
@@ -1976,6 +2049,28 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, opts ...
 	return string(resultBytes), nil
 }
 
+// SetWithAdd sets a value with automatic path creation
+// Returns:
+//   - On success: modified JSON string and nil error
+//   - On failure: original unmodified JSON string and error information
+func (p *Processor) SetWithAdd(jsonStr, path string, value any, opts ...*ProcessorOptions) (string, error) {
+	addOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
+		o.CreatePaths = true
+	})
+	return p.Set(jsonStr, path, value, addOpts)
+}
+
+// SetMultipleWithAdd sets multiple values with automatic path creation
+// Returns:
+//   - On success: modified JSON string and nil error
+//   - On failure: original unmodified JSON string and error information
+func (p *Processor) SetMultipleWithAdd(jsonStr string, updates map[string]any, opts ...*ProcessorOptions) (string, error) {
+	addOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
+		o.CreatePaths = true
+	})
+	return p.SetMultiple(jsonStr, updates, addOpts)
+}
+
 // Delete removes a value from JSON at the specified path
 func (p *Processor) Delete(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
 	if err := p.checkClosed(); err != nil {
@@ -2053,6 +2148,18 @@ func (p *Processor) Delete(jsonStr, path string, opts ...*ProcessorOptions) (str
 	}
 
 	return string(resultBytes), nil
+}
+
+// DeleteWithCleanNull removes a value from JSON and cleans up null values
+// Returns:
+//   - On success: modified JSON string and nil error
+//   - On failure: original unmodified JSON string and error information
+func (p *Processor) DeleteWithCleanNull(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
+	cleanupOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
+		o.CleanupNulls = true
+		o.CompactArrays = true
+	})
+	return p.Delete(jsonStr, path, cleanupOpts)
 }
 
 // ProcessBatch processes multiple operations in a single batch
@@ -2379,11 +2486,6 @@ func (u *processorUtils) ConvertToNumber(value any) (float64, error) {
 	}
 }
 
-// ============================================================================
-// Note: modularProcessor removed - over-engineered unused code (537 lines)
-// Use standard Processor for all operations
-// ============================================================================
-
 // RecursiveProcessor implements true recursive processing for all operations
 type RecursiveProcessor struct {
 	processor *Processor
@@ -2653,7 +2755,6 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 	case []any:
 		// Determine if this should be a distributed operation based on actual data structure
 		// A distributed operation is needed when we have nested arrays that need individual processing
-		// Note: IsDistributed field was removed as it was never used
 		shouldUseDistributed := urp.shouldUseDistributedArrayOperation(container)
 
 		if shouldUseDistributed {
@@ -2791,7 +2892,6 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 	switch container := data.(type) {
 	case []any:
 		// Check if this should be a distributed operation
-		// Note: IsDistributed field was removed as it was never used
 		shouldUseDistributed := urp.shouldUseDistributedArrayOperation(container)
 
 		if shouldUseDistributed {

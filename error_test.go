@@ -464,20 +464,16 @@ func TestArrayExtensionError(t *testing.T) {
 		t.Errorf("Error() with custom message = %q, want %q", err2.Error(), "Custom error message")
 	}
 
-	// Test with ExtendedArray
-	extendedArr := []any{1, 2, 3}
+	// Test with custom message
 	err3 := &ArrayExtensionError{
 		CurrentLength:  3,
 		RequiredLength: 10,
 		TargetIndex:    9,
 		Value:          "test",
-		ExtendedArray:  extendedArr,
+		Message:        "Array too small",
 	}
-	if err3.ExtendedArray == nil {
-		t.Errorf("ExtendedArray should not be nil")
-	}
-	if len(err3.ExtendedArray) != 3 {
-		t.Errorf("ExtendedArray length = %d, want 3", len(err3.ExtendedArray))
+	if err3.Error() != "Array too small" {
+		t.Errorf("Error() with custom message = %q, want %q", err3.Error(), "Array too small")
 	}
 }
 
