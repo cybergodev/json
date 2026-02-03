@@ -98,7 +98,6 @@ func DefaultEncodeConfig() *EncodeConfig {
 		Prefix:          "",
 		EscapeHTML:      true,
 		SortKeys:        false,
-		OmitEmpty:       false,
 		ValidateUTF8:    true,
 		MaxDepth:        100,
 		DisallowUnknown: false,
@@ -119,13 +118,6 @@ func NewPrettyConfig() *EncodeConfig {
 	cfg := DefaultEncodeConfig()
 	cfg.Pretty = true
 	cfg.Indent = "  "
-	return cfg
-}
-
-// NewCompactConfig returns configuration for compact JSON
-func NewCompactConfig() *EncodeConfig {
-	cfg := DefaultEncodeConfig()
-	cfg.Pretty = false
 	return cfg
 }
 

@@ -117,13 +117,12 @@ func needsCustomEncodingOpts(cfg *EncodeConfig) bool {
 	return cfg.DisableEscaping ||
 		cfg.EscapeUnicode ||
 		cfg.EscapeSlash ||
-		!cfg.EscapeNewlines ||
-		!cfg.EscapeTabs ||
+		!cfg.EscapeNewlines ||  // When false, need custom encoding to NOT escape
+		!cfg.EscapeTabs ||      // When false, need custom encoding to NOT escape
 		cfg.CustomEscapes != nil ||
 		cfg.SortKeys ||
-		cfg.OmitEmpty ||
-		!cfg.EscapeHTML ||
-		cfg.FloatPrecision > 0 ||
+		cfg.EscapeHTML ||      // When true, need custom encoding to escape HTML (std lib doesn't)
+		cfg.FloatPrecision >= 0 ||
 		!cfg.IncludeNulls
 }
 
@@ -343,59 +342,40 @@ func (p *Processor) EncodePretty(value any, config ...*EncodeConfig) (string, er
 	return p.EncodeWithConfig(value, cfg)
 }
 
-// EncodeCompact converts any Go value to compact JSON string
-// This is a convenience method that matches the package-level EncodeCompact signature
-func (p *Processor) EncodeCompact(value any, config ...*EncodeConfig) (string, error) {
-	var cfg *EncodeConfig
-	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
-	} else {
-		cfg = NewCompactConfig()
-	}
-	return p.EncodeWithConfig(value, cfg)
-}
-
 // Buffer pools for custom encoder memory optimization
-// PERFORMANCE FIX: Pre-allocated buffers with strict size limits
 var (
 	encoderBufferPool = sync.Pool{
 		New: func() any {
 			buf := &bytes.Buffer{}
-			buf.Grow(2048) // Pre-allocate for typical JSON
+			buf.Grow(2048)
 			return buf
 		},
 	}
 )
 
-// getEncoderBuffer gets a bytes.Buffer from the encoder pool
 func getEncoderBuffer() *bytes.Buffer {
 	buf := encoderBufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	return buf
 }
 
-// putEncoderBuffer returns a bytes.Buffer to the encoder pool
-// Consistent with resource_manager.go limits to prevent memory bloat
 func putEncoderBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 8 * 1024 // 8KB max
-	const minPoolBufferSize = 256      // 256B min
+	const maxPoolBufferSize = 8 * 1024
+	const minPoolBufferSize = 256
 	if buf != nil {
 		c := buf.Cap()
 		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
 			buf.Reset()
 			encoderBufferPool.Put(buf)
 		}
-		// oversized buffers are discarded
 	}
 }
 
 // CustomEncoder provides advanced JSON encoding with configurable options
 type CustomEncoder struct {
-	config *EncodeConfig
-	buffer *bytes.Buffer
-	depth  int
-
-	// Pre-allocated buffers for better performance
+	config      *EncodeConfig
+	buffer      *bytes.Buffer
+	depth       int
 	keyBuffer   *bytes.Buffer
 	valueBuffer *bytes.Buffer
 }
@@ -575,22 +555,17 @@ func (e *CustomEncoder) encodeJSONNumber(num json.Number) error {
 	return nil
 }
 
-// encodeFloat encodes float values with proper precision handling
 func (e *CustomEncoder) encodeFloat(f float64, bits int) error {
-	// If FloatPrecision is set (>= 0), use it regardless of PreserveNumbers setting
 	if e.config.FloatPrecision >= 0 {
 		formatted := strconv.FormatFloat(f, 'f', e.config.FloatPrecision, bits)
 		e.buffer.WriteString(formatted)
 		return nil
 	}
 
-	// Use 'f' format for reasonable range to avoid scientific notation
-	// This helps maintain consistency in number representation
 	if f >= -1e15 && f <= 1e15 {
 		formatted := strconv.FormatFloat(f, 'f', -1, bits)
 		e.buffer.WriteString(formatted)
 	} else {
-		// Use 'g' format for very large/small numbers
 		formatted := strconv.FormatFloat(f, 'g', -1, bits)
 		e.buffer.WriteString(formatted)
 	}
@@ -598,13 +573,10 @@ func (e *CustomEncoder) encodeFloat(f float64, bits int) error {
 	return nil
 }
 
-// encodeString encodes a string with custom escaping options and improved performance
 func (e *CustomEncoder) encodeString(s string) error {
 	e.buffer.WriteByte('"')
 
 	if e.config.DisableEscaping {
-		// Minimal escaping - only escape quotes and backslashes
-		// Use byte-level operations for ASCII characters for better performance
 		for i := 0; i < len(s); i++ {
 			b := s[i]
 			switch b {
@@ -614,18 +586,15 @@ func (e *CustomEncoder) encodeString(s string) error {
 				e.buffer.WriteString(`\\`)
 			default:
 				if b < 0x80 {
-					// ASCII character, write directly
 					e.buffer.WriteByte(b)
 				} else {
-					// Non-ASCII, decode rune and write
 					r, size := utf8.DecodeRuneInString(s[i:])
 					e.buffer.WriteRune(r)
-					i += size - 1 // Adjust for loop increment
+					i += size - 1
 				}
 			}
 		}
 	} else {
-		// Standard escaping with custom options
 		for _, r := range s {
 			if err := e.escapeRune(r); err != nil {
 				return err
@@ -637,9 +606,7 @@ func (e *CustomEncoder) encodeString(s string) error {
 	return nil
 }
 
-// escapeRune escapes a single rune according to options
 func (e *CustomEncoder) escapeRune(r rune) error {
-	// Check custom escapes first
 	if e.config.CustomEscapes != nil {
 		if escape, exists := e.config.CustomEscapes[r]; exists {
 			e.buffer.WriteString(escape)
@@ -678,13 +645,10 @@ func (e *CustomEncoder) escapeRune(r rune) error {
 		}
 	default:
 		if r < 0x20 {
-			// Control characters
 			e.buffer.WriteString(fmt.Sprintf(`\u%04x`, r))
 		} else if e.config.EscapeHTML && (r == '<' || r == '>' || r == '&') {
-			// HTML escaping
 			e.buffer.WriteString(fmt.Sprintf(`\u%04x`, r))
 		} else if e.config.EscapeUnicode && r > 0x7F {
-			// Unicode escaping
 			e.buffer.WriteString(fmt.Sprintf(`\u%04x`, r))
 		} else if !utf8.ValidRune(r) && e.config.ValidateUTF8 {
 			return &JsonsError{
@@ -700,7 +664,6 @@ func (e *CustomEncoder) escapeRune(r rune) error {
 	return nil
 }
 
-// encodeArray encodes arrays and slices
 func (e *CustomEncoder) encodeArray(v reflect.Value) error {
 	e.buffer.WriteByte('[')
 	e.depth++
@@ -729,7 +692,6 @@ func (e *CustomEncoder) encodeArray(v reflect.Value) error {
 	return nil
 }
 
-// encodeMap encodes maps
 func (e *CustomEncoder) encodeMap(v reflect.Value) error {
 	e.buffer.WriteByte('{')
 	e.depth++
@@ -745,12 +707,6 @@ func (e *CustomEncoder) encodeMap(v reflect.Value) error {
 	for _, key := range keys {
 		value := v.MapIndex(key)
 
-		// Skip empty values if OmitEmpty is enabled
-		if e.config.OmitEmpty && e.isEmpty(value) {
-			continue
-		}
-
-		// Skip null values if IncludeNulls is disabled
 		if !e.config.IncludeNulls && (value.Interface() == nil || (value.Kind() == reflect.Ptr && value.IsNil())) {
 			continue
 		}
@@ -764,7 +720,6 @@ func (e *CustomEncoder) encodeMap(v reflect.Value) error {
 			e.writeIndent()
 		}
 
-		// Encode key
 		if err := e.encodeString(key.String()); err != nil {
 			return err
 		}
@@ -774,7 +729,6 @@ func (e *CustomEncoder) encodeMap(v reflect.Value) error {
 			e.buffer.WriteByte(' ')
 		}
 
-		// Encode value
 		if err := e.encodeValue(value.Interface()); err != nil {
 			return err
 		}
@@ -789,14 +743,14 @@ func (e *CustomEncoder) encodeMap(v reflect.Value) error {
 	return nil
 }
 
-// encodeStruct encodes structs with custom field handling
 func (e *CustomEncoder) encodeStruct(v reflect.Value) error {
-	// If we need custom field handling (OmitEmpty, IncludeNulls), implement it manually
-	if e.config.OmitEmpty || !e.config.IncludeNulls || e.config.SortKeys {
+	// Use custom encoding when any of these advanced features are enabled
+	if !e.config.IncludeNulls || e.config.SortKeys || !e.config.EscapeHTML ||
+		e.config.FloatPrecision >= 0 || !e.config.EscapeNewlines || !e.config.EscapeTabs ||
+		e.config.EscapeSlash || e.config.EscapeUnicode {
 		return e.encodeStructCustom(v)
 	}
 
-	// For simple cases, use standard JSON encoding with Pretty support
 	if e.config.Pretty {
 		data, err := json.MarshalIndent(v.Interface(), e.config.Prefix, e.config.Indent)
 		if err != nil {
@@ -806,7 +760,6 @@ func (e *CustomEncoder) encodeStruct(v reflect.Value) error {
 		return nil
 	}
 
-	// For compact formatting, use standard JSON encoding
 	data, err := json.Marshal(v.Interface())
 	if err != nil {
 		return err
@@ -815,7 +768,6 @@ func (e *CustomEncoder) encodeStruct(v reflect.Value) error {
 	return nil
 }
 
-// encodeStructCustom encodes structs with custom field handling for OmitEmpty and IncludeNulls
 func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 	e.buffer.WriteByte('{')
 	e.depth++
@@ -824,26 +776,21 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 	var fields []reflect.StructField
 	var fieldValues []reflect.Value
 
-	// Collect all fields and their values
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
 		fieldValue := v.Field(i)
 
-		// Skip unexported fields
 		if !field.IsExported() {
 			continue
 		}
 
-		// Get JSON tag name
 		jsonTag := field.Tag.Get("json")
 		if jsonTag == "-" {
-			continue // Skip fields with json:"-"
+			continue
 		}
 
-		// Parse JSON tag options
 		tagParts := strings.Split(jsonTag, ",")
 
-		// Check for omitempty tag
 		hasOmitEmpty := false
 		for _, part := range tagParts[1:] {
 			if part == "omitempty" {
@@ -852,15 +799,13 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 			}
 		}
 
-		// Apply field filtering logic
 		shouldSkip := false
 
-		// Skip empty values if OmitEmpty is enabled globally or via tag
-		if (e.config.OmitEmpty || hasOmitEmpty) && e.isEmpty(fieldValue) {
+		// Only respect struct omitempty tags for empty field handling
+		if hasOmitEmpty && e.isEmpty(fieldValue) {
 			shouldSkip = true
 		}
 
-		// Skip null values if IncludeNulls is disabled
 		if !e.config.IncludeNulls {
 			if fieldValue.Interface() == nil || (fieldValue.Kind() == reflect.Ptr && fieldValue.IsNil()) {
 				shouldSkip = true
@@ -873,9 +818,7 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 		}
 	}
 
-	// Sort fields if requested
 	if e.config.SortKeys {
-		// Create a slice of indices for sorting
 		indices := make([]int, len(fields))
 		for i := range indices {
 			indices[i] = i
@@ -885,7 +828,6 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 			nameI := fields[indices[i]].Name
 			nameJ := fields[indices[j]].Name
 
-			// Use JSON tag name if available
 			if tag := fields[indices[i]].Tag.Get("json"); tag != "" && tag != "-" {
 				if tagParts := strings.Split(tag, ","); len(tagParts) > 0 && tagParts[0] != "" {
 					nameI = tagParts[0]
@@ -900,7 +842,6 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 			return nameI < nameJ
 		})
 
-		// Reorder fields and values according to sorted indices
 		sortedFields := make([]reflect.StructField, len(fields))
 		sortedValues := make([]reflect.Value, len(fieldValues))
 		for i, idx := range indices {
@@ -911,7 +852,6 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 		fieldValues = sortedValues
 	}
 
-	// Encode fields
 	for i, field := range fields {
 		fieldValue := fieldValues[i]
 
@@ -923,7 +863,6 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 			e.writeIndent()
 		}
 
-		// Get field name from JSON tag or struct field name
 		jsonTag := field.Tag.Get("json")
 		fieldName := field.Name
 		if jsonTag != "" && jsonTag != "-" {
@@ -932,7 +871,6 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 			}
 		}
 
-		// Encode field name
 		if err := e.encodeString(fieldName); err != nil {
 			return err
 		}
@@ -942,7 +880,6 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 			e.buffer.WriteByte(' ')
 		}
 
-		// Encode field value
 		if err := e.encodeValue(fieldValue.Interface()); err != nil {
 			return err
 		}
@@ -957,7 +894,6 @@ func (e *CustomEncoder) encodeStructCustom(v reflect.Value) error {
 	return nil
 }
 
-// writeIndent writes indentation for pretty printing
 func (e *CustomEncoder) writeIndent() {
 	e.buffer.WriteByte('\n')
 	e.buffer.WriteString(e.config.Prefix)
@@ -966,7 +902,6 @@ func (e *CustomEncoder) writeIndent() {
 	}
 }
 
-// isEmpty checks if a value is considered empty for OmitEmpty option
 func (e *CustomEncoder) isEmpty(v reflect.Value) bool {
 	switch v.Kind() {
 	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:
@@ -985,9 +920,6 @@ func (e *CustomEncoder) isEmpty(v reflect.Value) bool {
 	return false
 }
 
-// Note: bytesBufferPool has been consolidated into encoderBufferPool
-// All calls to getEncoderBuffer/putEncoderBuffer now use encoderBufferPool
-
 // Decoder reads and decodes JSON values from an input stream.
 // This type is fully compatible with encoding/json.Decoder.
 type Decoder struct {
@@ -1002,9 +934,6 @@ type Decoder struct {
 
 // NewDecoder returns a new decoder that reads from r.
 // This function is fully compatible with encoding/json.NewDecoder.
-//
-// The decoder introduces its own buffering and may
-// read data from r beyond the JSON values requested.
 func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{
 		r:         r,
@@ -1013,11 +942,7 @@ func NewDecoder(r io.Reader) *Decoder {
 	}
 }
 
-// Decode reads the next JSON-encoded value from its
-// input and stores it in the value pointed to by v.
-//
-// See the documentation for Unmarshal for details about
-// the conversion of JSON into a Go value.
+// Decode reads the next JSON-encoded value from its input and stores it in v.
 func (dec *Decoder) Decode(v any) error {
 	if v == nil {
 		return &InvalidUnmarshalError{Type: nil}
@@ -1051,7 +976,6 @@ func (dec *Decoder) Decode(v any) error {
 	return dec.processor.Unmarshal(data, v)
 }
 
-// assignResult assigns the decoded result to the target value using reflection
 func (dec *Decoder) assignResult(result any, v any) error {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Ptr || rv.IsNil() {
@@ -1081,34 +1005,22 @@ func (dec *Decoder) assignResult(result any, v any) error {
 	return json.Unmarshal(jsonBytes, v)
 }
 
-// UseNumber causes the Decoder to unmarshal a number into any as a
-// Number instead of as a float64.
 func (dec *Decoder) UseNumber() {
 	dec.useNumber = true
 }
 
-// DisallowUnknownFields causes the Decoder to return an error when the destination
-// is a struct and the input contains object keys which do not match any
-// non-ignored, exported fields in the destination.
 func (dec *Decoder) DisallowUnknownFields() {
 	dec.disallowUnknownFields = true
 }
 
-// Buffered returns a reader of the data remaining in the Decoder's
-// buffer. The reader is valid until the next call to Decode.
 func (dec *Decoder) Buffered() io.Reader {
 	return dec.buf
 }
 
-// InputOffset returns the input stream byte offset of the current decoder position.
-// The offset gives the location of the end of the most recently returned token
-// and the beginning of the next token.
 func (dec *Decoder) InputOffset() int64 {
 	return dec.offset
 }
 
-// More reports whether there is another element in the
-// current array or object being parsed.
 func (dec *Decoder) More() bool {
 	// Peek at the next byte to see if there's more data
 	b, err := dec.buf.Peek(1)
@@ -1135,22 +1047,6 @@ func (dec *Decoder) More() bool {
 
 // Token returns the next JSON token in the input stream.
 // At the end of the input stream, Token returns nil, io.EOF.
-//
-// Token guarantees that the delimiters [ ] { } it returns are
-// properly nested and matched: if Token encounters an unexpected
-// delimiter in the input, it will return an error.
-//
-// The input stream consists of zero or more JSON values,
-// each separated by optional whitespace.
-//
-// A Token holds one of these types:
-//
-//	Delim, for the four JSON delimiters [ ] { }
-//	bool, for JSON booleans
-//	float64, for JSON numbers
-//	Number, for JSON numbers
-//	string, for JSON string literals
-//	nil, for JSON null
 func (dec *Decoder) Token() (Token, error) {
 	// Skip whitespace and separators
 	for {
@@ -1166,9 +1062,7 @@ func (dec *Decoder) Token() (Token, error) {
 	}
 }
 
-// readValue reads a complete JSON value from the input stream
 func (dec *Decoder) readValue() ([]byte, error) {
-	// Use buffer pool for memory efficiency
 	buf := getEncoderBuffer()
 	defer putEncoderBuffer(buf)
 
@@ -1176,7 +1070,6 @@ func (dec *Decoder) readValue() ([]byte, error) {
 	inString := false
 	escaped := false
 
-	// Skip leading whitespace
 	for {
 		b, err := dec.buf.ReadByte()
 		if err != nil {
@@ -1187,7 +1080,6 @@ func (dec *Decoder) readValue() ([]byte, error) {
 		if !isSpace(b) {
 			buf.WriteByte(b)
 
-			// Handle the first character to determine value type
 			switch b {
 			case '"':
 				inString = true
@@ -1198,7 +1090,6 @@ func (dec *Decoder) readValue() ([]byte, error) {
 		}
 	}
 
-	// If we have a simple value (not object/array), read until delimiter
 	if depth == 0 && !inString {
 		for {
 			b, err := dec.buf.ReadByte()
@@ -1210,9 +1101,7 @@ func (dec *Decoder) readValue() ([]byte, error) {
 			}
 			dec.offset++
 
-			// Stop at whitespace, comma, or structural characters for primitive values
 			if isSpace(b) || b == ',' || b == '}' || b == ']' {
-				// Put the delimiter back for next read
 				dec.buf.UnreadByte()
 				dec.offset--
 				break
@@ -1220,13 +1109,11 @@ func (dec *Decoder) readValue() ([]byte, error) {
 
 			buf.WriteByte(b)
 		}
-		// Return a copy of the buffer data since we're returning it to the pool
 		result := make([]byte, buf.Len())
 		copy(result, buf.Bytes())
 		return result, nil
 	}
 
-	// For strings and complex objects, continue reading
 	for {
 		b, err := dec.buf.ReadByte()
 		if err != nil {
@@ -1309,9 +1196,7 @@ func (dec *Decoder) parseToken(b byte) (Token, error) {
 	}
 }
 
-// parseString parses a JSON string token
 func (dec *Decoder) parseString() (string, error) {
-	// Use buffer pool for memory efficiency
 	buf := getEncoderBuffer()
 	defer putEncoderBuffer(buf)
 
@@ -1327,7 +1212,6 @@ func (dec *Decoder) parseString() (string, error) {
 		}
 
 		if b == '\\' {
-			// Handle escape sequences
 			next, err := dec.buf.ReadByte()
 			if err != nil {
 				return "", err
@@ -1348,7 +1232,6 @@ func (dec *Decoder) parseString() (string, error) {
 			case 't':
 				buf.WriteByte('\t')
 			case 'u':
-				// Unicode escape sequence
 				var hex [4]byte
 				for i := 0; i < 4; i++ {
 					hex[i], err = dec.buf.ReadByte()
@@ -1375,10 +1258,8 @@ func (dec *Decoder) parseString() (string, error) {
 	}
 }
 
-// parseBoolean parses a JSON boolean token
 func (dec *Decoder) parseBoolean(first byte) (bool, error) {
 	if first == 't' {
-		// Expect "rue"
 		expected := "rue"
 		for i, expected_char := range expected {
 			b, err := dec.buf.ReadByte()
@@ -1394,39 +1275,36 @@ func (dec *Decoder) parseBoolean(first byte) (bool, error) {
 			}
 		}
 		return true, nil
-	} else {
-		// Expect "alse"
-		expected := "alse"
-		for i, expected_char := range expected {
-			b, err := dec.buf.ReadByte()
-			if err != nil {
-				return false, err
-			}
-			dec.offset++
-			if b != byte(expected_char) {
-				return false, &SyntaxError{
-					msg:    fmt.Sprintf("invalid character '%c' in literal false (expecting '%c')", b, expected_char),
-					Offset: dec.offset - int64(i) - 2,
-				}
+	}
+
+	expected := "alse"
+	for i, expected_char := range expected {
+		b, err := dec.buf.ReadByte()
+		if err != nil {
+			return false, err
+		}
+		dec.offset++
+		if b != byte(expected_char) {
+			return false, &SyntaxError{
+				msg:    fmt.Sprintf("invalid character '%c' in literal false (expecting '%c')", b, expected_char),
+				Offset: dec.offset - int64(i) - 2,
 			}
 		}
-		return false, nil
 	}
+	return false, nil
 }
 
-// parseNull parses a JSON null token
 func (dec *Decoder) parseNull() (any, error) {
-	// Expect "ull"
 	expected := "ull"
-	for i, expected_char := range expected {
+	for i, expectedChar := range expected {
 		b, err := dec.buf.ReadByte()
 		if err != nil {
 			return nil, err
 		}
 		dec.offset++
-		if b != byte(expected_char) {
+		if b != byte(expectedChar) {
 			return nil, &SyntaxError{
-				msg:    fmt.Sprintf("invalid character '%c' in literal null (expecting '%c')", b, expected_char),
+				msg:    fmt.Sprintf("invalid character '%c' in literal null (expecting '%c')", b, expectedChar),
 				Offset: dec.offset - int64(i) - 2,
 			}
 		}
@@ -1434,9 +1312,7 @@ func (dec *Decoder) parseNull() (any, error) {
 	return nil, nil
 }
 
-// parseNumber parses a JSON number token
 func (dec *Decoder) parseNumber(first byte) (any, error) {
-	// Use buffer pool for memory efficiency
 	buf := getEncoderBuffer()
 	defer putEncoderBuffer(buf)
 	buf.WriteByte(first)
@@ -1465,7 +1341,6 @@ func (dec *Decoder) parseNumber(first byte) (any, error) {
 		return Number(numStr), nil
 	}
 
-	// Try to parse as integer first
 	if !strings.Contains(numStr, ".") && !strings.Contains(numStr, "e") && !strings.Contains(numStr, "E") {
 		if val, err := strconv.ParseInt(numStr, 10, 64); err == nil {
 			return val, nil
@@ -1927,20 +1802,102 @@ func (p *Processor) validateStringFormat(str, format, path string, errors *[]Val
 	}
 }
 
-// validateEmailFormat validates email format
+// validateEmailFormat validates email format with improved security
+// Prevents consecutive dots, limits length, and validates proper structure
 func (p *Processor) validateEmailFormat(email, path string, errors *[]ValidationError) error {
-	// Simple email validation regex
-	emailRegex := `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`
-	matched, err := regexp.MatchString(emailRegex, email)
-	if err != nil {
-		return err
+	// Length validation to prevent DoS
+	if len(email) > 254 { // RFC 5321 limit
+		*errors = append(*errors, ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("'%s' exceeds maximum email length of 254 characters", email),
+		})
+		return nil
 	}
-	if !matched {
+
+	// Split into local and domain parts
+	atIndex := strings.LastIndex(email, "@")
+	if atIndex <= 0 || atIndex == len(email)-1 {
 		*errors = append(*errors, ValidationError{
 			Path:    path,
 			Message: fmt.Sprintf("'%s' is not a valid email format", email),
 		})
+		return nil
 	}
+
+	localPart := email[:atIndex]
+	domainPart := email[atIndex+1:]
+
+	// Validate local part (max 64 chars as per RFC 5321)
+	if len(localPart) > 64 || len(localPart) == 0 {
+		*errors = append(*errors, ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("'%s' has invalid local part in email address", email),
+		})
+		return nil
+	}
+
+	// Check for consecutive dots or invalid characters
+	if strings.Contains(localPart, "..") || strings.Contains(localPart, ".@") ||
+		strings.HasPrefix(localPart, ".") || strings.HasSuffix(localPart, ".") {
+		*errors = append(*errors, ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("'%s' has invalid local part in email address", email),
+		})
+		return nil
+	}
+
+	// Validate domain part
+	if len(domainPart) > 253 || len(domainPart) == 0 {
+		*errors = append(*errors, ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("'%s' has invalid domain in email address", email),
+		})
+		return nil
+	}
+
+	// Check for consecutive dots in domain
+	if strings.Contains(domainPart, "..") || strings.HasPrefix(domainPart, ".") ||
+		strings.HasSuffix(domainPart, ".") {
+		*errors = append(*errors, ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("'%s' has invalid domain in email address", email),
+		})
+		return nil
+	}
+
+	// Validate domain has at least one dot and TLD is at least 2 chars
+	dotCount := strings.Count(domainPart, ".")
+	if dotCount < 1 {
+		*errors = append(*errors, ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("'%s' has invalid domain in email address", email),
+		})
+		return nil
+	}
+
+	// Check TLD length
+	lastDot := strings.LastIndex(domainPart, ".")
+	tld := domainPart[lastDot+1:]
+	if len(tld) < 2 || len(tld) > 63 {
+		*errors = append(*errors, ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("'%s' has invalid TLD in email address", email),
+		})
+		return nil
+	}
+
+	// Basic character validation for local and domain parts
+	localRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+$`)
+	domainRegex := regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
+
+	if !localRegex.MatchString(localPart) || !domainRegex.MatchString(domainPart) {
+		*errors = append(*errors, ValidationError{
+			Path:    path,
+			Message: fmt.Sprintf("'%s' contains invalid characters in email address", email),
+		})
+		return nil
+	}
+
 	return nil
 }
 

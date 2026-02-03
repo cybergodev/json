@@ -372,7 +372,7 @@ func TestComprehensiveJSONOperations(t *testing.T) {
 			helper.AssertNoError(err)
 			helper.AssertTrue(strings.Contains(prettyResult, "\n"))
 
-			compactResult, err := EncodeCompact(data)
+			compactResult, err := Encode(data)
 			helper.AssertNoError(err)
 			helper.AssertFalse(strings.Contains(compactResult, "\n"))
 
@@ -519,18 +519,105 @@ func TestComprehensiveJSONOperations(t *testing.T) {
 		})
 
 		t.Run("MergeJson", func(t *testing.T) {
-			json1 := `{"name": "test", "value": 123}`
-			json2 := `{"extra": "field"}`
+			t.Run("BasicMerge", func(t *testing.T) {
+				json1 := `{"name": "test", "value": 123}`
+				json2 := `{"extra": "field"}`
 
-			merged, err := MergeJson(json1, json2)
-			helper.AssertNoError(err)
-			helper.AssertNotNil(merged)
+				merged, err := MergeJson(json1, json2)
+				helper.AssertNoError(err)
+				helper.AssertNotNil(merged)
 
-			name, _ := GetString(merged, "name")
-			helper.AssertEqual("test", name)
+				name, _ := GetString(merged, "name")
+				helper.AssertEqual("test", name)
 
-			extra, _ := GetString(merged, "extra")
-			helper.AssertEqual("field", extra)
+				extra, _ := GetString(merged, "extra")
+				helper.AssertEqual("field", extra)
+			})
+
+			t.Run("NestedObjectMerge", func(t *testing.T) {
+				base := `{"database": {"host": "localhost", "port": 5432}}`
+				override := `{"database": {"host": "prod-server", "ssl": true}}`
+
+				merged, err := MergeJson(base, override)
+				helper.AssertNoError(err)
+
+				host, _ := GetString(merged, "database.host")
+				helper.AssertEqual("prod-server", host)
+
+				port, _ := GetInt(merged, "database.port")
+				helper.AssertEqual(5432, port)
+
+				ssl, _ := GetBool(merged, "database.ssl")
+				helper.AssertEqual(true, ssl)
+			})
+
+			t.Run("ArrayUnionMerge", func(t *testing.T) {
+				base := `{"features": ["auth", "logging"]}`
+				override := `{"features": ["caching"]}`
+
+				merged, err := MergeJson(base, override)
+				helper.AssertNoError(err)
+
+				features, _ := Get(merged, "features")
+				featureArray, ok := features.([]interface{})
+				helper.AssertTrue(ok)
+				helper.AssertEqual(3, len(featureArray))
+				helper.AssertEqual("auth", featureArray[0])
+				helper.AssertEqual("logging", featureArray[1])
+				helper.AssertEqual("caching", featureArray[2])
+			})
+
+			t.Run("ArrayDeduplication", func(t *testing.T) {
+				base := `{"items": ["a", "b", "c"]}`
+				override := `{"items": ["b", "c", "d"]}`
+
+				merged, err := MergeJson(base, override)
+				helper.AssertNoError(err)
+
+				items, _ := Get(merged, "items")
+				itemArray, ok := items.([]interface{})
+				helper.AssertTrue(ok)
+				helper.AssertEqual(4, len(itemArray))
+			})
+
+			t.Run("ComplexMerge", func(t *testing.T) {
+				base := `{
+					"database": {"host": "localhost", "port": 5432, "name": "myDb"},
+					"features": ["auth", "logging"],
+					"debug": false
+				}`
+				override := `{
+					"database": {"host": "prod-server", "ssl": true},
+					"features": ["caching"],
+					"monitoring": true
+				}`
+
+				merged, err := MergeJson(base, override)
+				helper.AssertNoError(err)
+
+				// Verify nested object merge
+				host, _ := GetString(merged, "database.host")
+				helper.AssertEqual("prod-server", host)
+
+				port, _ := GetInt(merged, "database.port")
+				helper.AssertEqual(5432, port)
+
+				ssl, _ := GetBool(merged, "database.ssl")
+				helper.AssertEqual(true, ssl)
+
+				// Verify array union merge
+				features, _ := Get(merged, "features")
+				featureArray, ok := features.([]interface{})
+				helper.AssertTrue(ok)
+				helper.AssertEqual(3, len(featureArray))
+
+				// Verify scalar values
+				debug, _ := GetBool(merged, "debug")
+				helper.AssertEqual(false, debug)
+
+				monitoring, _ := GetBool(merged, "monitoring")
+				helper.AssertEqual(true, monitoring)
+			})
 		})
 	})
 }
@@ -922,8 +1009,8 @@ func TestConfigConstantsComprehensive(t *testing.T) {
 		helper.AssertNotNil(pretty)
 		helper.AssertTrue(pretty.Pretty)
 
-		compact := NewCompactConfig()
-		helper.AssertNotNil(compact)
+		// Default config is compact (Pretty = false)
+		helper.AssertFalse(config.Pretty)
 
 		cloned := config.Clone()
 		helper.AssertNotNil(cloned)

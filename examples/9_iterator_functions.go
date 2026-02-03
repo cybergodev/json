@@ -165,48 +165,40 @@ func demonstrateNestedIteration(data string) {
 func demonstrateIterableValueAPI(data string) {
 	fmt.Println("   IterableValue convenience methods:")
 
-	// NOTE: IterableValue is designed to be used within iteration callbacks
-	// where it's automatically created with the correct internal state.
-	// This example shows how to use it properly.
+	// IMPORTANT: IterableValue works correctly when iterating over arrays
+	// where each item is a complete object, NOT when iterating over object fields
 
-	// Instead of manually creating IterableValue, iterate over the specific path
-	fmt.Println("   Using ForeachWithPath to access IterableValue API:")
+	fmt.Println("   Using ForeachWithPath on users array:")
 
-	err := json.ForeachWithPath(data, "users[0]", func(key any, item *json.IterableValue) {
+	err := json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
 		// Now we can use all the IterableValue methods
 		name := item.GetString("name")
 		email := item.GetString("email")
 		active := item.GetBool("active")
 		id := item.GetInt("id")
 
-		fmt.Printf("   - GetString: name=%s, email=%s\n", name, email)
-		fmt.Printf("   - GetInt: id=%d\n", id)
-		fmt.Printf("   - GetBool: active=%t\n", active)
+		fmt.Printf("   - [%d] GetString: name=%s, email=%s\n", key, name, email)
+		fmt.Printf("   - [%d] GetInt: id=%d\n", key, id)
+		fmt.Printf("   - [%d] GetBool: active=%t\n", key, active)
 
 		// GetWithDefault
 		nonExistent := item.GetStringWithDefault("nonexistent", "default value")
-		fmt.Printf("   - GetStringWithDefault: %s\n", nonExistent)
+		fmt.Printf("   - [%d] GetStringWithDefault: %s\n", key, nonExistent)
 
 		// Check existence
-		fmt.Println("\n   Checking field existence:")
-		fmt.Printf("   - Exists('name'): %t\n", item.Exists("name"))
-		fmt.Printf("   - Exists('missing'): %t\n", item.Exists("missing"))
+		fmt.Printf("   - [%d] Exists('name'): %t\n", key, item.Exists("name"))
+		fmt.Printf("   - [%d] Exists('missing'): %t\n", key, item.Exists("missing"))
 
 		// Check for null
-		fmt.Println("\n   Null checks:")
-		fmt.Printf("   - IsNull('name'): %t\n", item.IsNull("name"))
-		fmt.Printf("   - IsNull('missing'): %t\n", item.IsNull("missing"))
+		fmt.Printf("   - [%d] IsNull('name'): %t\n", key, item.IsNull("name"))
+		fmt.Printf("   - [%d] IsNull('missing'): %t\n", key, item.IsNull("missing"))
 
 		// Check for empty
-		fmt.Println("\n   Empty checks:")
-		fmt.Printf("   - IsEmpty('email'): %t\n", item.IsEmpty("email"))
-		roles := item.GetArray("roles")
-		fmt.Printf("   - IsEmpty('roles'): %t (length: %d)\n", item.IsEmpty("roles"), len(roles))
+		fmt.Printf("   - [%d] IsEmpty('email'): %t\n", key, item.IsEmpty("email"))
 
 		// GetArray
-		fmt.Println("\n   GetArray:")
-		roles = item.GetArray("roles")
-		fmt.Printf("   - Roles: %v\n", roles)
+		roles := item.GetArray("roles")
+		fmt.Printf("   - [%d] GetArray('roles'): %v (length: %d)\n\n", key, roles, len(roles))
 	})
 
 	if err != nil {
@@ -216,13 +208,9 @@ func demonstrateIterableValueAPI(data string) {
 	// Access settings object
 	fmt.Println("\n   Accessing nested object:")
 	err = json.ForeachWithPath(data, "settings", func(key any, item *json.IterableValue) {
-		theme := item.GetString("theme")
-		notifications := item.GetBool("notifications")
-		language := item.GetString("language")
-
-		fmt.Printf("   - Theme: %s\n", theme)
-		fmt.Printf("   - Notifications: %t\n", notifications)
-		fmt.Printf("   - Language: %s\n", language)
+		// For object iteration, we can still use Get method
+		val := item.Get("")
+		fmt.Printf("   - [%v]: %v\n", key, val)
 	})
 
 	if err != nil {

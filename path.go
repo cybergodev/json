@@ -228,7 +228,7 @@ func (p *Processor) Compact(jsonStr string, opts ...*ProcessorOptions) (string, 
 	}
 
 	// Use custom encoder with compact formatting to preserve number types
-	config := NewCompactConfig()
+	config := DefaultEncodeConfig()
 	config.PreserveNumbers = options.PreserveNumbers
 
 	encoder := NewCustomEncoder(config)
@@ -410,10 +410,10 @@ func (d *NumberPreservingDecoder) convertStdJSONNumbers(value any) any {
 }
 
 // stringToBytes converts string to []byte efficiently
-// Note: In Go 1.20+, use unsafe.StringData for zero-copy conversion
-// For compatibility and safety, we use the standard conversion
+// Using standard conversion for safety and compatibility
+// While unsafe.StringData could provide zero-copy conversion,
+// we prioritize safety over marginal performance gains
 func stringToBytes(s string) []byte {
-	// TODO: Consider using unsafe.StringData for Go 1.20+ for zero-copy
 	return []byte(s)
 }
 
@@ -644,42 +644,31 @@ func ConvertFromScientific(s string) (string, error) {
 	return FormatNumber(f), nil
 }
 
-// navigateToPath navigates to a specific path
 func (p *Processor) navigateToPath(data any, path string) (any, error) {
-	// Fast path for root access
 	if path == "" || path == "." || path == "/" {
 		return data, nil
 	}
 
-	// Determine path format and use optimized navigation
 	if strings.HasPrefix(path, "/") {
 		return p.navigateJSONPointer(data, path)
 	}
 
-	// Use dot notation navigation
 	return p.navigateDotNotation(data, path)
 }
 
-// navigateDotNotation handles dot notation paths
 func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 	current := data
 
-	// Use path segment pool for memory efficiency
 	segments := p.getPathSegments()
 	defer p.putPathSegments(segments)
 
-	// Parse path into segments
 	segments = p.splitPath(path, segments)
 
-	// Navigate through each segment
 	for i, segment := range segments {
-		// Check for distributed operations
 		if p.isDistributedOperationSegment(segment) {
-			// Handle distributed operations
 			return p.handleDistributedOperation(current, segments[i:])
 		}
 
-		// Handle different segment types
 		switch segment.TypeString() {
 		case "property":
 			result := p.handlePropertyAccess(current, segment.Key)
@@ -703,21 +692,16 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 			current = result.Value
 
 		case "extract":
-			// Handle extraction operations
 			extractResult, err := p.handleExtraction(current, segment)
 			if err != nil {
 				return nil, err
 			}
 			current = extractResult
 
-			// Check if this is followed by array operations
 			if i+1 < len(segments) {
 				nextSegment := segments[i+1]
 				if nextSegment.TypeString() == "array" || nextSegment.TypeString() == "slice" {
-					// Check if the current extraction was flat
-					// If it was flat, the result is a flattened array, not an array of arrays
 					if segment.IsFlat {
-						// For flat extraction results, apply array operations directly
 						if nextSegment.TypeString() == "slice" {
 							result := p.handleArraySlice(current, nextSegment)
 							if result.Exists {
@@ -730,10 +714,9 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 							}
 						}
 					} else {
-						// For non-flat extraction, use post-extraction handling
 						current = p.handlePostExtractionArrayAccess(current, nextSegment)
 					}
-					i++ // Skip the next segment as we've processed it
+					i++
 				}
 			}
 
@@ -745,13 +728,11 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 	return current, nil
 }
 
-// navigateJSONPointer handles JSON Pointer format paths
 func (p *Processor) navigateJSONPointer(data any, path string) (any, error) {
 	if path == "/" {
 		return data, nil
 	}
 
-	// Remove leading slash and split with pre-allocated capacity
 	pathWithoutSlash := path[1:]
 	segmentCount := strings.Count(pathWithoutSlash, "/") + 1
 	segments := make([]string, 0, segmentCount)
@@ -764,7 +745,6 @@ func (p *Processor) navigateJSONPointer(data any, path string) (any, error) {
 			continue
 		}
 
-		// Optimized unescape for JSON Pointer special characters
 		if strings.Contains(segment, "~") {
 			segment = p.unescapeJSONPointer(segment)
 		}
@@ -781,13 +761,31 @@ func (p *Processor) navigateJSONPointer(data any, path string) (any, error) {
 
 // unescapeJSONPointer unescapes JSON Pointer special characters
 func (p *Processor) unescapeJSONPointer(segment string) string {
-	// JSON Pointer escaping: ~1 -> /, ~0 -> ~
-	segment = strings.ReplaceAll(segment, "~1", "/")
-	segment = strings.ReplaceAll(segment, "~0", "~")
-	return segment
+	var result strings.Builder
+	result.Grow(len(segment))
+
+	i := 0
+	for i < len(segment) {
+		if i+1 < len(segment) && segment[i] == '~' {
+			switch segment[i+1] {
+			case '1':
+				result.WriteByte('/')
+				i += 2
+				continue
+			case '0':
+				result.WriteByte('~')
+				i += 2
+				continue
+			}
+		}
+		// Copy normal characters
+		result.WriteByte(segment[i])
+		i++
+	}
+
+	return result.String()
 }
 
-// handlePropertyAccess handles property access with optimized type checking
 func (p *Processor) handlePropertyAccess(data any, property string) PropertyAccessResult {
 	switch v := data.(type) {
 	case map[string]any:
@@ -803,14 +801,12 @@ func (p *Processor) handlePropertyAccess(data any, property string) PropertyAcce
 		return PropertyAccessResult{Exists: false}
 
 	case []any:
-		// Try to parse property as array index
 		if index := p.parseArrayIndex(property); index >= 0 && index < len(v) {
 			return PropertyAccessResult{Value: v[index], Exists: true}
 		}
 		return PropertyAccessResult{Exists: false}
 
 	default:
-		// Try struct field access
 		if structValue := p.handleStructAccess(data, property); structValue != nil {
 			return PropertyAccessResult{Value: structValue, Exists: true}
 		}
@@ -818,7 +814,6 @@ func (p *Processor) handlePropertyAccess(data any, property string) PropertyAcce
 	}
 }
 
-// handlePropertyAccessValue returns the value directly (for backward compatibility)
 func (p *Processor) handlePropertyAccessValue(data any, property string) any {
 	result := p.handlePropertyAccess(data, property)
 	if result.Exists {
@@ -827,35 +822,28 @@ func (p *Processor) handlePropertyAccessValue(data any, property string) any {
 	return nil
 }
 
-// parseArrayIndexFromPath parses a string as an array index, returns -1 if invalid
 func (p *Processor) parseArrayIndexFromPath(property string) int {
-	if index, err := strconv.Atoi(property); err == nil && index >= 0 {
+	if index, ok := internal.ParseArrayIndex(property); ok {
 		return index
 	}
 	return -1
 }
 
-// splitPath splits a path into segments with memory pooling
 func (p *Processor) splitPath(path string, segments []PathSegment) []PathSegment {
-	// Clear existing segments
 	segments = segments[:0]
 
-	// Fast path for simple paths (no special characters)
 	if !p.needsPathPreprocessing(path) {
 		return p.splitPathIntoSegments(path, segments)
 	}
 
-	// Preprocess path to handle special cases
 	sb := p.getStringBuilder()
 	defer p.putStringBuilder(sb)
 
 	processedPath := p.preprocessPath(path, sb)
 
-	// Split into segments
 	return p.splitPathIntoSegments(processedPath, segments)
 }
 
-// needsPathPreprocessing checks if a path needs preprocessing
 func (p *Processor) needsPathPreprocessing(path string) bool {
 	for i := 0; i < len(path); i++ {
 		c := path[i]
@@ -866,7 +854,6 @@ func (p *Processor) needsPathPreprocessing(path string) bool {
 	return false
 }
 
-// preprocessPath preprocesses the path to handle special syntax
 func (p *Processor) preprocessPath(path string, sb *strings.Builder) string {
 	sb.Reset()
 
@@ -874,13 +861,11 @@ func (p *Processor) preprocessPath(path string, sb *strings.Builder) string {
 	for i, r := range runes {
 		switch r {
 		case '[':
-			// Add dot before [ if needed
 			if i > 0 && p.needsDotBefore(runes[i-1]) {
 				sb.WriteRune('.')
 			}
 			sb.WriteRune(r)
 		case '{':
-			// Add dot before { if needed
 			if i > 0 && p.needsDotBefore(runes[i-1]) {
 				sb.WriteRune('.')
 			}
@@ -893,16 +878,13 @@ func (p *Processor) preprocessPath(path string, sb *strings.Builder) string {
 	return sb.String()
 }
 
-// needsDotBefore checks if a dot is needed before the current character
 func (p *Processor) needsDotBefore(prevChar rune) bool {
-	// Use same logic as pathParser for consistency
 	return (prevChar >= 'a' && prevChar <= 'z') ||
 		(prevChar >= 'A' && prevChar <= 'Z') ||
 		(prevChar >= '0' && prevChar <= '9') ||
 		prevChar == '_' || prevChar == ']' || prevChar == '}'
 }
 
-// splitPathIntoSegments splits a preprocessed path into segments
 func (p *Processor) splitPathIntoSegments(path string, segments []PathSegment) []PathSegment {
 	parts := strings.Split(path, ".")
 
@@ -916,19 +898,13 @@ func (p *Processor) splitPathIntoSegments(path string, segments []PathSegment) [
 	return segments
 }
 
-// parsePathSegment parses a single path segment
 func (p *Processor) parsePathSegment(part string, segments []PathSegment) []PathSegment {
-	// Handle different segment types
 	if strings.Contains(part, "[") {
-		// Array or slice segment
 		return p.parseArraySegment(part, segments)
 	} else if strings.Contains(part, "{") {
-		// Extraction segment
 		return p.parseExtractionSegment(part, segments)
 	} else {
-		// Check if this is a numeric index (dot notation like "0", "1", etc.)
 		if index, err := strconv.Atoi(part); err == nil {
-			// This is a numeric index, treat as array access
 			segments = append(segments, PathSegment{
 				Type:  internal.ArrayIndexSegment,
 				Index: index,
@@ -936,7 +912,6 @@ func (p *Processor) parsePathSegment(part string, segments []PathSegment) []Path
 			return segments
 		}
 
-		// Simple property segment
 		segments = append(segments, PathSegment{
 			Key:  part,
 			Type: internal.PropertySegment,
@@ -945,13 +920,11 @@ func (p *Processor) parsePathSegment(part string, segments []PathSegment) []Path
 	}
 }
 
-// isComplexPath determines if a path requires complex processing
 func (p *Processor) isComplexPath(path string) bool {
-	// Check for complex patterns
 	complexPatterns := []string{
-		"{", "}", // Extraction syntax
-		"[", "]", // Array access
-		":", // Slice syntax
+		"{", "}",
+		"[", "]",
+		":",
 	}
 
 	for _, pattern := range complexPatterns {
@@ -963,7 +936,6 @@ func (p *Processor) isComplexPath(path string) bool {
 	return false
 }
 
-// hasComplexSegments checks if segments contain complex operations
 func (p *Processor) hasComplexSegments(segments []PathSegment) bool {
 	for _, segment := range segments {
 		switch segment.TypeString() {
@@ -974,24 +946,20 @@ func (p *Processor) hasComplexSegments(segments []PathSegment) bool {
 	return false
 }
 
-// parsePath parses a path string into segments (legacy method)
 func (p *Processor) parsePath(path string) ([]string, error) {
 	if path == "" {
 		return []string{}, nil
 	}
 
-	// Simple split for basic paths
 	if !p.isComplexPath(path) {
 		return strings.Split(path, "."), nil
 	}
 
-	// For complex paths, use the full parser
 	segments := p.getPathSegments()
 	defer p.putPathSegments(segments)
 
 	segments = p.splitPath(path, segments)
 
-	// Convert to string array
 	result := make([]string, len(segments))
 	for i, segment := range segments {
 		result[i] = segment.String()
@@ -1000,13 +968,11 @@ func (p *Processor) parsePath(path string) ([]string, error) {
 	return result, nil
 }
 
-// isDistributedOperationPath checks if a path requires distributed operation handling
 func (p *Processor) isDistributedOperationPath(path string) bool {
-	// Check for patterns that indicate distributed operations
 	distributedPatterns := []string{
-		"}[", // Extraction followed by array access
-		"}:", // Extraction followed by slice
-		"}{", // Consecutive extractions
+		"}[",
+		"}:",
+		"}{",
 	}
 
 	for _, pattern := range distributedPatterns {
@@ -1015,7 +981,6 @@ func (p *Processor) isDistributedOperationPath(path string) bool {
 		}
 	}
 
-	// Check for flat extraction patterns
 	if strings.Contains(path, "{flat:") {
 		return true
 	}
@@ -1023,17 +988,14 @@ func (p *Processor) isDistributedOperationPath(path string) bool {
 	return false
 }
 
-// isDistributedOperationSegment checks if a segment requires distributed handling
 func (p *Processor) isDistributedOperationSegment(segment PathSegment) bool {
 	return segment.Key != ""
 }
 
-// handleDistributedOperation handles distributed operations across extracted arrays
 func (p *Processor) handleDistributedOperation(data any, segments []PathSegment) (any, error) {
 	return p.getValueWithDistributedOperation(data, p.reconstructPath(segments))
 }
 
-// reconstructPath reconstructs a path string from segments
 func (p *Processor) reconstructPath(segments []PathSegment) string {
 	if len(segments) == 0 {
 		return ""
@@ -1054,12 +1016,10 @@ func (p *Processor) reconstructPath(segments []PathSegment) string {
 
 // parseArraySegment parses array access segments like [0], [1:3], etc.
 func (p *Processor) parseArraySegment(part string, segments []PathSegment) []PathSegment {
-	// Find the bracket positions
 	openBracket := strings.Index(part, "[")
 	closeBracket := strings.LastIndex(part, "]")
 
 	if openBracket == -1 || closeBracket == -1 || closeBracket <= openBracket {
-		// Invalid bracket syntax, treat as property
 		segments = append(segments, PathSegment{
 			Key:  part,
 			Type: internal.PropertySegment,
@@ -1067,7 +1027,6 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 		return segments
 	}
 
-	// Extract property name before bracket (if any)
 	if openBracket > 0 {
 		propertyName := part[:openBracket]
 		segments = append(segments, PathSegment{
@@ -1076,34 +1035,27 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 		})
 	}
 
-	// Extract bracket content
 	bracketContent := part[openBracket+1 : closeBracket]
 
-	// Determine if this is a slice or array index
 	if strings.Contains(bracketContent, ":") {
-		// Slice syntax - parse slice parameters
 		segment := PathSegment{
 			Type: internal.ArraySliceSegment,
 		}
 
-		// Parse slice parameters
 		parts := strings.Split(bracketContent, ":")
 		if len(parts) >= 2 {
-			// Parse start
 			if parts[0] != "" {
 				if start, err := strconv.Atoi(parts[0]); err == nil {
 					segment.Start = &start
 				}
 			}
 
-			// Parse end
 			if parts[1] != "" {
 				if end, err := strconv.Atoi(parts[1]); err == nil {
 					segment.End = &end
 				}
 			}
 
-			// Parse step (if provided)
 			if len(parts) == 3 && parts[2] != "" {
 				if step, err := strconv.Atoi(parts[2]); err == nil {
 					segment.Step = &step
@@ -1113,12 +1065,10 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 
 		segments = append(segments, segment)
 	} else {
-		// Array index
 		segment := PathSegment{
 			Type: internal.ArrayIndexSegment,
 		}
 
-		// Parse index
 		if index, err := strconv.Atoi(bracketContent); err == nil {
 			segment.Index = index
 		}
@@ -1126,7 +1076,6 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 		segments = append(segments, segment)
 	}
 
-	// Handle any remaining part after the bracket
 	if closeBracket+1 < len(part) {
 		remaining := part[closeBracket+1:]
 		if remaining != "" {
@@ -1139,12 +1088,10 @@ func (p *Processor) parseArraySegment(part string, segments []PathSegment) []Pat
 
 // parseExtractionSegment parses extraction segments like {key}, {flat:key}, etc.
 func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) []PathSegment {
-	// Find the brace positions
 	openBrace := strings.Index(part, "{")
 	closeBrace := strings.LastIndex(part, "}")
 
 	if openBrace == -1 || closeBrace == -1 || closeBrace <= openBrace {
-		// Invalid brace syntax, treat as property
 		segments = append(segments, PathSegment{
 			Key:  part,
 			Type: internal.PropertySegment,
@@ -1152,7 +1099,6 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 		return segments
 	}
 
-	// Extract property name before brace (if any)
 	if openBrace > 0 {
 		propertyName := part[:openBrace]
 		segments = append(segments, PathSegment{
@@ -1161,17 +1107,14 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 		})
 	}
 
-	// Extract brace content
 	braceContent := part[openBrace+1 : closeBrace]
 
-	// Create extraction segment
 	extractSegment := PathSegment{
 		Type: internal.ExtractSegment,
 	}
 
-	// Check for flat extraction
 	if strings.HasPrefix(braceContent, "flat:") {
-		extractSegment.Key = braceContent[5:] // Remove "flat:" prefix
+		extractSegment.Key = braceContent[5:]
 		extractSegment.IsFlat = true
 	} else {
 		extractSegment.Key = braceContent
@@ -1179,7 +1122,6 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 
 	segments = append(segments, extractSegment)
 
-	// Handle any remaining part after the brace
 	if closeBrace+1 < len(part) {
 		remaining := part[closeBrace+1:]
 		if remaining != "" {
@@ -1190,9 +1132,6 @@ func (p *Processor) parseExtractionSegment(part string, segments []PathSegment) 
 	return segments
 }
 
-// Type checking utilities
-
-// isArrayType checks if a value is an array type
 func (p *Processor) isArrayType(data any) bool {
 	switch data.(type) {
 	case []any:
@@ -1202,7 +1141,6 @@ func (p *Processor) isArrayType(data any) bool {
 	}
 }
 
-// isObjectType checks if a value is an object type
 func (p *Processor) isObjectType(data any) bool {
 	switch data.(type) {
 	case map[string]any, map[any]any:
@@ -1212,7 +1150,6 @@ func (p *Processor) isObjectType(data any) bool {
 	}
 }
 
-// isMapType checks if a value is a map type
 func (p *Processor) isMapType(data any) bool {
 	switch data.(type) {
 	case map[string]any, map[any]any:
@@ -1222,7 +1159,6 @@ func (p *Processor) isMapType(data any) bool {
 	}
 }
 
-// isSliceType checks if a value is a slice type
 func (p *Processor) isSliceType(data any) bool {
 	if data == nil {
 		return false
@@ -1232,7 +1168,6 @@ func (p *Processor) isSliceType(data any) bool {
 	return v.Kind() == reflect.Slice
 }
 
-// isPrimitiveType checks if a value is a primitive type
 func (p *Processor) isPrimitiveType(data any) bool {
 	switch data.(type) {
 	case string, int, int8, int16, int32, int64,
@@ -1264,9 +1199,6 @@ func (p *Processor) isNilOrEmpty(data any) bool {
 	}
 }
 
-// Deep copy utilities
-
-// deepCopyData creates a deep copy of data
 func (p *Processor) deepCopyData(data any) any {
 	switch v := data.(type) {
 	case map[string]any:
@@ -1278,14 +1210,12 @@ func (p *Processor) deepCopyData(data any) any {
 	case string, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, bool:
-		return v // Primitives are copied by value
+		return v
 	default:
-		// For other types, try to use reflection
 		return p.deepCopyReflection(data)
 	}
 }
 
-// deepCopyStringMap creates a deep copy of a string map
 func (p *Processor) deepCopyStringMap(data map[string]any) map[string]any {
 	result := make(map[string]any)
 	for key, value := range data {
@@ -1294,7 +1224,6 @@ func (p *Processor) deepCopyStringMap(data map[string]any) map[string]any {
 	return result
 }
 
-// deepCopyAnyMap creates a deep copy of an any map
 func (p *Processor) deepCopyAnyMap(data map[any]any) map[any]any {
 	result := make(map[any]any)
 	for key, value := range data {
@@ -1303,7 +1232,6 @@ func (p *Processor) deepCopyAnyMap(data map[any]any) map[any]any {
 	return result
 }
 
-// deepCopyArray creates a deep copy of an array
 func (p *Processor) deepCopyArray(data []any) []any {
 	result := make([]any, len(data))
 	for i, value := range data {
@@ -1312,7 +1240,6 @@ func (p *Processor) deepCopyArray(data []any) []any {
 	return result
 }
 
-// deepCopyReflection creates a deep copy using reflection
 func (p *Processor) deepCopyReflection(data any) any {
 	if data == nil {
 		return nil
@@ -1324,12 +1251,10 @@ func (p *Processor) deepCopyReflection(data any) any {
 		if v.IsNil() {
 			return nil
 		}
-		// Create new pointer and copy the value
 		newPtr := reflect.New(v.Elem().Type())
 		newPtr.Elem().Set(reflect.ValueOf(p.deepCopyReflection(v.Elem().Interface())))
 		return newPtr.Interface()
 	case reflect.Struct:
-		// Create new struct and copy fields
 		newStruct := reflect.New(v.Type()).Elem()
 		for i := 0; i < v.NumField(); i++ {
 			if v.Field(i).CanInterface() {
@@ -1338,14 +1263,10 @@ func (p *Processor) deepCopyReflection(data any) any {
 		}
 		return newStruct.Interface()
 	default:
-		// For other types, return as-is
 		return data
 	}
 }
 
-// Path utilities
-
-// escapeJSONPointer escapes JSON Pointer characters
 func (p *Processor) escapeJSONPointer(segment string) string {
 	// JSON Pointer escaping: ~ becomes ~0, / becomes ~1
 	segment = strings.ReplaceAll(segment, "~", "~0")
@@ -1353,9 +1274,7 @@ func (p *Processor) escapeJSONPointer(segment string) string {
 	return segment
 }
 
-// normalizePathSeparators normalizes path separators
 func (p *Processor) normalizePathSeparators(path string) string {
-	// Replace multiple dots with single dots
 	for strings.Contains(path, "..") {
 		path = strings.ReplaceAll(path, "..", ".")
 	}
@@ -1366,7 +1285,6 @@ func (p *Processor) normalizePathSeparators(path string) string {
 	return path
 }
 
-// splitPathSegments splits a path into segments
 func (p *Processor) splitPathSegments(path string) []string {
 	if path == "" {
 		return []string{}
@@ -1385,7 +1303,6 @@ func (p *Processor) splitPathSegments(path string) []string {
 	return strings.Split(path, ".")
 }
 
-// joinPathSegments joins segments into a path
 func (p *Processor) joinPathSegments(segments []string, useJSONPointer bool) string {
 	if len(segments) == 0 {
 		return ""
@@ -1398,28 +1315,21 @@ func (p *Processor) joinPathSegments(segments []string, useJSONPointer bool) str
 	return strings.Join(segments, ".")
 }
 
-// Validation utilities
-
-// isValidPropertyName checks if a property name is valid
 func (p *Processor) isValidPropertyName(name string) bool {
 	return name != "" && !strings.ContainsAny(name, ".[]{}()")
 }
 
-// isValidArrayIndex checks if an array index is valid
 func (p *Processor) isValidArrayIndex(index string) bool {
 	if index == "" {
 		return false
 	}
 
-	// Check for negative indices
 	index = strings.TrimPrefix(index, "-")
 
-	// Check if it's a valid number
 	_, err := strconv.Atoi(index)
 	return err == nil
 }
 
-// isValidSliceRange checks if a slice range is valid
 func (p *Processor) isValidSliceRange(rangeStr string) bool {
 	parts := strings.Split(rangeStr, ":")
 	if len(parts) < 2 || len(parts) > 3 {
@@ -1438,9 +1348,6 @@ func (p *Processor) isValidSliceRange(rangeStr string) bool {
 	return true
 }
 
-// Error utilities
-
-// wrapError wraps an error with additional context
 func (p *Processor) wrapError(err error, context string) error {
 	if err == nil {
 		return nil

@@ -45,10 +45,10 @@ processor := json.New()
 defer processor.Close()
 
 // Validation includes:
-// - JSON size limits (default: 10MB)
-// - Nesting depth limits (default: 50 levels)
-// - Object key count limits (default: 10,000 keys)
-// - Array element limits (default: 10,000 elements)
+// - JSON size limits (default: 100MB)
+// - Nesting depth limits (default: 200 levels)
+// - Object key count limits (default: 100,000 keys)
+// - Array element limits (default: 100,000 elements)
 // - Malicious pattern detection
 ```
 
@@ -94,11 +94,11 @@ The default configuration provides balanced security and performance:
 ```go
 config := json.DefaultConfig()
 // Default security settings:
-// - MaxJSONSize: 10MB
-// - MaxPathDepth: 100
-// - MaxNestingDepthSecurity: 50
-// - MaxObjectKeys: 10,000
-// - MaxArrayElements: 10,000
+// - MaxJSONSize: 100MB
+// - MaxPathDepth: 50
+// - MaxNestingDepthSecurity: 200
+// - MaxObjectKeys: 100,000
+// - MaxArrayElements: 100,000
 // - EnableValidation: true
 ```
 
@@ -113,10 +113,11 @@ defer processor.Close()
 
 // High security settings:
 // - MaxJSONSize: 5MB (more restrictive)
-// - MaxPathDepth: 20 (shallow paths only)
+// - MaxPathDepth: 50 (from DefaultConfig)
 // - MaxNestingDepthSecurity: 20 (very restrictive)
 // - MaxObjectKeys: 1,000 (fewer keys)
 // - MaxArrayElements: 1,000 (fewer elements)
+// - MaxSecurityValidationSize: 10MB
 // - StrictMode: true (strict validation)
 // - EnableValidation: true (forced validation)
 ```
@@ -139,10 +140,6 @@ config := &json.Config{
     EnableValidation: true,  // Enable input validation
     StrictMode:       true,  // Enable strict mode
     ValidateInput:    true,  // Validate all inputs
-
-    // Rate limiting
-    EnableRateLimit:  true,  // Enable rate limiting
-    RateLimitPerSec:  1000,  // Max operations per second
 
     // Concurrency limits
     MaxConcurrency:    20,   // Maximum concurrent operations
@@ -281,23 +278,7 @@ processor.Get(jsonString, "data.users{id,name}")      // ✓ Safe
 // Unsafe paths (will be rejected)
 processor.Get(jsonString, "path\x00injection")        // ✗ Null byte
 processor.Get(jsonString, strings.Repeat("a.", 5001)) // ✗ Too long
-```
-
-### Path Sanitization
-
-Sensitive information in paths is automatically sanitized:
-
-```go
-// Paths containing sensitive keywords are redacted in error messages
-processor.Get(jsonString, "user.password")
-// Error message will show: [REDACTED_PATH] instead of actual path
-
-// Sensitive patterns detected:
-// - password
-// - token
-// - key
-// - secret
-// - auth
+processor.Get(jsonString, "../../../etc/passwd")      // ✗ Path traversal
 ```
 
 ### Path Depth Limits
@@ -330,13 +311,13 @@ processor := json.New()
 defer processor.Close()
 
 // Safe file operations
-err := processor.ReadFile("./data/config.json")        // ✓ Safe
-err = processor.WriteFile("./output/result.json", data) // ✓ Safe
+data, err := processor.LoadFromFile("./data/config.json")  // ✓ Safe
+err = processor.SaveToFile("./output/result.json", data, true) // ✓ Safe
 
 // Unsafe operations (will be rejected)
-err = processor.ReadFile("../../../etc/passwd")        // ✗ Path traversal
-err = processor.ReadFile("/etc/shadow")                // ✗ System directory
-err = processor.ReadFile("file\x00.json")              // ✗ Null byte
+_, err = processor.LoadFromFile("../../../etc/passwd")     // ✗ Path traversal
+_, err = processor.LoadFromFile("/etc/shadow")             // ✗ System directory
+_, err = processor.LoadFromFile("file\x00.json")           // ✗ Null byte
 ```
 
 ### Protected System Directories
@@ -351,7 +332,7 @@ Access to sensitive system directories is blocked:
 // - /dev/
 
 // Example:
-err := processor.ReadFile("/etc/passwd")
+_, err := processor.LoadFromFile("/etc/passwd")
 // Returns error: "access to system directories not allowed"
 ```
 
@@ -367,7 +348,7 @@ processor := json.New(config)
 defer processor.Close()
 
 // Files larger than MaxJSONSize will be rejected
-err := processor.ReadFile("large_file.json")
+_, err := processor.LoadFromFile("large_file.json")
 if err != nil {
     if errors.Is(err, json.ErrSizeLimit) {
         log.Printf("File too large: %v", err)
@@ -386,7 +367,7 @@ data := map[string]interface{}{
     "data":   result,
 }
 
-err := processor.WriteFile("output.json", data)
+err := processor.SaveToFile("output.json", data, true)
 if err != nil {
     log.Printf("Write failed: %v", err)
 }
@@ -556,7 +537,6 @@ devConfig.EnableValidation = true
 prodConfig := json.HighSecurityConfig()
 prodConfig.EnableValidation = true
 prodConfig.StrictMode = true
-prodConfig.EnableRateLimit = true
 
 // High-security environment (financial, healthcare, etc.)
 secureConfig := json.HighSecurityConfig()
@@ -619,27 +599,31 @@ if err != nil || len(errors) > 0 {
 }
 ```
 
-### 4. Implement Rate Limiting
+### 4. Implement Concurrency Limits
 
-Protect against DoS attacks with rate limiting:
+Protect against resource exhaustion with concurrency limits:
 
 ```go
 config := &json.Config{
-    EnableRateLimit: true,
-    RateLimitPerSec: 1000, // Max 1000 operations per second
+    MaxConcurrency: 100, // Maximum concurrent operations
 }
 processor := json.New(config)
 defer processor.Close()
 
-// Operations will be rate-limited automatically
-for i := 0; i < 10000; i++ {
-    result, err := processor.Get(jsonString, "data")
-    if errors.Is(err, json.ErrRateLimitExceeded) {
-        // Handle rate limit
-        time.Sleep(time.Millisecond * 100)
-        continue
-    }
+// Operations will respect concurrency limits automatically
+var wg sync.WaitGroup
+for i := 0; i < 1000; i++ {
+    wg.Add(1)
+    go func(id int) {
+        defer wg.Done()
+        result, err := processor.Get(jsonString, "data")
+        if err != nil {
+            log.Printf("Worker %d error: %v", id, err)
+        }
+        // Process result...
+    }(i)
 }
+wg.Wait()
 ```
 
 ### 5. Use Timeouts for Operations
@@ -778,7 +762,6 @@ Use this checklist to ensure your implementation is secure:
 - [ ] Set appropriate `MaxJSONSize` limits
 - [ ] Configure `MaxPathDepth` and `MaxNestingDepthSecurity`
 - [ ] Enable `EnableValidation` and `StrictMode`
-- [ ] Configure rate limiting with `EnableRateLimit`
 - [ ] Set reasonable `MaxConcurrency` limits
 - [ ] Configure cache limits with `MaxCacheSize` and `CacheTTL`
 
@@ -885,7 +868,7 @@ func ProcessUserJSON(userInput string) error {
 
 ```go
 func ProcessAPIRequests() {
-    // Configure for high volume with rate limiting
+    // Configure for high volume
     config := &json.Config{
         MaxJSONSize:              5 * 1024 * 1024,
         MaxPathDepth:             50,
@@ -894,8 +877,6 @@ func ProcessAPIRequests() {
         EnableCache:              true,
         MaxCacheSize:             10000,
         CacheTTL:                 10 * time.Minute,
-        EnableRateLimit:          true,
-        RateLimitPerSec:          5000,
         MaxConcurrency:           100,
     }
 
@@ -962,7 +943,7 @@ func LoadSecureConfig(configPath string) (*Config, error) {
     defer processor.Close()
 
     // Read and validate config file
-    err := processor.ReadFile(configPath)
+    jsonStr, err := processor.LoadFromFile(configPath)
     if err != nil {
         return nil, fmt.Errorf("failed to read config: %w", err)
     }

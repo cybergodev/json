@@ -326,15 +326,140 @@ func EncodePretty(value any, config ...*EncodeConfig) (string, error) {
 	return getDefaultProcessor().EncodeWithConfig(value, cfg)
 }
 
-// EncodeCompact converts any Go value to compact JSON string
-func EncodeCompact(value any, config ...*EncodeConfig) (string, error) {
-	var cfg *EncodeConfig
-	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
-	} else {
-		cfg = NewCompactConfig()
+// Print prints any Go value as JSON to stdout in compact format.
+// The data is encoded to JSON and printed followed by a newline.
+// If encoding fails, an error message is printed to stderr instead.
+//
+// Special behavior for string and []byte inputs:
+//   - If data is a JSON string, it will be parsed first to prevent double-encoding.
+//   - If data is []byte containing JSON, it will be parsed first.
+//   - This ensures that json.Print(`{"name":"John"}`) prints {"name":"John"} not "{\"name\":\"John\"}"
+//
+// Example:
+//
+//	// Print Go value
+//	data := map[string]any{
+//	    "monitoring": true,
+//	    "database": map[string]any{
+//	        "name": "myDb",
+//	        "port": "5432",
+//	        "ssl":  true,
+//	    },
+//	    "debug":    false,
+//	    "features": []string{"caching"},
+//	}
+//	json.Print(data)
+//	// Output: {"monitoring":true,"database":{"name":"myDb","port":"5432","ssl":true},"debug":false,"features":["caching"]}
+//
+//	// Print JSON string directly (no double-encoding)
+//	jsonStr := `{"name":"John","age":30}`
+//	json.Print(jsonStr)
+//	// Output: {"name":"John","age":30}
+func Print(data any) {
+	result, err := printData(data, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "json.Print error: %v\n", err)
+		return
 	}
-	return getDefaultProcessor().EncodeWithConfig(value, cfg)
+	fmt.Println(result)
+}
+
+// printData handles the core logic for Print and PrintPretty
+// Returns the formatted JSON string and any error
+func printData(data any, pretty bool) (string, error) {
+	processor := getDefaultProcessor()
+
+	switch v := data.(type) {
+	case string:
+		// Check if it's valid JSON - if so, format it directly
+		if isValid, _ := processor.Valid(v); isValid {
+			if pretty {
+				return processor.FormatPretty(v)
+			}
+			return processor.Compact(v)
+		}
+		// Not valid JSON, encode as a normal string
+		if pretty {
+			return EncodePretty(v)
+		}
+		return Encode(v)
+
+	case []byte:
+		jsonStr := string(v)
+		// Check if it's valid JSON - if so, format it directly
+		if isValid, _ := processor.Valid(jsonStr); isValid {
+			if pretty {
+				return processor.FormatPretty(jsonStr)
+			}
+			return processor.Compact(jsonStr)
+		}
+		// Not valid JSON, encode as normal
+		if pretty {
+			return EncodePretty(v)
+		}
+		return Encode(v)
+
+	default:
+		// Encode other types normally
+		if pretty {
+			return EncodePretty(v)
+		}
+		return Encode(v)
+	}
+}
+
+// PrintPretty prints any Go value as formatted JSON to stdout.
+// The data is encoded to JSON with pretty indentation and printed.
+// If encoding fails, an error message is printed to stderr instead.
+//
+// Special behavior for string and []byte inputs:
+//   - If data is a JSON string, it will be parsed first to prevent double-encoding.
+//   - If data is []byte containing JSON, it will be parsed first.
+//   - This ensures that json.PrintPretty(`{"name":"John"}`) prints formatted JSON not a JSON string.
+//
+// Example:
+//
+//	// Print Go value
+//	data := map[string]any{
+//	    "monitoring": true,
+//	    "database": map[string]any{
+//	        "name": "myDb",
+//	        "port": "5432",
+//	        "ssl":  true,
+//	    },
+//	    "debug":    false,
+//	    "features": []string{"caching"},
+//	}
+//	json.PrintPretty(data)
+//	// Output:
+//	// {
+//	//   "database": {
+//	//     "name": "myDb",
+//	//     "port": "5432",
+//	//     "ssl": true
+//	//   },
+//	//   "debug": false,
+//	//   "features": [
+//	//     "caching"
+//	//   ],
+//	//   "monitoring": true
+//	// }
+//
+//	// Print JSON string directly (no double-encoding)
+//	jsonStr := `{"name":"John","age":30}`
+//	json.PrintPretty(jsonStr)
+//	// Output:
+//	// {
+//	//   "age": 30,
+//	//   "name": "John"
+//	// }
+func PrintPretty(data any) {
+	result, err := printData(data, true)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "json.PrintPretty error: %v\n", err)
+		return
+	}
+	fmt.Println(result)
 }
 
 // Valid reports whether data is valid JSON

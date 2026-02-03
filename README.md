@@ -72,9 +72,17 @@ func main() {
     jsonStr := `{"user":{"profile":{"name":"Alice","age":25}}}`
 
     name, err := json.GetString(jsonStr, "user.profile.name")
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+        return
+    }
     fmt.Println(name) // "Alice"
 
     age, err := json.GetInt(jsonStr, "user.profile.age")
+    if err != nil {
+        fmt.Printf("Error: %v\n", err)
+        return
+    }
     fmt.Println(age) // 25
 }
 ```
@@ -92,15 +100,27 @@ complexData := `{
 
 // Get all usernames
 names, err := json.Get(complexData, "users{name}")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: ["Alice", "Bob"]
 
 // Get all skills (flattened)
 skills, err := json.Get(complexData, "users{flat:skills}")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: ["Go", "Python", "Java", "React"]
 
 // Batch get multiple values
 paths := []string{"users[0].name", "users[1].name", "users{active}"}
 results, err := json.GetMultiple(complexData, paths)
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 ```
 
 
@@ -179,8 +199,8 @@ json.Foreach(data, func (key any, item *json.IterableValue) {
 })
 
 // Advanced iteration variants
-json.ForeachNested(data, callback)                  // Nested-safe iteration
-json.ForeachWithPath(data, "data.users", callback)  // Iterate specific path
+json.ForeachNested(data, callback)                            // Recursively iterate all nested levels
+json.ForeachWithPath(data, "data.users", callback)            // Iterate specific path
 
 // Iterate with control flow - supports early termination
 json.ForeachWithPathAndControl(data, "data.users", func(key any, value any) json.IteratorControl {
@@ -205,15 +225,18 @@ config := &json.EncodeConfig{
     Pretty:       true,
     SortKeys:     true,
     EscapeHTML:   false,
-    MaxDepth:     10,  // Required: maximum encoding depth
+    MaxDepth:     10,  // Optional: maximum encoding depth (overriding default of 100)
 }
-jsonStr, err := json.Encode(data, config)  // config is optional
-jsonStr, err := json.EncodePretty(data, config)
-jsonStr, err := json.EncodeCompact(data, config)
+jsonStr, err := json.Encode(data, config)           // Encode with custom config (config is optional, uses defaults if nil)
+jsonStr, err := json.EncodePretty(data, config)     // Encode with pretty formatting
 
 // Formatting operations
 pretty, err := json.FormatPretty(jsonStr)
 compact, err := json.FormatCompact(jsonStr)
+
+// Print operations (direct output to stdout)
+json.Print(data)           // Print compact JSON to stdout
+json.PrintPretty(data)     // Print pretty JSON to stdout
 
 // Buffer operations (encoding/json compatible)
 json.Compact(dst, src)
@@ -333,11 +356,11 @@ arrayData := `{
 }`
 
 // Array indexing and slicing
-first, err := json.GetInt(arrayData, "numbers[0]")       // 1
-last, err := json.GetInt(arrayData, "numbers[-1]")       // 10 (negative index)
-slice, err := json.Get(arrayData, "numbers[1:4]")        // [2, 3, 4]
-everyOther, err := json.Get(arrayData, "numbers[::2]")   // [1, 3, 5, 7, 9]
-everyOther, err := json.Get(arrayData, "numbers[::-2]")  // [10 8 6 4 2]
+first, err := json.GetInt(arrayData, "numbers[0]")           // 1
+last, err := json.GetInt(arrayData, "numbers[-1]")           // 10 (negative index)
+slice, err := json.Get(arrayData, "numbers[1:4]")            // [2, 3, 4]
+everyOther, err := json.Get(arrayData, "numbers[::2]")       // [1, 3, 5, 7, 9]
+reverseEveryOther, err := json.Get(arrayData, "numbers[::-2]")  // [10, 8, 6, 4, 2]
 
 // Nested array access
 ages, err := json.Get(arrayData, "users{age}") // [25, 30]
@@ -356,11 +379,7 @@ The `json.New()` function now supports optional configuration parameters:
 processor1 := json.New()
 defer processor1.Close()
 
-// 2. Explicit nil - same as default configuration
-processor2 := json.New()
-defer processor2.Close()
-
-// 3. Custom configuration
+// 2. Custom configuration
 customConfig := &json.Config{
     // Cache settings
     EnableCache:      true,             // Enable cache
@@ -383,12 +402,17 @@ customConfig := &json.Config{
     CleanupNulls:     true,  // Cleanup null values
 }
 
-processor3 := json.New(customConfig)
-defer processor3.Close()
+processor2 := json.New(customConfig)
+defer processor2.Close()
 
-// 4. Predefined configurations
+// 3. Predefined configurations
+// HighSecurityConfig: For processing untrusted JSON with strict validation limits
 secureProcessor := json.New(json.HighSecurityConfig())
+defer secureProcessor.Close()
+
+// LargeDataConfig: For handling large JSON files with optimized performance
 largeDataProcessor := json.New(json.LargeDataConfig())
+defer largeDataProcessor.Close()
 ```
 
 ### Operation Options
@@ -514,7 +538,11 @@ for _, filename := range configFiles {
 }
 
 // Save merged configuration
-err := json.SaveToFile("merged_config.json", allConfigs, true)
+err = json.SaveToFile("merged_config.json", allConfigs, true)
+if err != nil {
+    log.Printf("Saving merged config failed: %v", err)
+    return
+}
 ```
 
 ---
@@ -524,14 +552,14 @@ err := json.SaveToFile("merged_config.json", allConfigs, true)
 ```go
 // Security configuration
 secureConfig := &json.Config{
-    MaxJSONSize:       10 * 1024 * 1024,    // 10MB JSON size limit
-    MaxPathDepth:      50,                  // Path depth limit
-    MaxNestingDepth:   100,                 // Object nesting depth limit
-    MaxArrayElements:  10000,               // Array element count limit
-    MaxObjectKeys:     1000,                // Object key count limit
-    ValidateInput:     true,                // Input validation
-    EnableValidation:  true,                // Enable validation
-    StrictMode:        true,                // Strict mode
+    MaxJSONSize:              10 * 1024 * 1024, // 10MB JSON size limit
+    MaxPathDepth:             50,                // Path depth limit
+    MaxNestingDepthSecurity:  100,               // Object nesting depth limit
+    MaxArrayElements:         10000,             // Array element count limit
+    MaxObjectKeys:            1000,              // Object key count limit
+    ValidateInput:            true,              // Input validation
+    EnableValidation:         true,              // Enable validation
+    StrictMode:               true,              // Strict mode
 }
 
 processor := json.New(secureConfig)
@@ -573,27 +601,55 @@ apiResponse := `{
 
 // Quick extraction of key information
 status, err := json.GetString(apiResponse, "status")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: success
 
 code, err := json.GetInt(apiResponse, "code")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: 200
 
 // Get pagination information
 totalUsers, err := json.GetInt(apiResponse, "data.pagination.total")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: 25
 
 currentPage, err := json.GetInt(apiResponse, "data.pagination.page")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: 1
 
 // Batch extract user information
 userNames, err := json.Get(apiResponse, "data.users.profile.name")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: ["Alice Johnson"]
 
 userEmails, err := json.Get(apiResponse, "data.users.profile.email")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: ["alice@example.com"]
 
 // Flatten extract all permissions
 allPermissions, err := json.Get(apiResponse, "data.users{flat:permissions}")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: ["read", "write", "admin"]
 ```
 
@@ -648,7 +704,11 @@ updates := map[string]any{
     "environments.production.cache.ttl": 10800, // 3 hours
 }
 
-newConfig, _ := json.SetMultiple(configJSON, updates)
+newConfig, err := json.SetMultiple(configJSON, updates)
+if err != nil {
+    fmt.Printf("Error updating config: %v\n", err)
+    return
+}
 ```
 
 ### Example - Data Analysis Processing
@@ -675,15 +735,27 @@ analyticsData := `{
 }`
 
 // Extract all event types
-eventTypes, _ := json.Get(analyticsData, "events.type")
+eventTypes, err := json.Get(analyticsData, "events.type")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: ["request", "error"]
 
 // Extract all status codes
-statusCodes, _ := json.Get(analyticsData, "events.status_code")
+statusCodes, err := json.Get(analyticsData, "events.status_code")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: [200, 500]
 
 // Extract all response times
-responseTimes, _ := json.GetTyped[[]float64](analyticsData, "events.response_time")
+responseTimes, err := json.GetTyped[[]int](analyticsData, "events.response_time")
+if err != nil {
+    fmt.Printf("Error: %v\n", err)
+    return
+}
 // Result: [45, 5000]
 
 // Calculate average response time

@@ -213,10 +213,13 @@ json.Get(data, "users{flat:skills}")
 // Load from file
 data, err := json.LoadFromFile("config.json")
 
-// Load from Reader
+// Load from Reader (requires processor)
+processor := json.New()
+defer processor.Close()
+
 file, _ := os.Open("data.json")
 defer file.Close()
-data, err := json.LoadFromReader(file)
+data, err := processor.LoadFromReader(file)
 ```
 
 ### Write Files
@@ -228,9 +231,12 @@ err := json.SaveToFile("output.json", data, true)
 // Save to file (compact format)
 err := json.SaveToFile("output.json", data, false)
 
-// Save to Writer
+// Save to Writer (requires processor)
+processor := json.New()
+defer processor.Close()
+
 var buffer bytes.Buffer
-err := json.SaveToWriter(&buffer, data, true)
+err = processor.SaveToWriter(&buffer, data, true)
 ```
 
 ---

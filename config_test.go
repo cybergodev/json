@@ -138,7 +138,6 @@ func TestEncodingConfiguration(t *testing.T) {
 		helper.AssertEqual("", config.Prefix)
 		helper.AssertTrue(config.EscapeHTML)
 		helper.AssertFalse(config.SortKeys)
-		helper.AssertFalse(config.OmitEmpty)
 		helper.AssertTrue(config.ValidateUTF8)
 		helper.AssertEqual(100, config.MaxDepth)
 		helper.AssertFalse(config.DisallowUnknown)
@@ -159,12 +158,6 @@ func TestEncodingConfiguration(t *testing.T) {
 		helper.AssertEqual("  ", config.Indent)
 	})
 
-	t.Run("NewCompactConfig", func(t *testing.T) {
-		config := NewCompactConfig()
-
-		helper.AssertFalse(config.Pretty)
-	})
-
 	t.Run("EncodingOptions", func(t *testing.T) {
 		config := DefaultEncodeConfig()
 
@@ -176,11 +169,6 @@ func TestEncodingConfiguration(t *testing.T) {
 		t.Run("SetSortKeys", func(t *testing.T) {
 			config.SortKeys = true
 			helper.AssertTrue(config.SortKeys)
-		})
-
-		t.Run("SetOmitEmpty", func(t *testing.T) {
-			config.OmitEmpty = true
-			helper.AssertTrue(config.OmitEmpty)
 		})
 
 		t.Run("SetFloatPrecision", func(t *testing.T) {

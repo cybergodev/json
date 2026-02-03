@@ -160,13 +160,8 @@ func demonstrateArrays(data string) {
 	fmt.Printf("   First two tags: %v\n", firstTwo)
 
 	// Extract all values from array
-	allTags, _ := json.Get(data, "user.tags")
-	fmt.Printf("   All tags: %v\n", allTags)
-
-	// Array length check
-	if tags, ok := allTags.([]interface{}); ok {
-		fmt.Printf("   Tags count: %d\n", len(tags))
-	}
+	allTags, _ := json.GetArray(data, "user.tags")
+	fmt.Printf("   All tags: %v, Tags count: %d\n", allTags, len(allTags))
 }
 
 func demonstrateBatch(data string) {
