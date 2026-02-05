@@ -129,7 +129,9 @@ func (p *Processor) reverseSlice(arr []any, start, end, step int) []any {
 		return []any{}
 	}
 
-	result := make([]any, 0)
+	// Pre-allocate capacity to avoid repeated reallocations
+	estimatedSize := (start - end - step - 1) / (-step)
+	result := make([]any, 0, estimatedSize)
 	for i := start; i > end; i += step { // step is negative
 		result = append(result, arr[i])
 	}
@@ -501,7 +503,7 @@ func (p *Processor) deleteValueDotNotation(data any, path string) error {
 				return fmt.Errorf("path not found: %s", segment)
 			}
 		case []any:
-			if index, err := strconv.Atoi(segment); err == nil && index >= 0 && index < len(v) {
+			if index, ok := internal.ParseAndValidateArrayIndex(segment, len(v)); ok {
 				current = v[index]
 			} else {
 				return fmt.Errorf("invalid array index: %s", segment)
@@ -542,7 +544,7 @@ func (p *Processor) deleteValueJSONPointer(data any, path string) error {
 				return fmt.Errorf("path not found: %s", segment)
 			}
 		case []any:
-			if index, err := strconv.Atoi(segment); err == nil && index >= 0 && index < len(v) {
+			if index, ok := internal.ParseAndValidateArrayIndex(segment, len(v)); ok {
 				current = v[index]
 			} else {
 				return fmt.Errorf("invalid array index: %s", segment)
@@ -1363,10 +1365,10 @@ func (p *Processor) extractIndividualArrays(data any, extractionSegment PathSegm
 		return nil, fmt.Errorf("invalid extraction syntax: %s", extractionSegment.String())
 	}
 
+	// Pre-allocate with estimated capacity
 	var results []any
-
-	// Handle array of objects
 	if arr, ok := data.([]any); ok {
+		results = make([]any, 0, len(arr))
 		for _, item := range arr {
 			if obj, ok := item.(map[string]any); ok {
 				if value := p.handlePropertyAccessValue(obj, field); value != nil {

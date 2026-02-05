@@ -82,13 +82,12 @@ func TestEncodingAdvanced(t *testing.T) {
 			}
 
 			encodeConfig := DefaultEncodeConfig()
-			encodeConfig.OmitEmpty = true
 			encodeConfig.Pretty = true
 
 			result, err := processor.EncodeWithConfig(config, encodeConfig)
 			helper.AssertNoError(err)
 
-			// Empty fields should be omitted
+			// Empty fields with omitempty tag should be omitted
 			helper.AssertFalse(strings.Contains(result, "\"username\""))
 			helper.AssertFalse(strings.Contains(result, "\"password\""))
 			helper.AssertTrue(strings.Contains(result, "\"host\""))

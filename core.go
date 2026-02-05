@@ -20,7 +20,7 @@ type PropertyAccessResult struct {
 	Error  error
 }
 
-// RootDataTypeConversionError represents an error that signals root data type conversion is needed
+// RootDataTypeConversionError signals that root data type conversion is needed
 type RootDataTypeConversionError struct {
 	RequiredType string
 	RequiredSize int
@@ -32,14 +32,13 @@ func (e *RootDataTypeConversionError) Error() string {
 		e.CurrentType, e.RequiredType, e.RequiredSize)
 }
 
-// ArrayExtensionError represents an error that signals array extension is needed
+// ArrayExtensionError signals that array extension is needed
 type ArrayExtensionError struct {
 	CurrentLength  int
 	RequiredLength int
 	TargetIndex    int
 	Value          any
 	Message        string
-	ExtendedArray  []any // For storing pre-created extended arrays
 }
 
 func (e *ArrayExtensionError) Error() string {
@@ -212,12 +211,12 @@ type Config struct {
 	CompactArrays    bool `json:"compact_arrays"`
 
 	// Additional options
-	EnableMetrics    bool `json:"enable_metrics"`
+	EnableMetrics     bool `json:"enable_metrics"`
 	EnableHealthCheck bool `json:"enable_health_check"`
-	AllowComments    bool `json:"allow_comments"`
-	PreserveNumbers  bool `json:"preserve_numbers"`
-	ValidateInput    bool `json:"validate_input"`
-	ValidateFilePath bool `json:"validate_file_path"`
+	AllowComments     bool `json:"allow_comments"`
+	PreserveNumbers   bool `json:"preserve_numbers"`
+	ValidateInput     bool `json:"validate_input"`
+	ValidateFilePath  bool `json:"validate_file_path"`
 }
 
 // ProcessorOptions provides per-operation configuration
@@ -255,26 +254,26 @@ func (opts *ProcessorOptions) Clone() *ProcessorOptions {
 
 // Stats provides processor performance statistics
 type Stats struct {
-	CacheSize        int64         `json:"cache_size"`        // Current cache size
-	CacheMemory      int64         `json:"cache_memory"`      // Cache memory usage in bytes
-	MaxCacheSize     int           `json:"max_cache_size"`    // Maximum cache size
-	HitCount         int64         `json:"hit_count"`         // Cache hit count
-	MissCount        int64         `json:"miss_count"`        // Cache miss count
-	HitRatio         float64       `json:"hit_ratio"`         // Cache hit ratio
-	CacheTTL         time.Duration `json:"cache_ttl"`         // Cache TTL
-	CacheEnabled     bool          `json:"cache_enabled"`     // Whether cache is enabled
-	IsClosed         bool          `json:"is_closed"`         // Whether processor is closed
-	MemoryEfficiency float64       `json:"memory_efficiency"` // Memory efficiency (hits per MB)
-	OperationCount   int64         `json:"operation_count"`   // Total operations performed
-	ErrorCount       int64         `json:"error_count"`       // Total errors encountered
+	CacheSize        int64         `json:"cache_size"`
+	CacheMemory      int64         `json:"cache_memory"`
+	MaxCacheSize     int           `json:"max_cache_size"`
+	HitCount         int64         `json:"hit_count"`
+	MissCount        int64         `json:"miss_count"`
+	HitRatio         float64       `json:"hit_ratio"`
+	CacheTTL         time.Duration `json:"cache_ttl"`
+	CacheEnabled     bool          `json:"cache_enabled"`
+	IsClosed         bool          `json:"is_closed"`
+	MemoryEfficiency float64       `json:"memory_efficiency"`
+	OperationCount   int64         `json:"operation_count"`
+	ErrorCount       int64         `json:"error_count"`
 }
 
 // DetailedStats provides comprehensive processor statistics (internal debugging)
 type DetailedStats struct {
 	Stats             Stats             `json:"stats"`
-	state             int32             // Processor state (0=active, 1=closing, 2=closed) - private
-	configSnapshot    Config            // Configuration snapshot - private
-	resourcePoolStats ResourcePoolStats // Resource pool statistics - private
+	state             int32             `json:"-"` // Processor state (0=active, 1=closing, 2=closed)
+	configSnapshot    Config            `json:"config_snapshot"`
+	resourcePoolStats ResourcePoolStats `json:"resource_pool_stats"`
 }
 
 // ResourcePoolStats provides statistics about resource pools
@@ -285,53 +284,42 @@ type ResourcePoolStats struct {
 
 // CacheStats provides comprehensive cache statistics
 type CacheStats struct {
-	HitCount         int64        `json:"hit_count"`         // Total cache hits
-	MissCount        int64        `json:"miss_count"`        // Total cache misses
-	TotalMemory      int64        `json:"total_memory"`      // Total memory usage in bytes
-	HitRatio         float64      `json:"hit_ratio"`         // Cache hit ratio
-	MemoryEfficiency float64      `json:"memory_efficiency"` // Memory efficiency (hits per MB)
-	Evictions        int64        `json:"evictions"`         // Total evictions performed
-	ShardCount       int          `json:"shard_count"`       // Number of cache shards
-	ShardStats       []ShardStats `json:"shard_stats"`       // Per-shard statistics
+	HitCount         int64        `json:"hit_count"`
+	MissCount        int64        `json:"miss_count"`
+	TotalMemory      int64        `json:"total_memory"`
+	HitRatio         float64      `json:"hit_ratio"`
+	MemoryEfficiency float64      `json:"memory_efficiency"`
+	Evictions        int64        `json:"evictions"`
+	ShardCount       int          `json:"shard_count"`
+	ShardStats       []ShardStats `json:"shard_stats"`
 }
 
 // ShardStats provides statistics for a single cache shard
 type ShardStats struct {
-	Size   int64 `json:"size"`   // Number of entries in shard
-	Memory int64 `json:"memory"` // Memory usage of shard in bytes
+	Size   int64 `json:"size"`
+	Memory int64 `json:"memory"`
 }
 
 // ProcessorMetrics provides comprehensive processor performance metrics
 type ProcessorMetrics struct {
-	// Operation metrics
 	TotalOperations      int64   `json:"total_operations"`
 	SuccessfulOperations int64   `json:"successful_operations"`
 	FailedOperations     int64   `json:"failed_operations"`
 	SuccessRate          float64 `json:"success_rate"`
-
-	// Cache metrics
-	CacheHits    int64   `json:"cache_hits"`
-	CacheMisses  int64   `json:"cache_misses"`
-	CacheHitRate float64 `json:"cache_hit_rate"`
-
-	// Performance metrics
+	CacheHits            int64   `json:"cache_hits"`
+	CacheMisses          int64   `json:"cache_misses"`
+	CacheHitRate         float64 `json:"cache_hit_rate"`
 	AverageProcessingTime time.Duration `json:"average_processing_time"`
 	MaxProcessingTime     time.Duration `json:"max_processing_time"`
 	MinProcessingTime     time.Duration `json:"min_processing_time"`
-
-	// Memory metrics
-	TotalMemoryAllocated int64 `json:"total_memory_allocated"`
-	PeakMemoryUsage      int64 `json:"peak_memory_usage"`
-	CurrentMemoryUsage   int64 `json:"current_memory_usage"`
-
-	// Concurrency metrics
-	ActiveConcurrentOps int64 `json:"active_concurrent_ops"`
-	MaxConcurrentOps    int64 `json:"max_concurrent_ops"`
-
-	// Runtime metrics (private - internal use only)
-	runtimeMemStats runtime.MemStats
-	uptime          time.Duration
-	errorsByType    map[string]int64
+	TotalMemoryAllocated  int64 `json:"total_memory_allocated"`
+	PeakMemoryUsage       int64 `json:"peak_memory_usage"`
+	CurrentMemoryUsage    int64 `json:"current_memory_usage"`
+	ActiveConcurrentOps   int64 `json:"active_concurrent_ops"`
+	MaxConcurrentOps      int64 `json:"max_concurrent_ops"`
+	runtimeMemStats       runtime.MemStats `json:"-"`
+	uptime                time.Duration     `json:"-"`
+	errorsByType          map[string]int64  `json:"-"`
 }
 
 // HealthStatus represents the health status of the processor
@@ -520,7 +508,6 @@ type EncodeConfig struct {
 	Prefix          string `json:"prefix"`
 	EscapeHTML      bool   `json:"escape_html"`
 	SortKeys        bool   `json:"sort_keys"`
-	OmitEmpty       bool   `json:"omit_empty"`
 	ValidateUTF8    bool   `json:"validate_utf8"`
 	MaxDepth        int    `json:"max_depth"`
 	DisallowUnknown bool   `json:"disallow_unknown"`
@@ -537,8 +524,8 @@ type EncodeConfig struct {
 	EscapeTabs      bool `json:"escape_tabs"`
 
 	// Null handling
-	IncludeNulls  bool              `json:"include_nulls"`
-	CustomEscapes map[rune]string   `json:"custom_escapes,omitempty"`
+	IncludeNulls  bool            `json:"include_nulls"`
+	CustomEscapes map[rune]string `json:"custom_escapes,omitempty"`
 }
 
 // Clone creates a deep copy of the EncodeConfig
@@ -596,32 +583,6 @@ type OperationContext struct {
 	CreatePaths bool
 }
 
-// ProcessorConfig holds configuration for the processor
-type ProcessorConfig struct {
-	EnableCache      bool
-	EnableMetrics    bool
-	MaxConcurrency   int
-	Timeout          time.Duration
-	RateLimitEnabled bool
-	RateLimitRPS     int
-	MaxDepth         int
-	MaxPathLength    int
-}
-
-// DefaultProcessorConfig returns a default configuration
-func DefaultProcessorConfig() *ProcessorConfig {
-	return &ProcessorConfig{
-		EnableCache:      true,
-		EnableMetrics:    true,
-		MaxConcurrency:   100,
-		Timeout:          30 * time.Second,
-		RateLimitEnabled: false,
-		RateLimitRPS:     1000,
-		MaxDepth:         100,
-		MaxPathLength:    1000,
-	}
-}
-
 // CacheKey represents a cache key for operations
 type CacheKey struct {
 	Operation string
@@ -637,10 +598,8 @@ type RateLimiter interface {
 	Limit() int
 }
 
-// Special marker for deleted values
+// DeletedMarker is a special marker for deleted values
 var DeletedMarker = &struct{ deleted bool }{deleted: true}
-
-// DefaultConfig moved to config.go
 
 // DefaultOptions returns default processor options
 func DefaultOptions() *ProcessorOptions {
@@ -670,11 +629,9 @@ func DefaultSchema() *Schema {
 		Maximum:              0,
 		Pattern:              "",
 		Format:               "",
-		AdditionalProperties: true, // Allow additional properties by default
-		hasMinLength:         false,
-		hasMaxLength:         false,
-		hasMinimum:           false,
-		hasMaximum:           false,
+		AdditionalProperties: true,
+		MinItems:             0,
+		MaxItems:             0,
 	}
 }
 
@@ -774,8 +731,6 @@ func (c *Config) GetSecurityLimits() map[string]any {
 	}
 }
 
-// ValidateConfig moved to config.go
-
 // ValidateOptions validates processor options with enhanced checks
 func ValidateOptions(options *ProcessorOptions) error {
 	if options == nil {
@@ -792,8 +747,6 @@ func ValidateOptions(options *ProcessorOptions) error {
 	return nil
 }
 
-// DefaultEncodeConfig, NewPrettyConfig, NewCompactConfig moved to config.go
-
 // NewReadableConfig creates a configuration for human-readable JSON with minimal escaping
 func NewReadableConfig() *EncodeConfig {
 	return &EncodeConfig{
@@ -802,7 +755,6 @@ func NewReadableConfig() *EncodeConfig {
 		Prefix:          "",
 		EscapeHTML:      false,
 		SortKeys:        false,
-		OmitEmpty:       false,
 		ValidateUTF8:    true,
 		MaxDepth:        100,
 		DisallowUnknown: false,
@@ -825,7 +777,6 @@ func NewWebSafeConfig() *EncodeConfig {
 		Prefix:          "",
 		EscapeHTML:      true,
 		SortKeys:        false,
-		OmitEmpty:       false,
 		ValidateUTF8:    true,
 		MaxDepth:        100,
 		DisallowUnknown: false,
@@ -847,7 +798,6 @@ func NewCleanConfig() *EncodeConfig {
 		Prefix:          "",
 		EscapeHTML:      true,
 		SortKeys:        true,
-		OmitEmpty:       false,
 		ValidateUTF8:    true,
 		MaxDepth:        100,
 		DisallowUnknown: false,
@@ -863,29 +813,20 @@ func NewCleanConfig() *EncodeConfig {
 	}
 }
 
-// ResourceMonitor provides enhanced resource monitoring and leak detection
+// ResourceMonitor provides resource monitoring and leak detection
 type ResourceMonitor struct {
-	// Memory statistics
-	allocatedBytes  int64 // Total allocated bytes
-	freedBytes      int64 // Total freed bytes
-	peakMemoryUsage int64 // Peak memory usage
-
-	// Pool statistics
-	poolHits      int64 // Pool cache hits
-	poolMisses    int64 // Pool cache misses
-	poolEvictions int64 // Pool evictions
-
-	// Goroutine tracking
-	maxGoroutines     int64 // Maximum goroutines seen
-	currentGoroutines int64 // Current goroutine count
-
-	// Leak detection
-	lastLeakCheck     int64 // Last leak detection check
-	leakCheckInterval int64 // Interval between leak checks (seconds)
-
-	// Performance metrics
-	avgResponseTime int64 // Average response time in nanoseconds
-	totalOperations int64 // Total operations processed
+	allocatedBytes  int64
+	freedBytes      int64
+	peakMemoryUsage int64
+	poolHits        int64
+	poolMisses      int64
+	poolEvictions   int64
+	maxGoroutines    int64
+	currentGoroutines int64
+	lastLeakCheck    int64
+	leakCheckInterval int64
+	avgResponseTime   int64
+	totalOperations  int64
 }
 
 // NewResourceMonitor creates a new resource monitor
@@ -896,11 +837,9 @@ func NewResourceMonitor() *ResourceMonitor {
 	}
 }
 
-// RecordAllocation records memory allocation
 func (rm *ResourceMonitor) RecordAllocation(bytes int64) {
 	atomic.AddInt64(&rm.allocatedBytes, bytes)
 
-	// Update peak memory usage
 	current := atomic.LoadInt64(&rm.allocatedBytes) - atomic.LoadInt64(&rm.freedBytes)
 	for {
 		peak := atomic.LoadInt64(&rm.peakMemoryUsage)
@@ -910,35 +849,28 @@ func (rm *ResourceMonitor) RecordAllocation(bytes int64) {
 	}
 }
 
-// RecordDeallocation records memory deallocation
 func (rm *ResourceMonitor) RecordDeallocation(bytes int64) {
 	atomic.AddInt64(&rm.freedBytes, bytes)
 }
 
-// RecordPoolHit records a pool cache hit
 func (rm *ResourceMonitor) RecordPoolHit() {
 	atomic.AddInt64(&rm.poolHits, 1)
 }
 
-// RecordPoolMiss records a pool cache miss
 func (rm *ResourceMonitor) RecordPoolMiss() {
 	atomic.AddInt64(&rm.poolMisses, 1)
 }
 
-// RecordPoolEviction records a pool eviction
 func (rm *ResourceMonitor) RecordPoolEviction() {
 	atomic.AddInt64(&rm.poolEvictions, 1)
 }
 
-// RecordOperation records an operation with timing
 func (rm *ResourceMonitor) RecordOperation(duration time.Duration) {
 	atomic.AddInt64(&rm.totalOperations, 1)
 
-	// Update average response time using exponential moving average
 	newTime := duration.Nanoseconds()
 	for {
 		oldAvg := atomic.LoadInt64(&rm.avgResponseTime)
-		// Simple exponential moving average with alpha = 0.1
 		newAvg := oldAvg + (newTime-oldAvg)/10
 		if atomic.CompareAndSwapInt64(&rm.avgResponseTime, oldAvg, newAvg) {
 			break
@@ -946,31 +878,30 @@ func (rm *ResourceMonitor) RecordOperation(duration time.Duration) {
 	}
 }
 
-// CheckForLeaks performs leak detection and returns potential issues
 func (rm *ResourceMonitor) CheckForLeaks() []string {
-	now := time.Now().Unix()
-	lastCheck := atomic.LoadInt64(&rm.lastLeakCheck)
+	for {
+		now := time.Now().Unix()
+		lastCheck := atomic.LoadInt64(&rm.lastLeakCheck)
 
-	if now-lastCheck < rm.leakCheckInterval {
-		return nil // Too soon for another check
-	}
+		if now-lastCheck < rm.leakCheckInterval {
+			return nil
+		}
 
-	if !atomic.CompareAndSwapInt64(&rm.lastLeakCheck, lastCheck, now) {
-		return nil // Another goroutine is checking
+		if atomic.CompareAndSwapInt64(&rm.lastLeakCheck, lastCheck, now) {
+			break
+		}
 	}
 
 	var issues []string
 
-	// Check memory growth
 	allocated := atomic.LoadInt64(&rm.allocatedBytes)
 	freed := atomic.LoadInt64(&rm.freedBytes)
 	netMemory := allocated - freed
 
-	if netMemory > 100*1024*1024 { // 100MB threshold
+	if netMemory > 100*1024*1024 {
 		issues = append(issues, "High memory usage detected")
 	}
 
-	// Check goroutine count
 	currentGoroutines := int64(runtime.NumGoroutine())
 	atomic.StoreInt64(&rm.currentGoroutines, currentGoroutines)
 
@@ -979,22 +910,20 @@ func (rm *ResourceMonitor) CheckForLeaks() []string {
 		atomic.StoreInt64(&rm.maxGoroutines, currentGoroutines)
 	}
 
-	if currentGoroutines > 1000 { // High goroutine count
+	if currentGoroutines > 1000 {
 		issues = append(issues, "High goroutine count detected")
 	}
 
-	// Check pool efficiency
 	hits := atomic.LoadInt64(&rm.poolHits)
 	misses := atomic.LoadInt64(&rm.poolMisses)
 
-	if hits+misses > 1000 && hits < misses { // Poor pool hit rate
+	if hits+misses > 1000 && hits < misses {
 		issues = append(issues, "Poor pool cache efficiency")
 	}
 
 	return issues
 }
 
-// GetStats returns current resource statistics
 func (rm *ResourceMonitor) GetStats() ResourceStats {
 	return ResourceStats{
 		AllocatedBytes:    atomic.LoadInt64(&rm.allocatedBytes),
@@ -1012,19 +941,18 @@ func (rm *ResourceMonitor) GetStats() ResourceStats {
 
 // ResourceStats represents resource usage statistics
 type ResourceStats struct {
-	AllocatedBytes    int64         // Total allocated bytes
-	FreedBytes        int64         // Total freed bytes
-	PeakMemoryUsage   int64         // Peak memory usage
-	PoolHits          int64         // Pool cache hits
-	PoolMisses        int64         // Pool cache misses
-	PoolEvictions     int64         // Pool evictions
-	MaxGoroutines     int64         // Maximum goroutines seen
-	CurrentGoroutines int64         // Current goroutine count
-	AvgResponseTime   time.Duration // Average response time
-	TotalOperations   int64         // Total operations processed
+	AllocatedBytes    int64         `json:"allocated_bytes"`
+	FreedBytes        int64         `json:"freed_bytes"`
+	PeakMemoryUsage   int64         `json:"peak_memory_usage"`
+	PoolHits          int64         `json:"pool_hits"`
+	PoolMisses        int64         `json:"pool_misses"`
+	PoolEvictions     int64         `json:"pool_evictions"`
+	MaxGoroutines     int64         `json:"max_goroutines"`
+	CurrentGoroutines int64         `json:"current_goroutines"`
+	AvgResponseTime   time.Duration `json:"avg_response_time"`
+	TotalOperations   int64         `json:"total_operations"`
 }
 
-// Reset resets all statistics
 func (rm *ResourceMonitor) Reset() {
 	atomic.StoreInt64(&rm.allocatedBytes, 0)
 	atomic.StoreInt64(&rm.freedBytes, 0)
@@ -1039,7 +967,6 @@ func (rm *ResourceMonitor) Reset() {
 	atomic.StoreInt64(&rm.lastLeakCheck, time.Now().Unix())
 }
 
-// GetMemoryEfficiency returns memory efficiency as a percentage (0-100)
 func (rm *ResourceMonitor) GetMemoryEfficiency() float64 {
 	allocated := atomic.LoadInt64(&rm.allocatedBytes)
 	freed := atomic.LoadInt64(&rm.freedBytes)
@@ -1051,7 +978,6 @@ func (rm *ResourceMonitor) GetMemoryEfficiency() float64 {
 	return float64(freed) / float64(allocated) * 100.0
 }
 
-// GetPoolEfficiency returns pool efficiency as a percentage (0-100)
 func (rm *ResourceMonitor) GetPoolEfficiency() float64 {
 	hits := atomic.LoadInt64(&rm.poolHits)
 	misses := atomic.LoadInt64(&rm.poolMisses)
@@ -1063,6 +989,3 @@ func (rm *ResourceMonitor) GetPoolEfficiency() float64 {
 
 	return float64(hits) / float64(total) * 100.0
 }
-
-// Error helper functions are provided in errors.go
-// Security validation is provided by SecurityValidator in security.go

@@ -92,7 +92,9 @@ func CompareJson(json1, json2 string) (bool, error) {
 	return string(bytes1) == string(bytes2), nil
 }
 
-// MergeJson merges two JSON objects
+// MergeJson merges two JSON objects using deep merge strategy
+// For nested objects, it recursively merges keys (union merge)
+// For primitive values and arrays, the value from json2 takes precedence
 func MergeJson(json1, json2 string) (string, error) {
 	decoder := NewNumberPreservingDecoder(true)
 
@@ -116,16 +118,121 @@ func MergeJson(json1, json2 string) (string, error) {
 		return "", fmt.Errorf("second JSON is not an object")
 	}
 
-	for key, value := range obj2 {
-		obj1[key] = value
-	}
+	merged := deepMerge(obj1, obj2)
 
-	result, err := json.Marshal(obj1)
+	result, err := json.Marshal(merged)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal merged result: %v", err)
 	}
 
 	return string(result), nil
+}
+
+// deepMerge recursively merges two JSON values using union merge strategy
+// - If both values are objects, recursively merge their keys
+// - If both values are arrays, merge with deduplication (union)
+// - For all other cases (primitives), value2 takes precedence
+func deepMerge(base, override any) any {
+	baseMap, baseIsMap := base.(map[string]any)
+	overrideMap, overrideIsMap := override.(map[string]any)
+
+	if baseIsMap && overrideIsMap {
+		result := make(map[string]any)
+
+		// First, copy all keys from base
+		for key, value := range baseMap {
+			result[key] = value
+		}
+
+		// Then, merge override keys
+		for key, overrideValue := range overrideMap {
+			if baseValue, exists := baseMap[key]; exists {
+				// Both exist - recursively merge
+				result[key] = deepMerge(baseValue, overrideValue)
+			} else {
+				// Only in override - add directly
+				result[key] = overrideValue
+			}
+		}
+
+		return result
+	}
+
+	baseArray, baseIsArray := base.([]any)
+	overrideArray, overrideIsArray := override.([]any)
+
+	if baseIsArray && overrideIsArray {
+		// Merge arrays with deduplication
+		result := make([]any, 0, len(baseArray)+len(overrideArray))
+		seen := make(map[string]bool)
+
+		// Add elements from base array
+		for _, item := range baseArray {
+			key := arrayItemKey(item)
+			if !seen[key] {
+				seen[key] = true
+				result = append(result, item)
+			}
+		}
+
+		// Add elements from override array
+		for _, item := range overrideArray {
+			key := arrayItemKey(item)
+			if !seen[key] {
+				seen[key] = true
+				result = append(result, item)
+			}
+		}
+
+		return result
+	}
+
+	// For non-map, non-array types, override takes precedence
+	return override
+}
+
+// arrayItemKey generates a unique key for array item deduplication
+func arrayItemKey(item any) string {
+	switch v := item.(type) {
+	case string:
+		return "s:" + v
+	case float64:
+		// JSON numbers are parsed as float64
+		return "n:" + formatNumberForDedup(v)
+	case bool:
+		if v {
+			return "b:true"
+		}
+		return "b:false"
+	case nil:
+		return "null"
+	case map[string]any:
+		// For objects, use JSON marshaling for comparison
+		bytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("obj:%p", v)
+		}
+		return "o:" + string(bytes)
+	case []any:
+		// For arrays, use JSON marshaling for comparison
+		bytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("arr:%p", v)
+		}
+		return "a:" + string(bytes)
+	default:
+		// Fallback for other types
+		return fmt.Sprintf("other:%v", v)
+	}
+}
+
+// formatNumberForDedup formats a number for deduplication key generation
+func formatNumberForDedup(f float64) string {
+	// Check if it's an integer
+	if f == float64(int64(f)) {
+		return fmt.Sprintf("%d", int64(f))
+	}
+	return fmt.Sprintf("%g", f)
 }
 
 // GetTypedWithProcessor retrieves a typed value from JSON using a specific processor
@@ -168,24 +275,24 @@ func GetTypedWithProcessor[T any](processor *Processor, jsonStr, path string, op
 	return finalResult, nil
 }
 
-// handleNullValue handles null values for different target types
+// handleNullValue handles null values for different target types using direct type checking
 func handleNullValue[T any](path string) (T, error) {
 	var zero T
-	targetType := fmt.Sprintf("%T", zero)
 
-	switch targetType {
-	case "string":
+	// Use direct type checking instead of string reflection for better performance
+	switch any(zero).(type) {
+	case string:
 		// Return empty string for null values
 		if result, ok := any("").(T); ok {
 			return result, nil
 		}
-	case "*string":
+	case *string:
 		if result, ok := any((*string)(nil)).(T); ok {
 			return result, nil
 		}
-	case "int", "int8", "int16", "int32", "int64",
-		"uint", "uint8", "uint16", "uint32", "uint64",
-		"float32", "float64", "bool":
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, bool:
 		return zero, nil
 	default:
 		return zero, nil
@@ -314,9 +421,6 @@ func handleLargeNumberConversion[T any](value any, path string) (conversionResul
 	return conversionResult[T]{value: zero, err: nil}, false
 }
 
-// Type conversion helper functions are now in type_conversion.go
-// Deprecated functions removed - use UnifiedTypeConversion or Convert* functions instead
-
 // IteratorControl represents control flags for iteration
 type IteratorControl int
 
@@ -325,9 +429,6 @@ const (
 	IteratorContinue
 	IteratorBreak
 )
-
-// deletedMarker is an alias for DeletedMarker in core.go
-var deletedMarker = DeletedMarker
 
 // Internal path type checking functions
 func isJSONPointerPath(path string) bool {

@@ -96,12 +96,12 @@ func main() {
 
 func demonstratePrettyVsCompact(user interface{}) {
 	// Pretty formatting
-	prettyJSON, _ := json.EncodePretty(user, nil)
+	prettyJSON, _ := json.EncodePretty(user)
 	fmt.Println("   Pretty JSON:")
 	fmt.Println(prettyJSON)
 
 	// Compact formatting
-	compactJSON, _ := json.EncodeCompact(user)
+	compactJSON, _ := json.Encode(user)
 	fmt.Println("\n   Compact JSON:")
 	fmt.Println(compactJSON)
 }
@@ -211,41 +211,39 @@ func demonstrateOmitEmpty() {
 		Port     int    `json:"port"`
 		Username string `json:"username,omitempty"`
 		Password string `json:"password,omitempty"`
-		Database string `json:"database"`
+		Database string `json:"database"` // No omitempty tag
 	}
 
+	// Full config - all fields have values
 	fullConfig := Config{
 		Host:     "localhost",
 		Port:     5432,
 		Username: "admin",
-		Password: "secret",
+		Password: "secret123",
 		Database: "mydb",
 	}
 
+	// Minimal config - some fields are empty
 	minimalConfig := Config{
 		Host:     "localhost",
 		Port:     5432,
-		Database: "mydb",
+		Username: "admin",
+		Password: "", // Empty, will be omitted due to omitempty tag
+		Database: "", // Empty, but no tag so will be included
 	}
 
-	// Without OmitEmpty
-	configWithEmpty := json.DefaultEncodeConfig()
-	configWithEmpty.Pretty = true
-	configWithEmpty.OmitEmpty = false
-	configWithEmpty.IncludeNulls = true
+	config := json.DefaultEncodeConfig()
+	config.Pretty = true
 
-	withEmptyJSON, _ := json.Encode(fullConfig, configWithEmpty)
+	fullJSON, _ := json.Encode(fullConfig, config)
 	fmt.Println("   Full config (all fields shown):")
-	fmt.Println(withEmptyJSON)
+	fmt.Println(fullJSON)
 
-	// With OmitEmpty
-	configOmitEmpty := json.DefaultEncodeConfig()
-	configOmitEmpty.Pretty = true
-	configOmitEmpty.OmitEmpty = true
-
-	omitEmptyJSON, _ := json.Encode(minimalConfig, configOmitEmpty)
-	fmt.Println("\n   Minimal config (empty fields omitted):")
-	fmt.Println(omitEmptyJSON)
+	minimalJSON, _ := json.Encode(minimalConfig, config)
+	fmt.Println("\n   Minimal config (empty fields handled by tags):")
+	fmt.Println("   - Password: omitted (has omitempty tag)")
+	fmt.Println("   - Database: included (no omitempty tag)")
+	fmt.Println(minimalJSON)
 }
 
 func demonstrateCustomEscaping() {
@@ -333,16 +331,20 @@ func demonstrateEncodeMethods() {
 
 	product := Product{ID: 1, Name: "Laptop", Price: 999.99}
 
-	// Encode (compact)
-	compact, _ := json.Encode(product, nil)
-	fmt.Printf("   Encode: %s\n", compact)
+	// Encode (compact by default)
+	compact, _ := json.Encode(product)
+	fmt.Printf("   Encode (compact): %s\n", compact)
 
 	// EncodePretty
-	pretty, _ := json.EncodePretty(product, nil)
+	pretty, _ := json.EncodePretty(product)
 	fmt.Println("\n   EncodePretty:")
 	fmt.Println(pretty)
 
-	// EncodeCompact
-	compact2, _ := json.EncodeCompact(product, nil)
-	fmt.Printf("\n   EncodeCompact: %s\n", compact2)
+	// Encode with custom configuration
+	customCfg := json.DefaultEncodeConfig()
+	customCfg.Pretty = true
+	customCfg.Indent = "    "
+	custom, _ := json.Encode(product, customCfg)
+	fmt.Println("\n   Encode with custom config (4-space indent):")
+	fmt.Println(custom)
 }

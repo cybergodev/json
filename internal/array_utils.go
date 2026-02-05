@@ -7,7 +7,6 @@ import (
 	"strings"
 )
 
-// NormalizeIndex normalizes array index, handling negative indices
 func NormalizeIndex(index, length int) int {
 	if index < 0 {
 		return length + index
@@ -15,15 +14,11 @@ func NormalizeIndex(index, length int) int {
 	return index
 }
 
-// ParseArrayIndex parses array index, supporting negative indices
-// Returns the parsed index and a boolean indicating success
 func ParseArrayIndex(property string) (int, bool) {
-	// Fast path for single digit
 	if len(property) == 1 && property[0] >= '0' && property[0] <= '9' {
 		return int(property[0] - '0'), true
 	}
 
-	// Parse as integer
 	if index, err := strconv.Atoi(property); err == nil {
 		return index, true
 	}
@@ -31,7 +26,6 @@ func ParseArrayIndex(property string) (int, bool) {
 	return 0, false
 }
 
-// ParseSliceComponents parses slice syntax into components
 func ParseSliceComponents(slicePart string) (start, end, step *int, err error) {
 	if slicePart == ":" {
 		return nil, nil, nil, nil
@@ -72,7 +66,6 @@ func ParseSliceComponents(slicePart string) (start, end, step *int, err error) {
 	return start, end, step, nil
 }
 
-// NormalizeSlice normalizes slice bounds
 func NormalizeSlice(start, end, length int) (int, int) {
 	if start < 0 {
 		start = length + start
@@ -93,8 +86,6 @@ func NormalizeSlice(start, end, length int) (int, int) {
 
 	return start, end
 }
-
-
 
 // PerformArraySlice performs Python-style array slicing with optimized capacity calculation
 func PerformArraySlice(arr []any, start, end, step *int) []any {
@@ -138,7 +129,6 @@ func PerformArraySlice(arr []any, start, end, step *int) []any {
 	var result []any
 
 	if stepVal > 0 {
-		// Clamp indices to valid range
 		if startIdx < 0 {
 			startIdx = 0
 		}
@@ -149,7 +139,6 @@ func PerformArraySlice(arr []any, start, end, step *int) []any {
 			return []any{}
 		}
 
-		// Calculate capacity safely to avoid overflow
 		rangeSize := endIdx - startIdx
 		capacity := calculateSliceCapacity(rangeSize, stepVal)
 		if capacity > 0 && capacity <= length {
@@ -162,7 +151,6 @@ func PerformArraySlice(arr []any, start, end, step *int) []any {
 			result = append(result, arr[i])
 		}
 	} else {
-		// Negative step
 		if startIdx >= length {
 			startIdx = length - 1
 		}
@@ -170,7 +158,6 @@ func PerformArraySlice(arr []any, start, end, step *int) []any {
 			startIdx = 0
 		}
 
-		// Calculate capacity for negative step
 		rangeSize := startIdx - endIdx
 		capacity := calculateSliceCapacity(rangeSize, -stepVal)
 		if capacity > 0 && capacity <= length {
@@ -187,25 +174,21 @@ func PerformArraySlice(arr []any, start, end, step *int) []any {
 	return result
 }
 
-// calculateSliceCapacity safely calculates slice capacity to avoid overflow
 func calculateSliceCapacity(rangeSize, step int) int {
 	if rangeSize <= 0 || step <= 0 {
 		return 0
 	}
-	// Avoid overflow by checking if rangeSize is too large
 	if rangeSize > math.MaxInt32 {
 		return 0
 	}
-	return (rangeSize + step - 1) / step
+	return (rangeSize-1)/step + 1
 }
 
-// IsValidIndex checks if an index is valid
 func IsValidIndex(index, length int) bool {
 	normalizedIndex := NormalizeIndex(index, length)
 	return normalizedIndex >= 0 && normalizedIndex < length
 }
 
-// GetSafeArrayElement safely gets an array element with bounds checking
 func GetSafeArrayElement(arr []any, index int) (any, bool) {
 	normalizedIndex := NormalizeIndex(index, len(arr))
 	if normalizedIndex < 0 || normalizedIndex >= len(arr) {

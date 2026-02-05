@@ -160,6 +160,50 @@ modifiedJson, err := json.ForeachReturn(data, func(key any, item *json.IterableV
 })
 ```
 
+### Nested Iteration (Read-only)
+
+```go
+// Recursively iterate through all nested levels
+json.ForeachNested(data, func(key any, item *json.IterableValue, path string) {
+    fmt.Printf("Path: %s, Value: %v\n", path, item.GetAny(""))
+})
+```
+
+### Iteration with Flow Control
+
+```go
+// Iterate with early termination support
+json.ForeachWithPathAndControl(data, "users", func(key any, value any) json.IteratorControl {
+    // Process each item
+    if shouldStop {
+        return json.IteratorBreak  // Stop iteration
+    }
+    return json.IteratorContinue  // Continue to next item
+})
+```
+
+### Iteration with Path Information
+
+```go
+// Iterate with detailed path tracking
+json.ForeachWithPathAndIterator(data, "data.users", func(key any, item *json.IterableValue, currentPath string) json.IteratorControl {
+    name := item.GetString("name")
+    fmt.Printf("User at %s: %s\n", currentPath, name)
+    return json.IteratorContinue
+})
+```
+
+### Complete Foreach Functions List
+
+| Function | Description | Use Case |
+|----------|-------------|----------|
+| `Foreach(data, callback)` | Basic iteration | Simple read-only traversal |
+| `ForeachNested(data, callback)` | Recursive iteration | All nested levels |
+| `ForeachWithPath(data, path, callback)` | Path-specific iteration | Specific JSON subset |
+| `ForeachWithPathAndControl(data, path, callback)` | With flow control | Early termination |
+| `ForeachWithPathAndIterator(data, path, callback)` | With path info | Path tracking |
+| `ForeachReturn(data, callback)` | Modify and return | Data transformation |
+
 ---
 
 ## 🎯 Path Expressions
@@ -213,10 +257,13 @@ json.Get(data, "users{flat:skills}")
 // Load from file
 data, err := json.LoadFromFile("config.json")
 
-// Load from Reader
+// Load from Reader (requires processor)
+processor := json.New()
+defer processor.Close()
+
 file, _ := os.Open("data.json")
 defer file.Close()
-data, err := json.LoadFromReader(file)
+data, err := processor.LoadFromReader(file)
 ```
 
 ### Write Files
@@ -228,9 +275,12 @@ err := json.SaveToFile("output.json", data, true)
 // Save to file (compact format)
 err := json.SaveToFile("output.json", data, false)
 
-// Save to Writer
+// Save to Writer (requires processor)
+processor := json.New()
+defer processor.Close()
+
 var buffer bytes.Buffer
-err := json.SaveToWriter(&buffer, data, true)
+err = processor.SaveToWriter(&buffer, data, true)
 ```
 
 ---
@@ -247,8 +297,11 @@ defer processor.Close()
 // Use custom configuration
 config := &json.Config{
     EnableCache:      true,
-    MaxCacheSize:     5000,
-    MaxJSONSize:      50 * 1024 * 1024, // 50MB
+    MaxCacheSize:     128,                 // Default cache entry count
+    CacheTTL:         5 * time.Minute,     // Default cache TTL
+    MaxJSONSize:      100 * 1024 * 1024,   // 100MB (default)
+    MaxPathDepth:     50,                  // Default path depth
+    MaxConcurrency:   50,                  // Default max concurrency
     EnableValidation: true,
 }
 processor := json.New(config)

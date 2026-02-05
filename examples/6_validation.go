@@ -65,6 +65,7 @@ func demonstrateFormatValidation() {
 		{"Valid string", `"hello"`, true},
 		{"Valid number", `42`, true},
 		{"Valid boolean", `true`, true},
+		{"Empty JSON", `{}`, true},
 		{"Invalid JSON", `{"name": "John",}`, false},
 		{"Empty string", ``, false},
 		{"Missing closing brace", `{"name": "John"`, false},

@@ -291,8 +291,20 @@ func (cm *CacheManager) CleanExpiredCache() {
 	}
 }
 
+// CacheStats represents cache statistics
+type CacheStats struct {
+	Entries          int64
+	TotalMemory      int64
+	HitCount         int64
+	MissCount        int64
+	HitRatio         float64
+	MemoryEfficiency float64
+	Evictions        int64
+	ShardCount       int
+}
+
 // GetStats returns cache statistics
-func (cm *CacheManager) GetStats() map[string]any {
+func (cm *CacheManager) GetStats() CacheStats {
 	totalEntries := int64(0)
 	for _, shard := range cm.shards {
 		shard.mu.RLock()
@@ -316,15 +328,15 @@ func (cm *CacheManager) GetStats() map[string]any {
 		memoryEfficiency = float64(hits) / memoryMB
 	}
 
-	return map[string]any{
-		"hit_count":         hits,
-		"miss_count":        misses,
-		"total_memory":      memory,
-		"hit_ratio":         hitRatio,
-		"memory_efficiency": memoryEfficiency,
-		"evictions":         atomic.LoadInt64(&cm.evictions),
-		"shard_count":       len(cm.shards),
-		"entries":           totalEntries,
+	return CacheStats{
+		Entries:          totalEntries,
+		TotalMemory:      memory,
+		HitCount:         hits,
+		MissCount:        misses,
+		HitRatio:         hitRatio,
+		MemoryEfficiency: memoryEfficiency,
+		Evictions:        atomic.LoadInt64(&cm.evictions),
+		ShardCount:       len(cm.shards),
 	}
 }
 

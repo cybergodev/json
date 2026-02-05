@@ -234,40 +234,17 @@ func calculateHitRatioInternal(hits, misses int64) float64 {
 func (p *Processor) GetStats() Stats {
 	cacheStats := p.cache.GetStats()
 
-	// Extract values from map with type assertions and defaults
-	var cacheSize, cacheMemory, hitCount, missCount int64
-	var hitRatio, memoryEfficiency float64
-
-	if val, ok := cacheStats["entries"].(int64); ok {
-		cacheSize = val
-	}
-	if val, ok := cacheStats["total_memory"].(int64); ok {
-		cacheMemory = val
-	}
-	if val, ok := cacheStats["hit_count"].(int64); ok {
-		hitCount = val
-	}
-	if val, ok := cacheStats["miss_count"].(int64); ok {
-		missCount = val
-	}
-	if val, ok := cacheStats["hit_ratio"].(float64); ok {
-		hitRatio = val
-	}
-	if val, ok := cacheStats["memory_efficiency"].(float64); ok {
-		memoryEfficiency = val
-	}
-
 	return Stats{
-		CacheSize:        cacheSize,
-		CacheMemory:      cacheMemory,
+		CacheSize:        cacheStats.Entries,
+		CacheMemory:      cacheStats.TotalMemory,
 		MaxCacheSize:     p.config.MaxCacheSize,
-		HitCount:         hitCount,
-		MissCount:        missCount,
-		HitRatio:         hitRatio,
+		HitCount:         cacheStats.HitCount,
+		MissCount:        cacheStats.MissCount,
+		HitRatio:         cacheStats.HitRatio,
 		CacheTTL:         p.config.CacheTTL,
 		CacheEnabled:     p.config.EnableCache,
 		IsClosed:         p.IsClosed(),
-		MemoryEfficiency: memoryEfficiency,
+		MemoryEfficiency: cacheStats.MemoryEfficiency,
 		OperationCount:   atomic.LoadInt64(&p.metrics.operationCount),
 		ErrorCount:       atomic.LoadInt64(&p.metrics.errorCount),
 	}
@@ -1614,6 +1591,99 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 	return result, nil
 }
 
+// GetString retrieves a string value from JSON at the specified path
+func (p *Processor) GetString(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
+	return GetTypedWithProcessor[string](p, jsonStr, path, opts...)
+}
+
+// GetInt retrieves an int value from JSON at the specified path
+func (p *Processor) GetInt(jsonStr, path string, opts ...*ProcessorOptions) (int, error) {
+	return GetTypedWithProcessor[int](p, jsonStr, path, opts...)
+}
+
+// GetFloat64 retrieves a float64 value from JSON at the specified path
+func (p *Processor) GetFloat64(jsonStr, path string, opts ...*ProcessorOptions) (float64, error) {
+	return GetTypedWithProcessor[float64](p, jsonStr, path, opts...)
+}
+
+// GetBool retrieves a bool value from JSON at the specified path
+func (p *Processor) GetBool(jsonStr, path string, opts ...*ProcessorOptions) (bool, error) {
+	return GetTypedWithProcessor[bool](p, jsonStr, path, opts...)
+}
+
+// GetArray retrieves an array value from JSON at the specified path
+func (p *Processor) GetArray(jsonStr, path string, opts ...*ProcessorOptions) ([]any, error) {
+	return GetTypedWithProcessor[[]any](p, jsonStr, path, opts...)
+}
+
+// GetObject retrieves an object value from JSON at the specified path
+func (p *Processor) GetObject(jsonStr, path string, opts ...*ProcessorOptions) (map[string]any, error) {
+	return GetTypedWithProcessor[map[string]any](p, jsonStr, path, opts...)
+}
+
+// GetWithDefault retrieves a value from JSON with a default fallback
+func (p *Processor) GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOptions) any {
+	value, err := p.Get(jsonStr, path, opts...)
+	if err != nil || value == nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetStringWithDefault retrieves a string value from JSON with a default fallback
+func (p *Processor) GetStringWithDefault(jsonStr, path, defaultValue string, opts ...*ProcessorOptions) string {
+	value, err := p.GetString(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetIntWithDefault retrieves an int value from JSON with a default fallback
+func (p *Processor) GetIntWithDefault(jsonStr, path string, defaultValue int, opts ...*ProcessorOptions) int {
+	value, err := p.GetInt(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetFloat64WithDefault retrieves a float64 value from JSON with a default fallback
+func (p *Processor) GetFloat64WithDefault(jsonStr, path string, defaultValue float64, opts ...*ProcessorOptions) float64 {
+	value, err := p.GetFloat64(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetBoolWithDefault retrieves a bool value from JSON with a default fallback
+func (p *Processor) GetBoolWithDefault(jsonStr, path string, defaultValue bool, opts ...*ProcessorOptions) bool {
+	value, err := p.GetBool(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetArrayWithDefault retrieves an array value from JSON with a default fallback
+func (p *Processor) GetArrayWithDefault(jsonStr, path string, defaultValue []any, opts ...*ProcessorOptions) []any {
+	value, err := p.GetArray(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
+// GetObjectWithDefault retrieves an object value from JSON with a default fallback
+func (p *Processor) GetObjectWithDefault(jsonStr, path string, defaultValue map[string]any, opts ...*ProcessorOptions) map[string]any {
+	value, err := p.GetObject(jsonStr, path, opts...)
+	if err != nil {
+		return defaultValue
+	}
+	return value
+}
+
 // GetMultiple retrieves multiple values from JSON using multiple path expressions
 func (p *Processor) GetMultiple(jsonStr string, paths []string, opts ...*ProcessorOptions) (map[string]any, error) {
 	if err := p.checkClosed(); err != nil {
@@ -1913,7 +1983,8 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, opts ...
 	// Apply all updates on the copy
 	var lastError error
 	successCount := 0
-	failedPaths := make([]string, 0)
+	// Pre-allocate with capacity for potential failures (typically few)
+	failedPaths := make([]string, 0, min(len(updates), 10))
 
 	for path, value := range updates {
 		err := p.setValueAtPathWithOptions(dataCopy, path, value, createPaths)
@@ -1974,6 +2045,28 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, opts ...
 	}
 
 	return string(resultBytes), nil
+}
+
+// SetWithAdd sets a value with automatic path creation
+// Returns:
+//   - On success: modified JSON string and nil error
+//   - On failure: original unmodified JSON string and error information
+func (p *Processor) SetWithAdd(jsonStr, path string, value any, opts ...*ProcessorOptions) (string, error) {
+	addOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
+		o.CreatePaths = true
+	})
+	return p.Set(jsonStr, path, value, addOpts)
+}
+
+// SetMultipleWithAdd sets multiple values with automatic path creation
+// Returns:
+//   - On success: modified JSON string and nil error
+//   - On failure: original unmodified JSON string and error information
+func (p *Processor) SetMultipleWithAdd(jsonStr string, updates map[string]any, opts ...*ProcessorOptions) (string, error) {
+	addOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
+		o.CreatePaths = true
+	})
+	return p.SetMultiple(jsonStr, updates, addOpts)
 }
 
 // Delete removes a value from JSON at the specified path
@@ -2053,6 +2146,18 @@ func (p *Processor) Delete(jsonStr, path string, opts ...*ProcessorOptions) (str
 	}
 
 	return string(resultBytes), nil
+}
+
+// DeleteWithCleanNull removes a value from JSON and cleans up null values
+// Returns:
+//   - On success: modified JSON string and nil error
+//   - On failure: original unmodified JSON string and error information
+func (p *Processor) DeleteWithCleanNull(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
+	cleanupOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
+		o.CleanupNulls = true
+		o.CompactArrays = true
+	})
+	return p.Delete(jsonStr, path, cleanupOpts)
 }
 
 // ProcessBatch processes multiple operations in a single batch
@@ -2205,20 +2310,6 @@ func IsInteger(s string) bool {
 	return err == nil
 }
 
-// NormalizeIndex normalizes an array index (handles negative indices)
-func NormalizeIndex(index, length int) int {
-	if index < 0 {
-		return length + index
-	}
-	return index
-}
-
-// IsValidIndex checks if an index is valid for an array of given length
-func IsValidIndex(index, length int) bool {
-	normalizedIndex := NormalizeIndex(index, length)
-	return normalizedIndex >= 0 && normalizedIndex < length
-}
-
 // ClampIndex clamps an index to valid bounds for an array
 func ClampIndex(index, length int) int {
 	if index < 0 {
@@ -2238,16 +2329,12 @@ func SanitizeKey(key string) string {
 
 // EscapeJSONPointer escapes special characters for JSON Pointer
 func EscapeJSONPointer(s string) string {
-	s = strings.ReplaceAll(s, "~", "~0")
-	s = strings.ReplaceAll(s, "/", "~1")
-	return s
+	return internal.EscapeJSONPointer(s)
 }
 
 // UnescapeJSONPointer unescapes JSON Pointer special characters
 func UnescapeJSONPointer(s string) string {
-	s = strings.ReplaceAll(s, "~1", "/")
-	s = strings.ReplaceAll(s, "~0", "~")
-	return s
+	return internal.UnescapeJSONPointer(s)
 }
 
 // IsContainer checks if the data is a container type (map or slice)
@@ -2288,7 +2375,8 @@ func CreateEmptyContainer(containerType string) any {
 
 // mergeObjects merges two objects, with the second object taking precedence (internal use)
 func mergeObjects(obj1, obj2 map[string]any) map[string]any {
-	result := make(map[string]any)
+	// Pre-allocate with combined size to avoid rehashing
+	result := make(map[string]any, len(obj1)+len(obj2))
 
 	// Copy from first object
 	for k, v := range obj1 {
@@ -2305,7 +2393,8 @@ func mergeObjects(obj1, obj2 map[string]any) map[string]any {
 
 // flattenArray flattens a nested array structure (internal use)
 func flattenArray(arr []any) []any {
-	var result []any
+	// Pre-allocate with at least the input size (might grow with nested arrays)
+	result := make([]any, 0, len(arr))
 
 	for _, item := range arr {
 		if subArr, ok := item.([]any); ok {
@@ -2320,8 +2409,9 @@ func flattenArray(arr []any) []any {
 
 // uniqueArray removes duplicate values from an array (internal use)
 func uniqueArray(arr []any) []any {
-	seen := make(map[string]bool)
-	var result []any
+	// Pre-allocate map and result with estimated sizes
+	seen := make(map[string]bool, len(arr))
+	result := make([]any, 0, len(arr))
 
 	for _, item := range arr {
 		key := fmt.Sprintf("%v", item)
@@ -2378,11 +2468,6 @@ func (u *processorUtils) ConvertToNumber(value any) (float64, error) {
 		return 0, fmt.Errorf("cannot convert %T to number", value)
 	}
 }
-
-// ============================================================================
-// Note: modularProcessor removed - over-engineered unused code (537 lines)
-// Use standard Processor for all operations
-// ============================================================================
 
 // RecursiveProcessor implements true recursive processing for all operations
 type RecursiveProcessor struct {
@@ -2653,7 +2738,6 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 	case []any:
 		// Determine if this should be a distributed operation based on actual data structure
 		// A distributed operation is needed when we have nested arrays that need individual processing
-		// Note: IsDistributed field was removed as it was never used
 		shouldUseDistributed := urp.shouldUseDistributedArrayOperation(container)
 
 		if shouldUseDistributed {
@@ -2694,7 +2778,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 						case OpSet:
 							targetArray[index] = value
 						case OpDelete:
-							targetArray[index] = deletedMarker
+							targetArray[index] = DeletedMarker
 						}
 					} else {
 						// Recursively process next segment
@@ -2744,7 +2828,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 				return value, nil
 			case OpDelete:
 				// Mark for deletion (will be cleaned up later)
-				container[index] = deletedMarker
+				container[index] = DeletedMarker
 				return nil, nil
 			}
 		}
@@ -2791,7 +2875,6 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 	switch container := data.(type) {
 	case []any:
 		// Check if this should be a distributed operation
-		// Note: IsDistributed field was removed as it was never used
 		shouldUseDistributed := urp.shouldUseDistributedArrayOperation(container)
 
 		if shouldUseDistributed {
@@ -2915,7 +2998,7 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 			case OpDelete:
 				// Mark elements in slice for deletion
 				for i := start; i < end && i < len(container); i++ {
-					container[i] = deletedMarker
+					container[i] = DeletedMarker
 				}
 				return nil, nil
 			}
@@ -3231,7 +3314,7 @@ func (urp *RecursiveProcessor) handleWildcardSegmentUnified(data any, segment in
 			case OpDelete:
 				// Mark all array elements for deletion
 				for i := range container {
-					container[i] = deletedMarker
+					container[i] = DeletedMarker
 				}
 				return nil, nil
 			}
@@ -3468,7 +3551,7 @@ func (urp *RecursiveProcessor) applySliceDeletion(arr []any, sliceSegment intern
 
 	// Mark elements in slice for deletion
 	for i := start; i < end && i < len(arr); i++ {
-		arr[i] = deletedMarker
+		arr[i] = DeletedMarker
 	}
 
 	return nil

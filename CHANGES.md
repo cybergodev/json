@@ -2,8 +2,71 @@
 
 All notable changes to the cybergodev/json library will be documented in this file.
 
-[//]: # (The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),)
-[//]: # (and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html/))
+[//]: # (The format is based on [Keep a Changelog]&#40;https://keepachangelog.com/en/1.0.0/&#41;,)
+[//]: # (and this project adheres to [Semantic Versioning]&#40;https://semver.org/spec/v2.0.0.html/&#41;)
+
+---
+
+## v1.1.0 - Comprehensive Enhancement & Quality Assurance (2026-02-05)
+
+### Added
+- **Print Methods**: `json.Print()` and `json.PrintPretty()` for direct stdout output with smart JSON detection
+- **Package-Level Convenience Methods**: `GetStats()`, `GetHealthStatus()`, `ClearCache()`, `WarmupCache()`, `ProcessBatch()`
+- **Advanced Encoding Methods**: `EncodeStream()`, `EncodeBatch()`, `EncodeFields()`
+- **Buffer Methods**: `CompactBuffer()`, `IndentBuffer()`, `HTMLEscapeBuffer()` with processor options support
+- **Test Coverage**: 6 new comprehensive test files with 82+ test functions and 18+ benchmarks
+- **Chinese Documentation**: Complete README_zh-CN.md translation with feature parity
+
+### Changed
+- **MergeJson Behavior**: Implemented deep merge for nested objects and union merge with deduplication for arrays
+- **SaveToFile Behavior**: Now preprocesses string/[]byte inputs to prevent double-encoding (unified with package-level)
+- **LoadFromFile Return Type**: Returns `(string, error)` instead of `(any, error)` for consistency
+  - Use `LoadFromFileAsData()` for previous `(any, error)` behavior
+- **Cache Statistics**: `GetStats()` returns `CacheStats` struct instead of `map[string]any` (~40% faster)
+- **Path Parsing**: Added fast path for simple paths (~50% fewer allocations)
+
+### Fixed
+- **Security (Critical)**:
+  - JSON Pointer double-unescape vulnerability (single-pass parsing)
+  - Integer overflow in slice capacity calculation
+  - Email validation regex DoS vulnerability (RFC-compliant validation)
+  - Race condition in resource monitor leak detection (atomic CAS loop)
+- **Encoding Options**: Fixed `EscapeHTML`, `FloatPrecision`, `EscapeUnicode`, `EscapeNewlines`, `EscapeTabs`, `EscapeSlash` not working
+- **Documentation**: Fixed inaccurate examples, removed non-existent methods, corrected config defaults
+- **Examples**: Fixed `examples/9_iterator_functions.go` IterableValue API usage
+
+### Removed
+- **EncodeCompact()**: Redundant function (use `Encode()` which defaults to compact)
+- **OmitEmpty Config**: Removed `OmitEmpty` and `OmitEmptyMode` fields (use struct tags `omitempty`)
+- **NewCompactConfig()**: Helper function (use `DefaultEncodeConfig()`)
+- **ProcessorConfig**: Deprecated configuration struct (use `Config` instead)
+- **DefaultProcessorConfig()**: Deprecated function (use `DefaultConfig()` instead)
+- **NewIterableValueWithIterator()**: Deprecated function (use `NewIterableValue()` instead)
+- **deletedMarker variable**: Unused local variable (use `DeletedMarker` constant)
+
+### Performance Improvements
+- **Cache Stats**: ~40% faster with struct return type
+- **Simple Path Parsing**: ~50% fewer allocations
+- **Null Value Handling**: ~60% faster with direct type checking
+- **Path Validation**: Pre-compiled regex pattern for array index validation
+
+### Security Enhancements
+- Enhanced path traversal detection (consecutive dots, partial double encoding)
+- Fixed COM0/LPT0 Windows device validation
+- Improved Alternate Data Streams detection
+- Email validation with RFC-compliant length limits
+
+### Test Results
+- **Tests**: 600+ test runs (150+ total functions)
+- **Benchmarks**: 35+ benchmarks
+- **Race Detection**: All tests pass with `-race` flag
+
+### Backward Compatibility
+- **Minor Breaking Changes**:
+  - `EncodeCompact()` → `Encode()` (same behavior)
+  - `OmitEmpty` config → struct tags `omitempty`
+  - `LoadFromFile()` return type changed (use `LoadFromFileAsData()` for old behavior)
+  - `SaveToFile()` string preprocessing behavior (more intuitive, prevents double-encoding)
 
 ---
 
