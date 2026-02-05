@@ -201,6 +201,7 @@ json.Foreach(data, func (key any, item *json.IterableValue) {
 // 高级迭代变体
 json.ForeachNested(data, callback)                            // 递归遍历所有嵌套层级
 json.ForeachWithPath(data, "data.users", callback)            // 迭代特定路径
+json.ForeachReturn(data, callback)                            // 修改并返回修改后的 JSON
 
 // 带控制流的迭代 - 支持提前终止
 json.ForeachWithPathAndControl(data, "data.users", func(key any, value any) json.IteratorControl {
@@ -210,6 +211,21 @@ json.ForeachWithPathAndControl(data, "data.users", func(key any, value any) json
     }
     return json.IteratorContinue  // 继续下一项
 })
+
+// 带路径信息跟踪的迭代
+json.ForeachWithPathAndIterator(data, "data.users", func(key any, item *json.IterableValue, currentPath string) json.IteratorControl {
+    name := item.GetString("name")
+    fmt.Printf("用户在 %s: %s\n", currentPath, name)
+    return json.IteratorContinue
+})
+
+// 完整的 Foreach 函数列表：
+// - Foreach(data, callback) - 基础迭代
+// - ForeachNested(data, callback) - 递归迭代
+// - ForeachWithPath(data, path, callback) - 特定路径迭代
+// - ForeachWithPathAndControl(data, path, callback) - 带控制流
+// - ForeachWithPathAndIterator(data, path, callback) - 带路径信息
+// - ForeachReturn(data, callback) - 修改并返回
 ```
 
 ### JSON 编码与格式化
@@ -235,13 +251,75 @@ pretty, err := json.FormatPretty(jsonStr)
 compact, err := json.FormatCompact(jsonStr)
 
 // 打印操作（直接输出到标准输出）
+// 智能 JSON 检测：string/[]byte 输入会先检查有效性
 json.Print(data)           // 以压缩格式打印 JSON 到标准输出
 json.PrintPretty(data)     // 以美化格式打印 JSON 到标准输出
+
+// 打印示例
+data := map[string]any{
+    "monitoring": true,
+    "database": map[string]any{
+        "name": "myDb",
+        "port": "5432",
+        "ssl":  true,
+    },
+}
+
+// 打印 Go 值为压缩 JSON
+json.Print(data)
+// 输出: {"monitoring":true,"database":{"name":"myDb","port":"5432","ssl":true}}
+
+// 打印 Go 值为美化 JSON
+json.PrintPretty(data)
+// 输出:
+// {
+//   "database": {
+//     "name": "myDb",
+//     "port": "5432",
+//     "ssl": true
+//   },
+//   "monitoring": true
+// }
+
+// 直接打印 JSON 字符串（无双重编码）
+jsonStr := `{"name":"John","age":30}`
+json.Print(jsonStr)
+// 输出: {"name":"John","age":30}
 
 // 缓冲区操作（encoding/json 兼容）
 json.Compact(dst, src)
 json.Indent(dst, src, prefix, indent)
 json.HTMLEscape(dst, src)
+
+// 带处理器选项的高级缓冲区操作
+json.CompactBuffer(dst, src, opts)   // 使用自定义处理器选项
+json.IndentBuffer(dst, src, prefix, indent, opts)
+json.HTMLEscapeBuffer(dst, src, opts)
+
+// 高级编码方法
+// EncodeStream - 将多个值编码为 JSON 数组流
+users := []map[string]any{
+    {"name": "Alice", "age": 25},
+    {"name": "Bob", "age": 30},
+}
+stream, err := json.EncodeStream(users, false)  // 压缩格式
+
+// EncodeBatch - 将多个键值对编码为 JSON 对象
+pairs := map[string]any{
+    "user1": map[string]any{"name": "Alice", "age": 25},
+    "user2": map[string]any{"name": "Bob", "age": 30},
+}
+batch, err := json.EncodeBatch(pairs, true)  // 美化格式
+
+// EncodeFields - 仅编码结构体的指定字段
+type User struct {
+    Name  string `json:"name"`
+    Age   int    `json:"age"`
+    Email string `json:"email"`
+}
+user := User{Name: "Alice", Age: 25, Email: "alice@example.com"}
+fields, err := json.EncodeFields(user, []string{"name", "age"}, true)
+// 输出: {"name":"Alice","age":25}
 ```
 
 ### 文件操作
@@ -307,6 +385,37 @@ warmupResult, err := processor.WarmupCache(jsonStr, paths)
 // 全局处理器管理
 json.SetGlobalProcessor(processor)
 json.ShutdownGlobalProcessor()
+```
+
+### 包级便捷方法
+
+库提供了使用默认处理器的便捷包级方法：
+
+```go
+// 性能监控（使用默认处理器）
+stats := json.GetStats()
+fmt.Printf("总操作数: %d\n", stats.OperationCount)
+fmt.Printf("缓存命中率: %.2f%%\n", stats.HitRatio*100)
+fmt.Printf("缓存内存使用: %d bytes\n", stats.CacheMemory)
+
+// 健康监控
+health := json.GetHealthStatus()
+fmt.Printf("系统健康状态: %v\n", health.Healthy)
+
+// 缓存管理
+json.ClearCache()  // 清除所有缓存数据
+
+// 缓存预热 - 预加载常用路径
+paths := []string{"user.name", "user.age", "user.profile"}
+warmupResult, err := json.WarmupCache(jsonStr, paths)
+
+// 批量处理 - 高效执行多个操作
+operations := []json.BatchOperation{
+    {Type: "get", Path: "user.name"},
+    {Type: "set", Path: "user.age", Value: 25},
+    {Type: "delete", Path: "user.temp"},
+}
+results, err := json.ProcessBatch(operations)
 ```
 
 ### 复杂路径示例
@@ -383,17 +492,17 @@ defer processor1.Close()
 customConfig := &json.Config{
     // 缓存设置
     EnableCache:      true,             // 启用缓存
-    MaxCacheSize:     5000,             // 缓存条目数
-    CacheTTL:         10 * time.Minute, // 缓存过期时间
+    MaxCacheSize:     128,              // 缓存条目数（默认值）
+    CacheTTL:         5 * time.Minute,  // 缓存过期时间（默认值）
 
     // 大小限制
-    MaxJSONSize:      50 * 1024 * 1024, // 50MB JSON 大小限制
-    MaxPathDepth:     200,              // 路径深度限制
-    MaxBatchSize:     2000,             // 批量操作大小限制
+    MaxJSONSize:      100 * 1024 * 1024, // 100MB JSON 大小限制（默认值）
+    MaxPathDepth:     50,                // 路径深度限制（默认值）
+    MaxBatchSize:     2000,              // 批量操作大小限制
 
     // 并发设置
-    MaxConcurrency:   100,   // 最大并发数
-    ParallelThreshold: 20,   // 并行处理阈值
+    MaxConcurrency:   50,   // 最大并发数（默认值）
+    ParallelThreshold: 10,   // 并行处理阈值（默认值）
 
     // 处理选项
     EnableValidation: true,  // 启用验证

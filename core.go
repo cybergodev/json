@@ -583,32 +583,6 @@ type OperationContext struct {
 	CreatePaths bool
 }
 
-// ProcessorConfig holds configuration for the processor
-type ProcessorConfig struct {
-	EnableCache      bool
-	EnableMetrics    bool
-	MaxConcurrency   int
-	Timeout          time.Duration
-	RateLimitEnabled bool
-	RateLimitRPS     int
-	MaxDepth         int
-	MaxPathLength    int
-}
-
-// DefaultProcessorConfig returns a default configuration
-func DefaultProcessorConfig() *ProcessorConfig {
-	return &ProcessorConfig{
-		EnableCache:      true,
-		EnableMetrics:    true,
-		MaxConcurrency:   100,
-		Timeout:          30 * time.Second,
-		RateLimitEnabled: false,
-		RateLimitRPS:     1000,
-		MaxDepth:         100,
-		MaxPathLength:    1000,
-	}
-}
-
 // CacheKey represents a cache key for operations
 type CacheKey struct {
 	Operation string

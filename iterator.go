@@ -97,11 +97,6 @@ func NewIterableValue(data any) *IterableValue {
 	return &IterableValue{data: data}
 }
 
-// NewIterableValueWithIterator creates an IterableValue with an iterator
-// Deprecated: Use NewIterableValue instead - iterator reference is not needed
-func NewIterableValueWithIterator(data any, processor *Processor, iterator *Iterator) *IterableValue {
-	return &IterableValue{data: data}
-}
 
 // GetString returns a string value by key or path
 // Supports path navigation with dot notation and array indices (e.g., "user.address.city" or "users[0].name")

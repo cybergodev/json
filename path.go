@@ -1268,10 +1268,8 @@ func (p *Processor) deepCopyReflection(data any) any {
 }
 
 func (p *Processor) escapeJSONPointer(segment string) string {
-	// JSON Pointer escaping: ~ becomes ~0, / becomes ~1
-	segment = strings.ReplaceAll(segment, "~", "~0")
-	segment = strings.ReplaceAll(segment, "/", "~1")
-	return segment
+	// Use the centralized JSON pointer escaping helper
+	return EscapeJSONPointer(segment)
 }
 
 func (p *Processor) normalizePathSeparators(path string) string {

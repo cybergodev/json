@@ -5,7 +5,31 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// EscapeJSONPointer escapes special characters for JSON Pointer
+func EscapeJSONPointer(s string) string {
+	s = strings.ReplaceAll(s, "~", "~0")
+	s = strings.ReplaceAll(s, "/", "~1")
+	return s
+}
+
+// UnescapeJSONPointer unescapes JSON Pointer special characters
+func UnescapeJSONPointer(s string) string {
+	s = strings.ReplaceAll(s, "~1", "/")
+	s = strings.ReplaceAll(s, "~0", "~")
+	return s
+}
+
+var (
+	arrayPattern     *regexp.Regexp
+	arrayPatternOnce sync.Once
+)
+
+func initArrayPattern() {
+	arrayPattern = regexp.MustCompile(`\[(-?\d+)`)
+}
 
 // PathSegment represents a single segment in a JSON path
 type PathSegment struct {
@@ -438,9 +462,8 @@ func parseJSONPointer(path string) ([]PathSegment, error) {
 
 	segments := make([]PathSegment, 0, len(parts))
 	for _, part := range parts {
-		// Unescape JSON Pointer special characters
-		part = strings.ReplaceAll(part, "~1", "/")
-		part = strings.ReplaceAll(part, "~0", "~")
+		// Unescape JSON Pointer special characters using helper
+		part = UnescapeJSONPointer(part)
 
 		// Try to parse as numeric index
 		if index, err := strconv.Atoi(part); err == nil {
@@ -486,7 +509,7 @@ func ValidatePath(path string) error {
 	}
 
 	// Validate array indices are within reasonable range
-	arrayPattern := regexp.MustCompile(`\[(-?\d+)`)
+	arrayPatternOnce.Do(initArrayPattern)
 	matches := arrayPattern.FindAllStringSubmatch(path, -1)
 	for _, match := range matches {
 		if len(match) > 1 {
@@ -603,3 +626,25 @@ func (ps PathSegment) GetArrayIndex(arrayLength int) (int, error) {
 
 	return index, nil
 }
+
+// ParseAndValidateArrayIndex parses a string as an array index and validates it against array length
+// Returns the index and true if successful, 0 and false otherwise
+func ParseAndValidateArrayIndex(s string, arrayLength int) (int, bool) {
+	index, ok := ParseArrayIndex(s)
+	if !ok {
+		return 0, false
+	}
+
+	// Handle negative indices
+	if index < 0 {
+		index = arrayLength + index
+	}
+
+	// Validate bounds
+	if index < 0 || index >= arrayLength {
+		return 0, false
+	}
+
+	return index, true
+}
+

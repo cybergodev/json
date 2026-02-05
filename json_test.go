@@ -223,7 +223,8 @@ func TestComprehensiveJSONOperations(t *testing.T) {
 			helper.AssertNoError(err)
 
 			iterator := NewIterator(processor, data, DefaultOptions())
-			iterableValue := NewIterableValueWithIterator(data, processor, iterator)
+			_ = iterator // Keep iterator for potential future use
+			iterableValue := NewIterableValue(data)
 
 			// Test existence checks
 			helper.AssertTrue(iterableValue.Exists("users"))
@@ -991,7 +992,7 @@ func TestConfigConstantsComprehensive(t *testing.T) {
 	})
 
 	t.Run("ConfigPresets", func(t *testing.T) {
-		config := DefaultProcessorConfig()
+		config := DefaultConfig()
 		helper.AssertNotNil(config)
 
 		highSec := HighSecurityConfig()

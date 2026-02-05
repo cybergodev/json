@@ -154,8 +154,10 @@ func isZeroValue(v any) bool {
 	switch val := v.(type) {
 	case string:
 		return val == ""
-	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool:
-		return val == 0 || val == false
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		return val == 0
+	case bool:
+		return !val
 	case []any:
 		return len(val) == 0
 	case map[string]any:

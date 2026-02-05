@@ -113,7 +113,7 @@ defer processor.Close()
 
 // High security settings:
 // - MaxJSONSize: 5MB (more restrictive)
-// - MaxPathDepth: 50 (from DefaultConfig)
+// - MaxPathDepth: 20 (more restrictive than DefaultConfig's 50)
 // - MaxNestingDepthSecurity: 20 (very restrictive)
 // - MaxObjectKeys: 1,000 (fewer keys)
 // - MaxArrayElements: 1,000 (fewer elements)

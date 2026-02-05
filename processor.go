@@ -16,9 +16,6 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// deletedMarker is a local reference to the DeletedMarker from core.go
-var deletedMarker = DeletedMarker
-
 // Processor is the main JSON processing engine with thread safety and performance optimization
 type Processor struct {
 	config          *Config
@@ -1986,7 +1983,8 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, opts ...
 	// Apply all updates on the copy
 	var lastError error
 	successCount := 0
-	failedPaths := make([]string, 0)
+	// Pre-allocate with capacity for potential failures (typically few)
+	failedPaths := make([]string, 0, min(len(updates), 10))
 
 	for path, value := range updates {
 		err := p.setValueAtPathWithOptions(dataCopy, path, value, createPaths)
@@ -2312,20 +2310,6 @@ func IsInteger(s string) bool {
 	return err == nil
 }
 
-// NormalizeIndex normalizes an array index (handles negative indices)
-func NormalizeIndex(index, length int) int {
-	if index < 0 {
-		return length + index
-	}
-	return index
-}
-
-// IsValidIndex checks if an index is valid for an array of given length
-func IsValidIndex(index, length int) bool {
-	normalizedIndex := NormalizeIndex(index, length)
-	return normalizedIndex >= 0 && normalizedIndex < length
-}
-
 // ClampIndex clamps an index to valid bounds for an array
 func ClampIndex(index, length int) int {
 	if index < 0 {
@@ -2345,16 +2329,12 @@ func SanitizeKey(key string) string {
 
 // EscapeJSONPointer escapes special characters for JSON Pointer
 func EscapeJSONPointer(s string) string {
-	s = strings.ReplaceAll(s, "~", "~0")
-	s = strings.ReplaceAll(s, "/", "~1")
-	return s
+	return internal.EscapeJSONPointer(s)
 }
 
 // UnescapeJSONPointer unescapes JSON Pointer special characters
 func UnescapeJSONPointer(s string) string {
-	s = strings.ReplaceAll(s, "~1", "/")
-	s = strings.ReplaceAll(s, "~0", "~")
-	return s
+	return internal.UnescapeJSONPointer(s)
 }
 
 // IsContainer checks if the data is a container type (map or slice)
@@ -2395,7 +2375,8 @@ func CreateEmptyContainer(containerType string) any {
 
 // mergeObjects merges two objects, with the second object taking precedence (internal use)
 func mergeObjects(obj1, obj2 map[string]any) map[string]any {
-	result := make(map[string]any)
+	// Pre-allocate with combined size to avoid rehashing
+	result := make(map[string]any, len(obj1)+len(obj2))
 
 	// Copy from first object
 	for k, v := range obj1 {
@@ -2412,7 +2393,8 @@ func mergeObjects(obj1, obj2 map[string]any) map[string]any {
 
 // flattenArray flattens a nested array structure (internal use)
 func flattenArray(arr []any) []any {
-	var result []any
+	// Pre-allocate with at least the input size (might grow with nested arrays)
+	result := make([]any, 0, len(arr))
 
 	for _, item := range arr {
 		if subArr, ok := item.([]any); ok {
@@ -2427,8 +2409,9 @@ func flattenArray(arr []any) []any {
 
 // uniqueArray removes duplicate values from an array (internal use)
 func uniqueArray(arr []any) []any {
-	seen := make(map[string]bool)
-	var result []any
+	// Pre-allocate map and result with estimated sizes
+	seen := make(map[string]bool, len(arr))
+	result := make([]any, 0, len(arr))
 
 	for _, item := range arr {
 		key := fmt.Sprintf("%v", item)
@@ -2795,7 +2778,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 						case OpSet:
 							targetArray[index] = value
 						case OpDelete:
-							targetArray[index] = deletedMarker
+							targetArray[index] = DeletedMarker
 						}
 					} else {
 						// Recursively process next segment
@@ -2845,7 +2828,7 @@ func (urp *RecursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 				return value, nil
 			case OpDelete:
 				// Mark for deletion (will be cleaned up later)
-				container[index] = deletedMarker
+				container[index] = DeletedMarker
 				return nil, nil
 			}
 		}
@@ -3015,7 +2998,7 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 			case OpDelete:
 				// Mark elements in slice for deletion
 				for i := start; i < end && i < len(container); i++ {
-					container[i] = deletedMarker
+					container[i] = DeletedMarker
 				}
 				return nil, nil
 			}
@@ -3331,7 +3314,7 @@ func (urp *RecursiveProcessor) handleWildcardSegmentUnified(data any, segment in
 			case OpDelete:
 				// Mark all array elements for deletion
 				for i := range container {
-					container[i] = deletedMarker
+					container[i] = DeletedMarker
 				}
 				return nil, nil
 			}
@@ -3568,7 +3551,7 @@ func (urp *RecursiveProcessor) applySliceDeletion(arr []any, sliceSegment intern
 
 	// Mark elements in slice for deletion
 	for i := start; i < end && i < len(arr); i++ {
-		arr[i] = deletedMarker
+		arr[i] = DeletedMarker
 	}
 
 	return nil

@@ -201,6 +201,7 @@ json.Foreach(data, func (key any, item *json.IterableValue) {
 // Advanced iteration variants
 json.ForeachNested(data, callback)                            // Recursively iterate all nested levels
 json.ForeachWithPath(data, "data.users", callback)            // Iterate specific path
+json.ForeachReturn(data, callback)                            // Modify and return modified JSON
 
 // Iterate with control flow - supports early termination
 json.ForeachWithPathAndControl(data, "data.users", func(key any, value any) json.IteratorControl {
@@ -210,6 +211,21 @@ json.ForeachWithPathAndControl(data, "data.users", func(key any, value any) json
     }
     return json.IteratorContinue  // Continue to next item
 })
+
+// Iterate with path information tracking
+json.ForeachWithPathAndIterator(data, "data.users", func(key any, item *json.IterableValue, currentPath string) json.IteratorControl {
+    name := item.GetString("name")
+    fmt.Printf("User at %s: %s\n", currentPath, name)
+    return json.IteratorContinue
+})
+
+// Complete Foreach functions list:
+// - Foreach(data, callback) - Basic iteration
+// - ForeachNested(data, callback) - Recursive iteration
+// - ForeachWithPath(data, path, callback) - Path-specific iteration
+// - ForeachWithPathAndControl(data, path, callback) - With flow control
+// - ForeachWithPathAndIterator(data, path, callback) - With path info
+// - ForeachReturn(data, callback) - Modify and return
 ```
 
 ### JSON Encoding & Formatting
@@ -235,13 +251,75 @@ pretty, err := json.FormatPretty(jsonStr)
 compact, err := json.FormatCompact(jsonStr)
 
 // Print operations (direct output to stdout)
+// Smart JSON detection: string/[]byte inputs are checked for validity first
 json.Print(data)           // Print compact JSON to stdout
 json.PrintPretty(data)     // Print pretty JSON to stdout
+
+// Print examples
+data := map[string]any{
+    "monitoring": true,
+    "database": map[string]any{
+        "name": "myDb",
+        "port": "5432",
+        "ssl":  true,
+    },
+}
+
+// Print Go value as compact JSON
+json.Print(data)
+// Output: {"monitoring":true,"database":{"name":"myDb","port":"5432","ssl":true}}
+
+// Print Go value as pretty JSON
+json.PrintPretty(data)
+// Output:
+// {
+//   "database": {
+//     "name": "myDb",
+//     "port": "5432",
+//     "ssl": true
+//   },
+//   "monitoring": true
+// }
+
+// Print JSON string directly (no double-encoding)
+jsonStr := `{"name":"John","age":30}`
+json.Print(jsonStr)
+// Output: {"name":"John","age":30}
 
 // Buffer operations (encoding/json compatible)
 json.Compact(dst, src)
 json.Indent(dst, src, prefix, indent)
 json.HTMLEscape(dst, src)
+
+// Advanced buffer operations with processor options
+json.CompactBuffer(dst, src, opts)   // With custom processor options
+json.IndentBuffer(dst, src, prefix, indent, opts)
+json.HTMLEscapeBuffer(dst, src, opts)
+
+// Advanced encoding methods
+// Encode stream - encode multiple values as JSON array stream
+users := []map[string]any{
+    {"name": "Alice", "age": 25},
+    {"name": "Bob", "age": 30},
+}
+stream, err := json.EncodeStream(users, false)  // compact format
+
+// Encode batch - encode multiple key-value pairs as JSON object
+pairs := map[string]any{
+    "user1": map[string]any{"name": "Alice", "age": 25},
+    "user2": map[string]any{"name": "Bob", "age": 30},
+}
+batch, err := json.EncodeBatch(pairs, true)  // pretty format
+
+// Encode fields - encode only specified fields from a struct
+type User struct {
+    Name  string `json:"name"`
+    Age   int    `json:"age"`
+    Email string `json:"email"`
+}
+user := User{Name: "Alice", Age: 25, Email: "alice@example.com"}
+fields, err := json.EncodeFields(user, []string{"name", "age"}, true)
+// Output: {"name":"Alice","age":25}
 ```
 
 ### File Operations
@@ -307,6 +385,37 @@ warmupResult, err := processor.WarmupCache(jsonStr, paths)
 // Global processor management
 json.SetGlobalProcessor(processor)
 json.ShutdownGlobalProcessor()
+```
+
+### Package-Level Convenience Methods
+
+The library provides convenient package-level methods that use a default processor:
+
+```go
+// Performance monitoring (uses default processor)
+stats := json.GetStats()
+fmt.Printf("Total operations: %d\n", stats.OperationCount)
+fmt.Printf("Cache hit ratio: %.2f%%\n", stats.HitRatio*100)
+fmt.Printf("Cache memory usage: %d bytes\n", stats.CacheMemory)
+
+// Health monitoring
+health := json.GetHealthStatus()
+fmt.Printf("System healthy: %v\n", health.Healthy)
+
+// Cache management
+json.ClearCache()  // Clear all cached data
+
+// Cache warmup - pre-load commonly used paths
+paths := []string{"user.name", "user.age", "user.profile"}
+warmupResult, err := json.WarmupCache(jsonStr, paths)
+
+// Batch processing - execute multiple operations efficiently
+operations := []json.BatchOperation{
+    {Type: "get", Path: "user.name"},
+    {Type: "set", Path: "user.age", Value: 25},
+    {Type: "delete", Path: "user.temp"},
+}
+results, err := json.ProcessBatch(operations)
 ```
 
 ### Complex Path Examples
@@ -383,17 +492,17 @@ defer processor1.Close()
 customConfig := &json.Config{
     // Cache settings
     EnableCache:      true,             // Enable cache
-    MaxCacheSize:     5000,             // Cache entry count
-    CacheTTL:         10 * time.Minute, // Cache expiration time
+    MaxCacheSize:     128,              // Cache entry count (default)
+    CacheTTL:         5 * time.Minute,  // Cache expiration time (default)
 
     // Size limits
-    MaxJSONSize:      50 * 1024 * 1024, // 50MB JSON size limit
-    MaxPathDepth:     200,              // Path depth limit
-    MaxBatchSize:     2000,             // Batch operation size limit
+    MaxJSONSize:      100 * 1024 * 1024, // 100MB JSON size limit (default)
+    MaxPathDepth:     50,                // Path depth limit (default)
+    MaxBatchSize:     2000,              // Batch operation size limit
 
     // Concurrency settings
-    MaxConcurrency:   100,   // Maximum concurrency
-    ParallelThreshold: 20,   // Parallel processing threshold
+    MaxConcurrency:   50,   // Maximum concurrency (default)
+    ParallelThreshold: 10,   // Parallel processing threshold (default)
 
     // Processing options
     EnableValidation: true,  // Enable validation

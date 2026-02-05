@@ -421,9 +421,6 @@ func handleLargeNumberConversion[T any](value any, path string) (conversionResul
 	return conversionResult[T]{value: zero, err: nil}, false
 }
 
-// Type conversion helper functions are now in type_conversion.go
-// Deprecated functions removed - use UnifiedTypeConversion or Convert* functions instead
-
 // IteratorControl represents control flags for iteration
 type IteratorControl int
 

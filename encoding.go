@@ -17,6 +17,25 @@ import (
 	"unicode/utf8"
 )
 
+// marshalJSON marshals a value to JSON string with optional pretty printing
+// This helper function consolidates duplicate marshaling logic
+func marshalJSON(value any, pretty bool, prefix, indent string) (string, error) {
+	var resultBytes []byte
+	var err error
+
+	if pretty {
+		resultBytes, err = json.MarshalIndent(value, prefix, indent)
+	} else {
+		resultBytes, err = json.Marshal(value)
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	return string(resultBytes), nil
+}
+
 // EncodeWithOptions converts any Go value to JSON string with advanced options
 func (p *Processor) EncodeWithOptions(value any, encOpts *EncodeConfig, opts ...*ProcessorOptions) (string, error) {
 	if err := p.checkClosed(); err != nil {
@@ -47,15 +66,7 @@ func (p *Processor) EncodeWithOptions(value any, encOpts *EncodeConfig, opts ...
 		result, err = encoder.Encode(value)
 	} else {
 		// Use standard JSON encoding for basic options
-		var resultBytes []byte
-		if encOpts.Pretty {
-			resultBytes, err = json.MarshalIndent(value, encOpts.Prefix, encOpts.Indent)
-		} else {
-			resultBytes, err = json.Marshal(value)
-		}
-		if err == nil {
-			result = string(resultBytes)
-		}
+		result, err = marshalJSON(value, encOpts.Pretty, encOpts.Prefix, encOpts.Indent)
 	}
 
 	if err != nil {
@@ -289,15 +300,7 @@ func (p *Processor) EncodeWithConfig(value any, config *EncodeConfig, opts ...*P
 		result, err = encoder.Encode(value)
 	} else {
 		// Use standard JSON encoding for basic options
-		var resultBytes []byte
-		if config.Pretty {
-			resultBytes, err = json.MarshalIndent(value, config.Prefix, config.Indent)
-		} else {
-			resultBytes, err = json.Marshal(value)
-		}
-		if err == nil {
-			result = string(resultBytes)
-		}
+		result, err = marshalJSON(value, config.Pretty, config.Prefix, config.Indent)
 	}
 
 	if err != nil {

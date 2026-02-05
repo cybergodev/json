@@ -7,7 +7,7 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
-## v1.1.0 - Comprehensive Enhancement & Quality Assurance (2026-02-03)
+## v1.1.0 - Comprehensive Enhancement & Quality Assurance (2026-02-05)
 
 ### Added
 - **Print Methods**: `json.Print()` and `json.PrintPretty()` for direct stdout output with smart JSON detection
@@ -39,11 +39,16 @@ All notable changes to the cybergodev/json library will be documented in this fi
 - **EncodeCompact()**: Redundant function (use `Encode()` which defaults to compact)
 - **OmitEmpty Config**: Removed `OmitEmpty` and `OmitEmptyMode` fields (use struct tags `omitempty`)
 - **NewCompactConfig()**: Helper function (use `DefaultEncodeConfig()`)
+- **ProcessorConfig**: Deprecated configuration struct (use `Config` instead)
+- **DefaultProcessorConfig()**: Deprecated function (use `DefaultConfig()` instead)
+- **NewIterableValueWithIterator()**: Deprecated function (use `NewIterableValue()` instead)
+- **deletedMarker variable**: Unused local variable (use `DeletedMarker` constant)
 
 ### Performance Improvements
 - **Cache Stats**: ~40% faster with struct return type
 - **Simple Path Parsing**: ~50% fewer allocations
 - **Null Value Handling**: ~60% faster with direct type checking
+- **Path Validation**: Pre-compiled regex pattern for array index validation
 
 ### Security Enhancements
 - Enhanced path traversal detection (consecutive dots, partial double encoding)
