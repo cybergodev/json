@@ -42,8 +42,8 @@ func TestSecurityValidation(t *testing.T) {
 					if resultStr, ok := result.(string); ok {
 						helper.AssertFalse(
 							strings.Contains(resultStr, "passwd") ||
-							strings.Contains(resultStr, "secret") ||
-							strings.Contains(resultStr, "password"),
+								strings.Contains(resultStr, "secret") ||
+								strings.Contains(resultStr, "password"),
 							"Path traversal exposed sensitive data for path: %s", path)
 					}
 				}
@@ -371,7 +371,7 @@ func generateLargeJSON(size int) string {
 func generateDeepNesting(depth int) string {
 	var sb strings.Builder
 	// Pre-allocate: each level adds ~7 chars {"a": and 1 char for }
-	sb.Grow(depth * 8 + 10)
+	sb.Grow(depth*8 + 10)
 
 	for i := 0; i < depth; i++ {
 		sb.WriteString(`{"a":`)

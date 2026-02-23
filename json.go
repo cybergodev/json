@@ -234,11 +234,7 @@ func Delete(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
 
 // DeleteWithCleanNull removes a value from JSON and cleans up null values
 func DeleteWithCleanNull(jsonStr, path string, opts ...*ProcessorOptions) (string, error) {
-	cleanupOpts := mergeOptionsWithOverride(opts, func(o *ProcessorOptions) {
-		o.CleanupNulls = true
-		o.CompactArrays = true
-	})
-	return getDefaultProcessor().Delete(jsonStr, path, cleanupOpts)
+	return getDefaultProcessor().DeleteWithCleanNull(jsonStr, path, opts...)
 }
 
 // LoadFromFile loads JSON data from a file with optional processor configuration

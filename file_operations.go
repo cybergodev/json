@@ -317,7 +317,7 @@ func (p *Processor) validateFilePath(filePath string) error {
 	// Convert to absolute path for further validation
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
-		return fmt.Errorf("invalid path: %w", err)
+		return newOperationError("validate_file_path", "invalid path", err)
 	}
 
 	// Platform-specific security checks on absolute path
@@ -332,7 +332,7 @@ func (p *Processor) validateFilePath(filePath string) error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			realPath, err := filepath.EvalSymlinks(absPath)
 			if err != nil {
-				return fmt.Errorf("cannot resolve symlink: %w", err)
+				return newOperationError("validate_file_path", "cannot resolve symlink", err)
 			}
 
 			// Ensure symlink doesn't escape to restricted areas
@@ -573,7 +573,11 @@ func (p *Processor) MarshalToFile(path string, data any, pretty ...bool) error {
 
 	// Create directory if it doesn't exist
 	if err := p.createDirectoryIfNotExists(path); err != nil {
-		return fmt.Errorf("failed to create directory for %s: %w", path, err)
+		return &JsonsError{
+			Op:      "marshal_to_file",
+			Message: fmt.Sprintf("failed to create directory for %s", path),
+			Err:     err,
+		}
 	}
 
 	// Preprocess data to prevent double-encoding of string/[]byte inputs
@@ -593,12 +597,21 @@ func (p *Processor) MarshalToFile(path string, data any, pretty ...bool) error {
 	}
 
 	if err != nil {
-		return fmt.Errorf("failed to marshal data to JSON: %w", err)
+		return &JsonsError{
+			Op:      "marshal_to_file",
+			Message: "failed to marshal data to JSON",
+			Err:     err,
+		}
 	}
 
 	// Write JSON bytes to file
 	if err := os.WriteFile(path, jsonBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write file %s: %w", path, err)
+		return &JsonsError{
+			Op:      "marshal_to_file",
+			Path:    path,
+			Message: fmt.Sprintf("failed to write file %s", path),
+			Err:     err,
+		}
 	}
 
 	return nil
@@ -620,7 +633,11 @@ func (p *Processor) UnmarshalFromFile(path string, v any, opts ...*ProcessorOpti
 
 	// Validate input parameters
 	if v == nil {
-		return fmt.Errorf("unmarshal target cannot be nil")
+		return &JsonsError{
+			Op:      "unmarshal_from_file",
+			Message: "unmarshal target cannot be nil",
+			Err:     ErrOperationFailed,
+		}
 	}
 
 	// Validate file path for security
@@ -631,17 +648,32 @@ func (p *Processor) UnmarshalFromFile(path string, v any, opts ...*ProcessorOpti
 	// Read file contents with size validation
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("failed to read file %s: %w", path, err)
+		return &JsonsError{
+			Op:      "unmarshal_from_file",
+			Path:    path,
+			Message: fmt.Sprintf("failed to read file %s", path),
+			Err:     err,
+		}
 	}
 
 	// Check file size against processor limits
 	if int64(len(data)) > p.config.MaxJSONSize {
-		return fmt.Errorf("file size %d exceeds maximum allowed size %d", len(data), p.config.MaxJSONSize)
+		return &JsonsError{
+			Op:      "unmarshal_from_file",
+			Path:    path,
+			Message: fmt.Sprintf("file size %d exceeds maximum allowed size %d", len(data), p.config.MaxJSONSize),
+			Err:     ErrSizeLimit,
+		}
 	}
 
 	// Unmarshal JSON data using processor's Unmarshal method
 	if err := p.Unmarshal(data, v, opts...); err != nil {
-		return fmt.Errorf("failed to unmarshal JSON from file %s: %w", path, err)
+		return &JsonsError{
+			Op:      "unmarshal_from_file",
+			Path:    path,
+			Message: fmt.Sprintf("failed to unmarshal JSON from file %s", path),
+			Err:     err,
+		}
 	}
 
 	return nil

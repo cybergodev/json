@@ -130,8 +130,6 @@ func NewExtractSegment(extract string) PathSegment {
 	}
 }
 
-
-
 // ParsePath parses a JSON path string into segments
 func ParsePath(path string) ([]PathSegment, error) {
 	if path == "" {
@@ -602,8 +600,6 @@ func (ps PathSegment) String() string {
 	}
 }
 
-
-
 // IsArrayAccess returns true if this segment accesses an array
 func (ps PathSegment) IsArrayAccess() bool {
 	return ps.Type == ArrayIndexSegment || ps.Type == ArraySliceSegment || ps.Type == WildcardSegment
@@ -647,4 +643,3 @@ func ParseAndValidateArrayIndex(s string, arrayLength int) (int, bool) {
 
 	return index, true
 }
-

@@ -62,10 +62,10 @@ func TestArrayHelper_NormalizeIndex(t *testing.T) {
 	ah := &ArrayHelper{}
 
 	tests := []struct {
-		name       string
-		index      int
-		length     int
-		expected   int
+		name     string
+		index    int
+		length   int
+		expected int
 	}{
 		{"Positive index", 2, 5, 2},
 		{"Negative index (last)", -1, 5, 4},
@@ -184,13 +184,13 @@ func TestArrayHelper_ExtendArray(t *testing.T) {
 	ah := &ArrayHelper{}
 
 	tests := []struct {
-		name             string
-		input            []any
-		targetLength     int
-		expectExtend     bool
-		expectedLength   int
+		name           string
+		input          []any
+		targetLength   int
+		expectExtend   bool
+		expectedLength int
 	}{
-		{"Already longer", []any{1, 2, 3}, 2, false, 3},  // Returns original array when already longer
+		{"Already longer", []any{1, 2, 3}, 2, false, 3}, // Returns original array when already longer
 		{"Same length", []any{1, 2, 3}, 3, false, 3},
 		{"Need extension", []any{1, 2}, 5, true, 5},
 		{"Empty to non-empty", []any{}, 3, true, 3},
@@ -302,7 +302,7 @@ func TestArrayHelper_PerformSlice(t *testing.T) {
 		{"Negative start (normalized)", -3, 10, 1, []any{7, 8, 9}},
 		{"Negative end (normalized)", 0, -3, 1, []any{0, 1, 2, 3, 4, 5, 6}},
 		{"Zero step (empty)", 0, 5, 0, []any{}},
-		{"Reverse step", 9, -1, -1, []any{}},  // Normalized end becomes 9, same as start, so empty
+		{"Reverse step", 9, -1, -1, []any{}}, // Normalized end becomes 9, same as start, so empty
 		{"Reverse step partial", 8, 2, -2, []any{8, 6, 4}},
 	}
 

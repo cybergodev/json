@@ -223,8 +223,6 @@ type Metrics struct {
 	ErrorsByType    map[string]int64 `json:"errors_by_type"`
 }
 
-
-
 // updateMax atomically updates target to value if value is greater
 func updateMax(target *int64, value int64) {
 	for {

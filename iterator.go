@@ -97,7 +97,6 @@ func NewIterableValue(data any) *IterableValue {
 	return &IterableValue{data: data}
 }
 
-
 // GetString returns a string value by key or path
 // Supports path navigation with dot notation and array indices (e.g., "user.address.city" or "users[0].name")
 func (iv *IterableValue) GetString(key string) string {
@@ -583,19 +582,19 @@ func navigateToPathWithArraySupport(data any, path string) (any, error) {
 			// Property access
 			obj, ok := current.(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("cannot access property '%s' on type %T", segment.Key, current)
+				return nil, newPathError(segment.Key, fmt.Sprintf("cannot access property '%s' on type %T", segment.Key, current), ErrTypeMismatch)
 			}
 			var exists bool
 			current, exists = obj[segment.Key]
 			if !exists {
-				return nil, fmt.Errorf("key not found: %s", segment.Key)
+				return nil, newPathError(segment.Key, fmt.Sprintf("key not found: %s", segment.Key), ErrPathNotFound)
 			}
 
 		case internal.ArrayIndexSegment:
 			// Array index access
 			arr, ok := current.([]any)
 			if !ok {
-				return nil, fmt.Errorf("cannot access index on type %T", current)
+				return nil, newPathError(path, fmt.Sprintf("cannot access index on type %T", current), ErrTypeMismatch)
 			}
 
 			// Handle negative index
@@ -605,7 +604,7 @@ func navigateToPathWithArraySupport(data any, path string) (any, error) {
 			}
 
 			if index < 0 || index >= len(arr) {
-				return nil, fmt.Errorf("array index out of bounds: %d", segment.Index)
+				return nil, newPathError(path, fmt.Sprintf("array index out of bounds: %d", segment.Index), ErrPathNotFound)
 			}
 			current = arr[index]
 
@@ -613,7 +612,7 @@ func navigateToPathWithArraySupport(data any, path string) (any, error) {
 			// Array slice access - build slice part string
 			arr, ok := current.([]any)
 			if !ok {
-				return nil, fmt.Errorf("cannot slice type %T", current)
+				return nil, newPathError(path, fmt.Sprintf("cannot slice type %T", current), ErrTypeMismatch)
 			}
 
 			// Build slice string from Start, End, Step
@@ -723,10 +722,10 @@ func navigateToPathSimple(data any, path string) (any, error) {
 			var ok bool
 			current, ok = v[part]
 			if !ok {
-				return nil, fmt.Errorf("key not found: %s", part)
+				return nil, newPathError(part, fmt.Sprintf("key not found: %s", part), ErrPathNotFound)
 			}
 		default:
-			return nil, fmt.Errorf("cannot access property '%s' on type %T", part, current)
+			return nil, newPathError(part, fmt.Sprintf("cannot access property '%s' on type %T", part, current), ErrTypeMismatch)
 		}
 	}
 
@@ -819,7 +818,7 @@ func foreachWithPathIterableValue(data any, currentPath string, fn func(key any,
 			}
 		}
 	default:
-		return fmt.Errorf("value is not iterable: %T", data)
+		return newOperationPathError("foreach", currentPath, fmt.Sprintf("value is not iterable: %T", data), ErrTypeMismatch)
 	}
 
 	return nil
@@ -857,7 +856,7 @@ func foreachOnValue(data any, fn func(key any, value any) IteratorControl) error
 			}
 		}
 	default:
-		return fmt.Errorf("value is not iterable: %T", data)
+		return newOperationError("foreach", fmt.Sprintf("value is not iterable: %T", data), ErrTypeMismatch)
 	}
 
 	return nil
@@ -881,7 +880,7 @@ func foreachWithPathOnValue(data any, currentPath string, fn func(key any, value
 			}
 		}
 	default:
-		return fmt.Errorf("value is not iterable: %T", data)
+		return newOperationPathError("foreach", currentPath, fmt.Sprintf("value is not iterable: %T", data), ErrTypeMismatch)
 	}
 
 	return nil

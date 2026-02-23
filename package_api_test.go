@@ -160,8 +160,8 @@ func TestDeleteWithCleanNull(t *testing.T) {
 		{
 			name:     "delete entire array",
 			path:     "posts",
-			contains: []string{"user", "name"},  // Should still have user data
-			excludes: []string{"Post 1", "Post 2", "content"},  // All posts content should be gone
+			contains: []string{"user", "name"},                // Should still have user data
+			excludes: []string{"Post 1", "Post 2", "content"}, // All posts content should be gone
 		},
 	}
 
@@ -544,9 +544,9 @@ func TestSetMultipleWithAdd(t *testing.T) {
 	jsonStr := `{}`
 
 	updates := map[string]any{
-		"user.name":     "Alice",
-		"user.age":      30,
-		"user.email":    "alice@example.com",
+		"user.name":      "Alice",
+		"user.age":       30,
+		"user.email":     "alice@example.com",
 		"settings.theme": "dark",
 	}
 

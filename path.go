@@ -336,10 +336,7 @@ func (p *Processor) HTMLEscapeBuffer(dst *bytes.Buffer, src []byte, opts ...*Pro
 type NumberPreservingDecoder struct {
 	preserveNumbers bool
 
-	// Reusable decoder for performance
-	decoder *json.Decoder
-
-	// Buffer pool for string operations
+	// bufferPool is used for efficient string formatting operations
 	bufferPool *sync.Pool
 }
 
@@ -366,18 +363,12 @@ func (d *NumberPreservingDecoder) DecodeToAny(jsonStr string) (any, error) {
 		return result, nil
 	}
 
-	// Path: use reusable decoder with number preservation
-	if d.decoder == nil {
-		d.decoder = json.NewDecoder(strings.NewReader(jsonStr))
-		d.decoder.UseNumber()
-	} else {
-		// Reset decoder with new input
-		d.decoder = json.NewDecoder(strings.NewReader(jsonStr))
-		d.decoder.UseNumber()
-	}
+	// Create a new decoder for each call (json.Decoder cannot be reused with different inputs)
+	decoder := json.NewDecoder(strings.NewReader(jsonStr))
+	decoder.UseNumber()
 
 	var result any
-	if err := d.decoder.Decode(&result); err != nil {
+	if err := decoder.Decode(&result); err != nil {
 		return nil, err
 	}
 

@@ -411,7 +411,7 @@ func TestExtractSyntaxComplex(t *testing.T) {
 	tests := []struct {
 		name     string
 		path     string
-	validate func(t *testing.T, result any, err error)
+		validate func(t *testing.T, result any, err error)
 	}{
 		{
 			name: "simple extraction",
@@ -857,9 +857,9 @@ func TestArrayIndexValidation(t *testing.T) {
 	defer processor.Close()
 
 	tests := []struct {
-		name     string
-		index    string
-		valid    bool
+		name  string
+		index string
+		valid bool
 	}{
 		{
 			name:  "valid positive",

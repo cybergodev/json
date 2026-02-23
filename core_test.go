@@ -175,12 +175,12 @@ func TestPerformArraySlice(t *testing.T) {
 	arr := []any{0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0}
 
 	tests := []struct {
-		name          string
-		start         *int
-		end           *int
-		step          *int
-		expected      []any
-		description   string
+		name        string
+		start       *int
+		end         *int
+		step        *int
+		expected    []any
+		description string
 	}{
 		{
 			name:        "basic slice",
@@ -323,15 +323,15 @@ func TestHandlePropertyAccess(t *testing.T) {
 			shouldExist: true,
 		},
 		{
-			name: "array with numeric property",
-			data: []any{"a", "b", "c"},
+			name:        "array with numeric property",
+			data:        []any{"a", "b", "c"},
 			property:    "1",
 			expectedVal: "b",
 			shouldExist: true,
 		},
 		{
-			name: "array with invalid property",
-			data: []any{"a", "b", "c"},
+			name:        "array with invalid property",
+			data:        []any{"a", "b", "c"},
 			property:    "5",
 			expectedVal: nil,
 			shouldExist: false,
@@ -608,17 +608,17 @@ func TestParseArraySegment(t *testing.T) {
 			expectedIndex: -1,
 		},
 		{
-			name:         "slice",
-			part:         "[0:5]",
-			expectedType: "slice",
+			name:          "slice",
+			part:          "[0:5]",
+			expectedType:  "slice",
 			expectedStart: intPtr(0),
 			expectedEnd:   intPtr(5),
 			expectedStep:  intPtr(1),
 		},
 		{
-			name:         "slice with step",
-			part:         "[0:10:2]",
-			expectedType: "slice",
+			name:          "slice with step",
+			part:          "[0:10:2]",
+			expectedType:  "slice",
 			expectedStart: intPtr(0),
 			expectedEnd:   intPtr(10),
 			expectedStep:  intPtr(2),
@@ -655,27 +655,27 @@ func TestParseExtractionSegment(t *testing.T) {
 	defer processor.Close()
 
 	tests := []struct {
-		name         string
-		part         string
-		expectedKey  string
+		name           string
+		part           string
+		expectedKey    string
 		expectedIsFlat bool
 	}{
 		{
-			name:         "simple extraction",
-			part:         "{name}",
-			expectedKey:  "name",
+			name:           "simple extraction",
+			part:           "{name}",
+			expectedKey:    "name",
 			expectedIsFlat: false,
 		},
 		{
-			name:         "flat extraction",
-			part:         "{flat:items}",
-			expectedKey:  "items",
+			name:           "flat extraction",
+			part:           "{flat:items}",
+			expectedKey:    "items",
 			expectedIsFlat: true,
 		},
 		{
-			name:         "property with extraction",
-			part:         "users{name}",
-			expectedKey:  "name",
+			name:           "property with extraction",
+			part:           "users{name}",
+			expectedKey:    "name",
 			expectedIsFlat: false,
 		},
 	}

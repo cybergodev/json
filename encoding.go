@@ -128,11 +128,11 @@ func needsCustomEncodingOpts(cfg *EncodeConfig) bool {
 	return cfg.DisableEscaping ||
 		cfg.EscapeUnicode ||
 		cfg.EscapeSlash ||
-		!cfg.EscapeNewlines ||  // When false, need custom encoding to NOT escape
-		!cfg.EscapeTabs ||      // When false, need custom encoding to NOT escape
+		!cfg.EscapeNewlines || // When false, need custom encoding to NOT escape
+		!cfg.EscapeTabs || // When false, need custom encoding to NOT escape
 		cfg.CustomEscapes != nil ||
 		cfg.SortKeys ||
-		cfg.EscapeHTML ||      // When true, need custom encoding to escape HTML (std lib doesn't)
+		cfg.EscapeHTML || // When true, need custom encoding to escape HTML (std lib doesn't)
 		cfg.FloatPrecision >= 0 ||
 		!cfg.IncludeNulls
 }
@@ -1065,14 +1065,14 @@ func (dec *Decoder) Token() (Token, error) {
 	}
 }
 
+// readValue reads a complete JSON value from the input stream.
+// It handles objects, arrays, strings, numbers, booleans, and null.
 func (dec *Decoder) readValue() ([]byte, error) {
 	buf := getEncoderBuffer()
 	defer putEncoderBuffer(buf)
 
-	depth := 0
-	inString := false
-	escaped := false
-
+	// Step 1: Find the first non-whitespace character to determine value type
+	var firstChar byte
 	for {
 		b, err := dec.buf.ReadByte()
 		if err != nil {
@@ -1081,41 +1081,60 @@ func (dec *Decoder) readValue() ([]byte, error) {
 		dec.offset++
 
 		if !isSpace(b) {
+			firstChar = b
 			buf.WriteByte(b)
-
-			switch b {
-			case '"':
-				inString = true
-			case '{', '[':
-				depth++
-			}
 			break
 		}
 	}
 
-	if depth == 0 && !inString {
-		for {
-			b, err := dec.buf.ReadByte()
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				return nil, err
-			}
-			dec.offset++
-
-			if isSpace(b) || b == ',' || b == '}' || b == ']' {
-				dec.buf.UnreadByte()
-				dec.offset--
-				break
-			}
-
-			buf.WriteByte(b)
-		}
-		result := make([]byte, buf.Len())
-		copy(result, buf.Bytes())
-		return result, nil
+	// Step 2: Handle based on value type
+	switch firstChar {
+	case '"':
+		// String value - read until closing quote
+		return dec.readStringValue(buf)
+	case '{', '[':
+		// Object or array - track depth to find matching close
+		return dec.readContainerValue(buf, firstChar)
+	default:
+		// Primitive value (number, boolean, null) - read until delimiter
+		return dec.readPrimitiveValue(buf)
 	}
+}
+
+// readStringValue reads a complete JSON string value
+func (dec *Decoder) readStringValue(buf *bytes.Buffer) ([]byte, error) {
+	escaped := false
+
+	for {
+		b, err := dec.buf.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		dec.offset++
+		buf.WriteByte(b)
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		switch b {
+		case '\\':
+			escaped = true
+		case '"':
+			// String complete
+			result := make([]byte, buf.Len())
+			copy(result, buf.Bytes())
+			return result, nil
+		}
+	}
+}
+
+// readContainerValue reads a complete JSON object or array
+func (dec *Decoder) readContainerValue(buf *bytes.Buffer, _ byte) ([]byte, error) {
+	depth := 1
+	inString := false
+	escaped := false
 
 	for {
 		b, err := dec.buf.ReadByte()
@@ -1134,17 +1153,11 @@ func (dec *Decoder) readValue() ([]byte, error) {
 		}
 
 		if inString {
-			if b == '\\' {
+			switch b {
+			case '\\':
 				escaped = true
-			} else if b == '"' {
+			case '"':
 				inString = false
-				// If we're not in an object/array, string is complete
-				if depth == 0 {
-					// Return a copy of the buffer data since we're returning it to the pool
-					result := make([]byte, buf.Len())
-					copy(result, buf.Bytes())
-					return result, nil
-				}
 			}
 			continue
 		}
@@ -1157,7 +1170,6 @@ func (dec *Decoder) readValue() ([]byte, error) {
 		case '}', ']':
 			depth--
 			if depth == 0 {
-				// Return a copy of the buffer data since we're returning it to the pool
 				result := make([]byte, buf.Len())
 				copy(result, buf.Bytes())
 				return result, nil
@@ -1165,7 +1177,33 @@ func (dec *Decoder) readValue() ([]byte, error) {
 		}
 	}
 
-	// Return a copy of the buffer data since we're returning it to the pool
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
+}
+
+// readPrimitiveValue reads a JSON primitive (number, boolean, null)
+func (dec *Decoder) readPrimitiveValue(buf *bytes.Buffer) ([]byte, error) {
+	for {
+		b, err := dec.buf.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		dec.offset++
+
+		// Check for value terminators
+		if isSpace(b) || b == ',' || b == '}' || b == ']' {
+			dec.buf.UnreadByte()
+			dec.offset--
+			break
+		}
+
+		buf.WriteByte(b)
+	}
+
 	result := make([]byte, buf.Len())
 	copy(result, buf.Bytes())
 	return result, nil

@@ -188,8 +188,8 @@ func TestBoundaryConditions(t *testing.T) {
 			testData := `{"arr": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}`
 
 			tests := []struct {
-			path     string
-			expected []interface{}
+				path     string
+				expected []interface{}
 			}{
 				{"arr[0:3]", []interface{}{float64(0), float64(1), float64(2)}},
 				{"arr[5:]", []interface{}{float64(5), float64(6), float64(7), float64(8), float64(9)}},

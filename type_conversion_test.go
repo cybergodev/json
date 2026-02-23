@@ -9,141 +9,141 @@ import (
 // TestConvertToInt tests integer conversion with various types
 func TestConvertToInt(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       any
-		expected    int
+		name          string
+		input         any
+		expected      int
 		shouldSucceed bool
 	}{
 		{
-			name:        "from int",
-			input:       42,
-			expected:    42,
+			name:          "from int",
+			input:         42,
+			expected:      42,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int8",
-			input:       int8(127),
-			expected:    127,
+			name:          "from int8",
+			input:         int8(127),
+			expected:      127,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int16",
-			input:       int16(1000),
-			expected:    1000,
+			name:          "from int16",
+			input:         int16(1000),
+			expected:      1000,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int32",
-			input:       int32(50000),
-			expected:    50000,
+			name:          "from int32",
+			input:         int32(50000),
+			expected:      50000,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int64 in range",
-			input:       int64(100000),
-			expected:    100000,
+			name:          "from int64 in range",
+			input:         int64(100000),
+			expected:      100000,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int64 out of range positive",
-			input:       int64(2147483648),
-			expected:    0,
+			name:          "from int64 out of range positive",
+			input:         int64(2147483648),
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from int64 out of range negative",
-			input:       int64(-2147483649),
-			expected:    0,
+			name:          "from int64 out of range negative",
+			input:         int64(-2147483649),
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from uint in range",
-			input:       uint(100),
-			expected:    100,
+			name:          "from uint in range",
+			input:         uint(100),
+			expected:      100,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from uint8",
-			input:       uint8(255),
-			expected:    255,
+			name:          "from uint8",
+			input:         uint8(255),
+			expected:      255,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from uint16",
-			input:       uint16(1000),
-			expected:    1000,
+			name:          "from uint16",
+			input:         uint16(1000),
+			expected:      1000,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from uint32 in range",
-			input:       uint32(1000000),
-			expected:    1000000,
+			name:          "from uint32 in range",
+			input:         uint32(1000000),
+			expected:      1000000,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float32 exact",
-			input:       float32(42.0),
-			expected:    42,
+			name:          "from float32 exact",
+			input:         float32(42.0),
+			expected:      42,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float32 not exact",
-			input:       float32(42.5),
-			expected:    0,
+			name:          "from float32 not exact",
+			input:         float32(42.5),
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from float64 exact",
-			input:       float64(100.0),
-			expected:    100,
+			name:          "from float64 exact",
+			input:         float64(100.0),
+			expected:      100,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float64 not exact",
-			input:       float64(100.7),
-			expected:    0,
+			name:          "from float64 not exact",
+			input:         float64(100.7),
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from string valid",
-			input:       "123",
-			expected:    123,
+			name:          "from string valid",
+			input:         "123",
+			expected:      123,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string invalid",
-			input:       "abc",
-			expected:    0,
+			name:          "from string invalid",
+			input:         "abc",
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from bool true",
-			input:       true,
-			expected:    1,
+			name:          "from bool true",
+			input:         true,
+			expected:      1,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from bool false",
-			input:       false,
-			expected:    0,
+			name:          "from bool false",
+			input:         false,
+			expected:      0,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from json.Number valid",
-			input:       json.Number("456"),
-			expected:    456,
+			name:          "from json.Number valid",
+			input:         json.Number("456"),
+			expected:      456,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from json.Number invalid",
-			input:       json.Number("abc"),
-			expected:    0,
+			name:          "from json.Number invalid",
+			input:         json.Number("abc"),
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from nil",
-			input:       nil,
-			expected:    0,
+			name:          "from nil",
+			input:         nil,
+			expected:      0,
 			shouldSucceed: false,
 		},
 	}
@@ -164,51 +164,51 @@ func TestConvertToInt(t *testing.T) {
 // TestConvertToInt64 tests int64 conversion
 func TestConvertToInt64(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       any
-		expected    int64
+		name          string
+		input         any
+		expected      int64
 		shouldSucceed bool
 	}{
 		{
-			name:        "from int",
-			input:       42,
-			expected:    42,
+			name:          "from int",
+			input:         42,
+			expected:      42,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int64",
-			input:       int64(9223372036854775807),
-			expected:    9223372036854775807,
+			name:          "from int64",
+			input:         int64(9223372036854775807),
+			expected:      9223372036854775807,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from uint64 in range",
-			input:       uint64(9223372036854775807),
-			expected:    9223372036854775807,
+			name:          "from uint64 in range",
+			input:         uint64(9223372036854775807),
+			expected:      9223372036854775807,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from uint64 out of range",
-			input:       uint64(18446744073709551615),
-			expected:    0,
+			name:          "from uint64 out of range",
+			input:         uint64(18446744073709551615),
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from string",
-			input:       "1234567890",
-			expected:    1234567890,
+			name:          "from string",
+			input:         "1234567890",
+			expected:      1234567890,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float64 exact",
-			input:       float64(123.0),
-			expected:    123,
+			name:          "from float64 exact",
+			input:         float64(123.0),
+			expected:      123,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float64 not exact",
-			input:       float64(123.5),
-			expected:    0,
+			name:          "from float64 not exact",
+			input:         float64(123.5),
+			expected:      0,
 			shouldSucceed: false,
 		},
 	}
@@ -229,63 +229,63 @@ func TestConvertToInt64(t *testing.T) {
 // TestConvertToUint64 tests uint64 conversion
 func TestConvertToUint64(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       any
-		expected    uint64
+		name          string
+		input         any
+		expected      uint64
 		shouldSucceed bool
 	}{
 		{
-			name:        "from uint",
-			input:       uint(42),
-			expected:    42,
+			name:          "from uint",
+			input:         uint(42),
+			expected:      42,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from uint64 max",
-			input:       uint64(18446744073709551615),
-			expected:    18446744073709551615,
+			name:          "from uint64 max",
+			input:         uint64(18446744073709551615),
+			expected:      18446744073709551615,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from positive int",
-			input:       100,
-			expected:    100,
+			name:          "from positive int",
+			input:         100,
+			expected:      100,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from negative int",
-			input:       -1,
-			expected:    0,
+			name:          "from negative int",
+			input:         -1,
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from string",
-			input:       "123",
-			expected:    123,
+			name:          "from string",
+			input:         "123",
+			expected:      123,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from negative string",
-			input:       "-123",
-			expected:    0,
+			name:          "from negative string",
+			input:         "-123",
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from float64 positive exact",
-			input:       float64(42.0),
-			expected:    42,
+			name:          "from float64 positive exact",
+			input:         float64(42.0),
+			expected:      42,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float64 negative",
-			input:       float64(-42.0),
-			expected:    0,
+			name:          "from float64 negative",
+			input:         float64(-42.0),
+			expected:      0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from bool true",
-			input:       true,
-			expected:    1,
+			name:          "from bool true",
+			input:         true,
+			expected:      1,
 			shouldSucceed: true,
 		},
 	}
@@ -306,69 +306,69 @@ func TestConvertToUint64(t *testing.T) {
 // TestConvertToFloat64 tests float64 conversion
 func TestConvertToFloat64(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       any
-		expected    float64
+		name          string
+		input         any
+		expected      float64
 		shouldSucceed bool
 	}{
 		{
-			name:        "from float64",
-			input:       3.14159,
-			expected:    3.14159,
+			name:          "from float64",
+			input:         3.14159,
+			expected:      3.14159,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float32",
-			input:       float32(2.5),
-			expected:    2.5,
+			name:          "from float32",
+			input:         float32(2.5),
+			expected:      2.5,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int",
-			input:       42,
-			expected:    42.0,
+			name:          "from int",
+			input:         42,
+			expected:      42.0,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int64",
-			input:       int64(1234567890),
-			expected:    1234567890.0,
+			name:          "from int64",
+			input:         int64(1234567890),
+			expected:      1234567890.0,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from uint64",
-			input:       uint64(1234567890),
-			expected:    1234567890.0,
+			name:          "from uint64",
+			input:         uint64(1234567890),
+			expected:      1234567890.0,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string valid",
-			input:       "3.14",
-			expected:    3.14,
+			name:          "from string valid",
+			input:         "3.14",
+			expected:      3.14,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string invalid",
-			input:       "abc",
-			expected:    0.0,
+			name:          "from string invalid",
+			input:         "abc",
+			expected:      0.0,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from bool true",
-			input:       true,
-			expected:    1.0,
+			name:          "from bool true",
+			input:         true,
+			expected:      1.0,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from bool false",
-			input:       false,
-			expected:    0.0,
+			name:          "from bool false",
+			input:         false,
+			expected:      0.0,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from json.Number",
-			input:       json.Number("2.71828"),
-			expected:    2.71828,
+			name:          "from json.Number",
+			input:         json.Number("2.71828"),
+			expected:      2.71828,
 			shouldSucceed: true,
 		},
 	}
@@ -389,129 +389,129 @@ func TestConvertToFloat64(t *testing.T) {
 // TestConvertToBool tests boolean conversion
 func TestConvertToBool(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       any
-		expected    bool
+		name          string
+		input         any
+		expected      bool
 		shouldSucceed bool
 	}{
 		{
-			name:        "from bool true",
-			input:       true,
-			expected:    true,
+			name:          "from bool true",
+			input:         true,
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from bool false",
-			input:       false,
-			expected:    false,
+			name:          "from bool false",
+			input:         false,
+			expected:      false,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int non-zero",
-			input:       42,
-			expected:    true,
+			name:          "from int non-zero",
+			input:         42,
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from int zero",
-			input:       0,
-			expected:    false,
+			name:          "from int zero",
+			input:         0,
+			expected:      false,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from negative int",
-			input:       -1,
-			expected:    true,
+			name:          "from negative int",
+			input:         -1,
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float64 non-zero",
-			input:       1.5,
-			expected:    true,
+			name:          "from float64 non-zero",
+			input:         1.5,
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from float64 zero",
-			input:       0.0,
-			expected:    false,
+			name:          "from float64 zero",
+			input:         0.0,
+			expected:      false,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string true",
-			input:       "true",
-			expected:    true,
+			name:          "from string true",
+			input:         "true",
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string TRUE",
-			input:       "TRUE",
-			expected:    true,
+			name:          "from string TRUE",
+			input:         "TRUE",
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string false",
-			input:       "false",
-			expected:    false,
+			name:          "from string false",
+			input:         "false",
+			expected:      false,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string 1",
-			input:       "1",
-			expected:    true,
+			name:          "from string 1",
+			input:         "1",
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string 0",
-			input:       "0",
-			expected:    false,
+			name:          "from string 0",
+			input:         "0",
+			expected:      false,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string yes",
-			input:       "yes",
-			expected:    true,
+			name:          "from string yes",
+			input:         "yes",
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string no",
-			input:       "no",
-			expected:    false,
+			name:          "from string no",
+			input:         "no",
+			expected:      false,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string on",
-			input:       "on",
-			expected:    true,
+			name:          "from string on",
+			input:         "on",
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string off",
-			input:       "off",
-			expected:    false,
+			name:          "from string off",
+			input:         "off",
+			expected:      false,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string empty",
-			input:       "",
-			expected:    false,
+			name:          "from string empty",
+			input:         "",
+			expected:      false,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from string invalid",
-			input:       "maybe",
-			expected:    false,
+			name:          "from string invalid",
+			input:         "maybe",
+			expected:      false,
 			shouldSucceed: false,
 		},
 		{
-			name:        "from json.Number non-zero",
-			input:       json.Number("42"),
-			expected:    true,
+			name:          "from json.Number non-zero",
+			input:         json.Number("42"),
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "from json.Number zero",
-			input:       json.Number("0"),
-			expected:    false,
+			name:          "from json.Number zero",
+			input:         json.Number("0"),
+			expected:      false,
 			shouldSucceed: true,
 		},
 	}
@@ -532,63 +532,63 @@ func TestConvertToBool(t *testing.T) {
 // TestUnifiedTypeConversion tests generic type conversion
 func TestUnifiedTypeConversion(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       any
-		expected    any
+		name          string
+		input         any
+		expected      any
 		shouldSucceed bool
 	}{
 		{
-			name:        "same type int",
-			input:       42,
-			expected:    42,
+			name:          "same type int",
+			input:         42,
+			expected:      42,
 			shouldSucceed: true,
 		},
 		{
-			name:        "same type string",
-			input:       "hello",
-			expected:    "hello",
+			name:          "same type string",
+			input:         "hello",
+			expected:      "hello",
 			shouldSucceed: true,
 		},
 		{
-			name:        "int to int64",
-			input:       42,
-			expected:    int64(42),
+			name:          "int to int64",
+			input:         42,
+			expected:      int64(42),
 			shouldSucceed: true,
 		},
 		{
-			name:        "int to float64",
-			input:       42,
-			expected:    42.0,
+			name:          "int to float64",
+			input:         42,
+			expected:      42.0,
 			shouldSucceed: true,
 		},
 		{
-			name:        "string to int",
-			input:       "123",
-			expected:    123,
+			name:          "string to int",
+			input:         "123",
+			expected:      123,
 			shouldSucceed: true,
 		},
 		{
-			name:        "string to bool",
-			input:       "true",
-			expected:    true,
+			name:          "string to bool",
+			input:         "true",
+			expected:      true,
 			shouldSucceed: true,
 		},
 		{
-			name:        "nil to string",
-			input:       nil,
-			expected:    "",
+			name:          "nil to string",
+			input:         nil,
+			expected:      "",
 			shouldSucceed: true,
 		},
 		{
-			name:        "nil to int",
-			input:       nil,
-			expected:    0,
+			name:          "nil to int",
+			input:         nil,
+			expected:      0,
 			shouldSucceed: true,
 		},
 		{
-			name:        "invalid conversion",
-			input:       "not a number",
-			expected:    0,
+			name:          "invalid conversion",
+			input:         "not a number",
+			expected:      0,
 			shouldSucceed: false,
 		},
 	}

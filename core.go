@@ -302,24 +302,24 @@ type ShardStats struct {
 
 // ProcessorMetrics provides comprehensive processor performance metrics
 type ProcessorMetrics struct {
-	TotalOperations      int64   `json:"total_operations"`
-	SuccessfulOperations int64   `json:"successful_operations"`
-	FailedOperations     int64   `json:"failed_operations"`
-	SuccessRate          float64 `json:"success_rate"`
-	CacheHits            int64   `json:"cache_hits"`
-	CacheMisses          int64   `json:"cache_misses"`
-	CacheHitRate         float64 `json:"cache_hit_rate"`
-	AverageProcessingTime time.Duration `json:"average_processing_time"`
-	MaxProcessingTime     time.Duration `json:"max_processing_time"`
-	MinProcessingTime     time.Duration `json:"min_processing_time"`
-	TotalMemoryAllocated  int64 `json:"total_memory_allocated"`
-	PeakMemoryUsage       int64 `json:"peak_memory_usage"`
-	CurrentMemoryUsage    int64 `json:"current_memory_usage"`
-	ActiveConcurrentOps   int64 `json:"active_concurrent_ops"`
-	MaxConcurrentOps      int64 `json:"max_concurrent_ops"`
+	TotalOperations       int64            `json:"total_operations"`
+	SuccessfulOperations  int64            `json:"successful_operations"`
+	FailedOperations      int64            `json:"failed_operations"`
+	SuccessRate           float64          `json:"success_rate"`
+	CacheHits             int64            `json:"cache_hits"`
+	CacheMisses           int64            `json:"cache_misses"`
+	CacheHitRate          float64          `json:"cache_hit_rate"`
+	AverageProcessingTime time.Duration    `json:"average_processing_time"`
+	MaxProcessingTime     time.Duration    `json:"max_processing_time"`
+	MinProcessingTime     time.Duration    `json:"min_processing_time"`
+	TotalMemoryAllocated  int64            `json:"total_memory_allocated"`
+	PeakMemoryUsage       int64            `json:"peak_memory_usage"`
+	CurrentMemoryUsage    int64            `json:"current_memory_usage"`
+	ActiveConcurrentOps   int64            `json:"active_concurrent_ops"`
+	MaxConcurrentOps      int64            `json:"max_concurrent_ops"`
 	runtimeMemStats       runtime.MemStats `json:"-"`
-	uptime                time.Duration     `json:"-"`
-	errorsByType          map[string]int64  `json:"-"`
+	uptime                time.Duration    `json:"-"`
+	errorsByType          map[string]int64 `json:"-"`
 }
 
 // HealthStatus represents the health status of the processor
@@ -734,14 +734,26 @@ func (c *Config) GetSecurityLimits() map[string]any {
 // ValidateOptions validates processor options with enhanced checks
 func ValidateOptions(options *ProcessorOptions) error {
 	if options == nil {
-		return fmt.Errorf("options cannot be nil")
+		return &JsonsError{
+			Op:      "validate_options",
+			Message: "options cannot be nil",
+			Err:     ErrOperationFailed,
+		}
 	}
 
 	if options.MaxDepth < 0 {
-		return fmt.Errorf("MaxDepth cannot be negative: %d", options.MaxDepth)
+		return &JsonsError{
+			Op:      "validate_options",
+			Message: fmt.Sprintf("MaxDepth cannot be negative: %d", options.MaxDepth),
+			Err:     ErrOperationFailed,
+		}
 	}
 	if options.MaxDepth > 1000 {
-		return fmt.Errorf("MaxDepth too large (max 1000): %d", options.MaxDepth)
+		return &JsonsError{
+			Op:      "validate_options",
+			Message: fmt.Sprintf("MaxDepth too large (max 1000): %d", options.MaxDepth),
+			Err:     ErrDepthLimit,
+		}
 	}
 
 	return nil
@@ -815,18 +827,18 @@ func NewCleanConfig() *EncodeConfig {
 
 // ResourceMonitor provides resource monitoring and leak detection
 type ResourceMonitor struct {
-	allocatedBytes  int64
-	freedBytes      int64
-	peakMemoryUsage int64
-	poolHits        int64
-	poolMisses      int64
-	poolEvictions   int64
-	maxGoroutines    int64
+	allocatedBytes    int64
+	freedBytes        int64
+	peakMemoryUsage   int64
+	poolHits          int64
+	poolMisses        int64
+	poolEvictions     int64
+	maxGoroutines     int64
 	currentGoroutines int64
-	lastLeakCheck    int64
+	lastLeakCheck     int64
 	leakCheckInterval int64
 	avgResponseTime   int64
-	totalOperations  int64
+	totalOperations   int64
 }
 
 // NewResourceMonitor creates a new resource monitor

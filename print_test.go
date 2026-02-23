@@ -54,7 +54,7 @@ func TestPrint(t *testing.T) {
 				"monitoring": true,
 				"debug":      false,
 			},
-			contains:       []string{`"debug":false`, `"monitoring":true`},
+			contains:      []string{`"debug":false`, `"monitoring":true`},
 			noIndentation: true,
 		},
 		{
@@ -69,7 +69,7 @@ func TestPrint(t *testing.T) {
 				"debug":    false,
 				"features": []string{"caching"},
 			},
-			contains:       []string{`"database"`, `"name":"myDb"`, `"port":"5432"`, `"ssl":true`, `"debug":false`, `"features":["caching"]`, `"monitoring":true`},
+			contains:      []string{`"database"`, `"name":"myDb"`, `"port":"5432"`, `"ssl":true`, `"debug":false`, `"features":["caching"]`, `"monitoring":true`},
 			noIndentation: true,
 		},
 		{
@@ -88,17 +88,17 @@ func TestPrint(t *testing.T) {
 			contains: []string{`true` + "\n"},
 		},
 		{
-			name:           "JSON string - no double encoding",
-			data:           `{"name":"John","age":30}`,
-			contains:       []string{`"name":"John"`, `"age":30`},
-			noIndentation:  true,
+			name:            "JSON string - no double encoding",
+			data:            `{"name":"John","age":30}`,
+			contains:        []string{`"name":"John"`, `"age":30`},
+			noIndentation:   true,
 			startsWithBrace: true, // Should start with {, not "
 		},
 		{
-			name:           "JSON []byte - no double encoding",
-			data:           []byte(`{"name":"Jane","active":true}`),
-			contains:       []string{`"name":"Jane"`, `"active":true`},
-			noIndentation:  true,
+			name:            "JSON []byte - no double encoding",
+			data:            []byte(`{"name":"Jane","active":true}`),
+			contains:        []string{`"name":"Jane"`, `"active":true`},
+			noIndentation:   true,
 			startsWithBrace: true, // Should start with {, not "
 		},
 	}

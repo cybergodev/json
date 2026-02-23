@@ -235,9 +235,9 @@ func TestIterableValueGetInt(t *testing.T) {
 // TestIterableValueGetFloat64 tests GetFloat64 method
 func TestIterableValueGetFloat64(t *testing.T) {
 	data := map[string]any{
-		"price":   19.99,
-		"age":     30,
-		"rating":  "4.5",
+		"price":  19.99,
+		"age":    30,
+		"rating": "4.5",
 		"user": map[string]any{
 			"score": 95.5,
 		},
@@ -290,9 +290,9 @@ func TestIterableValueGetFloat64(t *testing.T) {
 // TestIterableValueGetBool tests GetBool method
 func TestIterableValueGetBool(t *testing.T) {
 	data := map[string]any{
-		"active":  true,
-		"age":     30,
-		"enabled": "true",
+		"active":   true,
+		"age":      30,
+		"enabled":  "true",
 		"verified": 1,
 		"user": map[string]any{
 			"admin": true,
@@ -356,28 +356,28 @@ func TestIterableValueGetArray(t *testing.T) {
 	iv := NewIterableValue(data)
 
 	tests := []struct {
-		name     string
-		key      string
+		name        string
+		key         string
 		expectedLen int
 	}{
 		{
-			name:     "existing array",
-			key:      "items",
+			name:        "existing array",
+			key:         "items",
 			expectedLen: 3,
 		},
 		{
-			name:     "nested array",
-			key:      "user.tags",
+			name:        "nested array",
+			key:         "user.tags",
 			expectedLen: 2,
 		},
 		{
-			name:     "not an array",
-			key:      "user",
+			name:        "not an array",
+			key:         "user",
 			expectedLen: 0,
 		},
 		{
-			name:     "missing key",
-			key:      "missing",
+			name:        "missing key",
+			key:         "missing",
 			expectedLen: 0,
 		},
 	}
@@ -560,10 +560,10 @@ func TestIterableValueIsNull(t *testing.T) {
 // TestIterableValueIsEmpty tests IsEmpty method
 func TestIterableValueIsEmpty(t *testing.T) {
 	data := map[string]any{
-		"name":     "",
-		"items":    []any{},
-		"profile":  map[string]any{},
-		"active":   true,
+		"name":    "",
+		"items":   []any{},
+		"profile": map[string]any{},
+		"active":  true,
 		"user": map[string]any{
 			"tags": []any{},
 		},
@@ -621,16 +621,16 @@ func TestIterableValueIsEmpty(t *testing.T) {
 // TestSafeTypeAssert tests SafeTypeAssert function
 func TestSafeTypeAssert(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       any
-		targetType  string
+		name          string
+		input         any
+		targetType    string
 		shouldSucceed bool
-		validate    func(t *testing.T, result any)
+		validate      func(t *testing.T, result any)
 	}{
 		{
-			name:        "same type int",
-			input:       42,
-			targetType:  "int",
+			name:          "same type int",
+			input:         42,
+			targetType:    "int",
 			shouldSucceed: true,
 			validate: func(t *testing.T, result any) {
 				if result.(int) != 42 {
@@ -639,9 +639,9 @@ func TestSafeTypeAssert(t *testing.T) {
 			},
 		},
 		{
-			name:        "same type string",
-			input:       "hello",
-			targetType:  "string",
+			name:          "same type string",
+			input:         "hello",
+			targetType:    "string",
 			shouldSucceed: true,
 			validate: func(t *testing.T, result any) {
 				if result.(string) != "hello" {
@@ -650,15 +650,15 @@ func TestSafeTypeAssert(t *testing.T) {
 			},
 		},
 		{
-			name:        "nil value",
-			input:       nil,
-			targetType:  "string",
+			name:          "nil value",
+			input:         nil,
+			targetType:    "string",
 			shouldSucceed: false,
 		},
 		{
-			name:        "int to float64 (convertible)",
-			input:       42,
-			targetType:  "float64",
+			name:          "int to float64 (convertible)",
+			input:         42,
+			targetType:    "float64",
 			shouldSucceed: true,
 			validate: func(t *testing.T, result any) {
 				if result.(float64) != 42.0 {
@@ -891,8 +891,8 @@ func TestIteratorDataState(t *testing.T) {
 func BenchmarkIterableValueGet(b *testing.B) {
 	data := map[string]any{
 		"user": map[string]any{
-			"name": "Alice",
-			"age":  30,
+			"name":  "Alice",
+			"age":   30,
 			"email": "alice@example.com",
 		},
 	}

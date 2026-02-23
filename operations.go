@@ -8,9 +8,11 @@ import (
 
 	"github.com/cybergodev/json/internal"
 )
+
 type ExtractionGroup struct {
 	Segments []PathSegment
 }
+
 func (p *Processor) detectConsecutiveExtractions(segments []PathSegment) []ExtractionGroup {
 	var groups []ExtractionGroup
 	var currentGroup []PathSegment
@@ -1560,6 +1562,7 @@ func (p *Processor) flattenContainersRecursive(arr []any, containers *[]any) {
 		}
 	}
 }
+
 type ExtractionContext struct {
 	OriginalContainers []any  // Original containers that hold the target arrays
 	ArrayFieldName     string // Name of the array field being operated on

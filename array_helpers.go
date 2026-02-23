@@ -51,7 +51,7 @@ func (ah *ArrayHelper) CompactArray(arr []any) []any {
 	if len(arr) == 0 {
 		return arr
 	}
-	
+
 	result := make([]any, 0, len(arr))
 	for _, item := range arr {
 		if item != nil && item != DeletedMarker {
@@ -66,7 +66,7 @@ func (ah *ArrayHelper) ExtendArray(arr []any, targetLength int) []any {
 	if len(arr) >= targetLength {
 		return arr
 	}
-	
+
 	extended := make([]any, targetLength)
 	copy(extended, arr)
 	return extended
@@ -112,4 +112,3 @@ var globalArrayHelper = &ArrayHelper{}
 func ParseArrayIndexGlobal(indexStr string) int {
 	return globalArrayHelper.ParseArrayIndex(indexStr)
 }
-

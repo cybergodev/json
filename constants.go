@@ -24,10 +24,10 @@ type ConfigInterface interface {
 const (
 	// Buffer and Pool Sizes - Optimized for production workloads
 	DefaultBufferSize        = 1024
-	MaxPoolBufferSize        = 8192  // 8KB max to prevent memory bloat
-	MinPoolBufferSize        = 256   // 256B min for efficiency
+	MaxPoolBufferSize        = 8192 // 8KB max to prevent memory bloat
+	MinPoolBufferSize        = 256  // 256B min for efficiency
 	DefaultPathSegmentCap    = 8
-	MaxPathSegmentCap        = 32    // Reduced from 128
+	MaxPathSegmentCap        = 32 // Reduced from 128
 	DefaultStringBuilderSize = 256
 
 	// Cache Sizes - Balanced for performance and memory

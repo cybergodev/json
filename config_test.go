@@ -100,7 +100,7 @@ func TestConfiguration(t *testing.T) {
 		t.Run("ClampValues", func(t *testing.T) {
 			config := DefaultConfig()
 			config.MaxJSONSize = 200 * 1024 * 1024 // Over max
-			config.MaxPathDepth = 300                // Over max
+			config.MaxPathDepth = 300              // Over max
 
 			config.Validate()
 

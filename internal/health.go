@@ -9,7 +9,7 @@ import (
 
 const (
 	defaultMaxMemoryBytes      = 1024 * 1024 * 1024 // 1GB
-	defaultMaxErrorRatePercent = 10.0                // 10%
+	defaultMaxErrorRatePercent = 10.0               // 10%
 )
 
 // HealthChecker provides health checking functionality for the JSON processor
