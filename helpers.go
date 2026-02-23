@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
+
+	"github.com/cybergodev/json/internal"
 )
 
 // IsValidJSON quickly checks if a string is valid JSON
@@ -118,7 +119,7 @@ func MergeJson(json1, json2 string) (string, error) {
 		return "", fmt.Errorf("second JSON is not an object")
 	}
 
-	merged := deepMerge(obj1, obj2)
+	merged := internal.DeepMerge(obj1, obj2)
 
 	result, err := json.Marshal(merged)
 	if err != nil {
@@ -133,106 +134,17 @@ func MergeJson(json1, json2 string) (string, error) {
 // - If both values are arrays, merge with deduplication (union)
 // - For all other cases (primitives), value2 takes precedence
 func deepMerge(base, override any) any {
-	baseMap, baseIsMap := base.(map[string]any)
-	overrideMap, overrideIsMap := override.(map[string]any)
-
-	if baseIsMap && overrideIsMap {
-		result := make(map[string]any)
-
-		// First, copy all keys from base
-		for key, value := range baseMap {
-			result[key] = value
-		}
-
-		// Then, merge override keys
-		for key, overrideValue := range overrideMap {
-			if baseValue, exists := baseMap[key]; exists {
-				// Both exist - recursively merge
-				result[key] = deepMerge(baseValue, overrideValue)
-			} else {
-				// Only in override - add directly
-				result[key] = overrideValue
-			}
-		}
-
-		return result
-	}
-
-	baseArray, baseIsArray := base.([]any)
-	overrideArray, overrideIsArray := override.([]any)
-
-	if baseIsArray && overrideIsArray {
-		// Merge arrays with deduplication
-		result := make([]any, 0, len(baseArray)+len(overrideArray))
-		seen := make(map[string]bool)
-
-		// Add elements from base array
-		for _, item := range baseArray {
-			key := arrayItemKey(item)
-			if !seen[key] {
-				seen[key] = true
-				result = append(result, item)
-			}
-		}
-
-		// Add elements from override array
-		for _, item := range overrideArray {
-			key := arrayItemKey(item)
-			if !seen[key] {
-				seen[key] = true
-				result = append(result, item)
-			}
-		}
-
-		return result
-	}
-
-	// For non-map, non-array types, override takes precedence
-	return override
+	return internal.DeepMerge(base, override)
 }
 
 // arrayItemKey generates a unique key for array item deduplication
 func arrayItemKey(item any) string {
-	switch v := item.(type) {
-	case string:
-		return "s:" + v
-	case float64:
-		// JSON numbers are parsed as float64
-		return "n:" + formatNumberForDedup(v)
-	case bool:
-		if v {
-			return "b:true"
-		}
-		return "b:false"
-	case nil:
-		return "null"
-	case map[string]any:
-		// For objects, use JSON marshaling for comparison
-		bytes, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprintf("obj:%p", v)
-		}
-		return "o:" + string(bytes)
-	case []any:
-		// For arrays, use JSON marshaling for comparison
-		bytes, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprintf("arr:%p", v)
-		}
-		return "a:" + string(bytes)
-	default:
-		// Fallback for other types
-		return fmt.Sprintf("other:%v", v)
-	}
+	return internal.ArrayItemKey(item)
 }
 
 // formatNumberForDedup formats a number for deduplication key generation
 func formatNumberForDedup(f float64) string {
-	// Check if it's an integer
-	if f == float64(int64(f)) {
-		return fmt.Sprintf("%d", int64(f))
-	}
-	return fmt.Sprintf("%g", f)
+	return internal.FormatNumberForDedup(f)
 }
 
 // GetTypedWithProcessor retrieves a typed value from JSON using a specific processor
@@ -430,69 +342,40 @@ const (
 	IteratorBreak
 )
 
-// Internal path type checking functions
+// Internal path type checking functions - delegate to internal package
 func isJSONPointerPath(path string) bool {
-	return path != "" && path[0] == '/'
+	return internal.IsJSONPointerPath(path)
 }
 
 func isDotNotationPath(path string) bool {
-	return path != "" && path != "." && path[0] != '/'
+	return internal.IsDotNotationPath(path)
 }
 
 func isArrayPath(path string) bool {
-	return strings.Contains(path, "[") && strings.Contains(path, "]")
+	return internal.IsArrayPath(path)
 }
 
 func isSlicePath(path string) bool {
-	return strings.Contains(path, "[") && strings.Contains(path, ":") && strings.Contains(path, "]")
+	return internal.IsSlicePath(path)
 }
 
 func isExtractionPath(path string) bool {
-	return strings.Contains(path, "{") && strings.Contains(path, "}")
+	return internal.IsExtractionPath(path)
 }
 
 func isJsonObject(data any) bool {
-	_, ok := data.(map[string]any)
-	return ok
+	return internal.IsJSONObject(data)
 }
 
 func isJsonArray(data any) bool {
-	_, ok := data.([]any)
-	return ok
+	return internal.IsJSONArray(data)
 }
 
 func isJsonPrimitive(data any) bool {
-	switch data.(type) {
-	case string, int, int32, int64, float32, float64, bool, nil:
-		return true
-	default:
-		return false
-	}
+	return internal.IsJSONPrimitive(data)
 }
 
 // tryConvertToArray attempts to convert a map to an array if it has numeric keys
 func tryConvertToArray(m map[string]any) ([]any, bool) {
-	if len(m) == 0 {
-		return []any{}, true
-	}
-
-	maxIndex := -1
-	for key := range m {
-		if index, err := strconv.Atoi(key); err == nil && index >= 0 {
-			if index > maxIndex {
-				maxIndex = index
-			}
-		} else {
-			return nil, false
-		}
-	}
-
-	arr := make([]any, maxIndex+1)
-	for key, value := range m {
-		if index, err := strconv.Atoi(key); err == nil {
-			arr[index] = value
-		}
-	}
-
-	return arr, true
+	return internal.TryConvertToArray(m)
 }

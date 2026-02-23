@@ -52,6 +52,9 @@ func (e *ArrayExtensionError) Error() string {
 // PathSegment represents a parsed path segment with its type and value
 type PathSegment = internal.PathSegment
 
+// ExtractionGroup represents a group of consecutive extraction segments
+type ExtractionGroup = internal.ExtractionGroup
+
 // PathInfo contains parsed path information
 type PathInfo struct {
 	Segments     []PathSegment `json:"segments"`

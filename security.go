@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/cybergodev/json/internal"
 )
 
 // SecurityValidator provides comprehensive security validation for JSON processing.
@@ -125,14 +127,14 @@ func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 // isDangerousContext checks if a pattern match is in a dangerous context
 func (sv *SecurityValidator) isDangerousContext(s string, idx, patternLen int) bool {
 	// Check if the pattern is standalone (not part of a larger word)
-	before := idx == 0 || !isWordChar(s[idx-1])
-	after := idx+patternLen >= len(s) || !isWordChar(s[idx+patternLen])
+	before := idx == 0 || !internal.IsWordChar(s[idx-1])
+	after := idx+patternLen >= len(s) || !internal.IsWordChar(s[idx+patternLen])
 	return before && after
 }
 
 // isWordChar returns true if the character is part of a word
 func isWordChar(c byte) bool {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
+	return internal.IsWordChar(c)
 }
 
 func (sv *SecurityValidator) validatePathSecurity(path string) error {
@@ -287,13 +289,9 @@ func (sv *SecurityValidator) validatePathSyntax(path string) error {
 }
 
 func isValidJSONPrimitive(s string) bool {
-	return s == "true" || s == "false" || s == "null" || isValidJSONNumber(s)
+	return internal.IsValidJSONPrimitive(s)
 }
 
 func isValidJSONNumber(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-	firstChar := s[0]
-	return (firstChar >= '0' && firstChar <= '9') || firstChar == '-'
+	return internal.IsValidJSONNumber(s)
 }
