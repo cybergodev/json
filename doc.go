@@ -66,4 +66,18 @@
 //   - Extraction and segment handling
 //   - Cache and array utilities
 //   - Security and encoding helpers
+//
+// # Core Types Organization
+//
+// Core types are organized in the following files:
+//
+//   - types.go: All type definitions (Config, ProcessorOptions, Stats, PathSegment, etc.)
+//   - processor.go: Processor struct and all methods
+//   - ops.go: Internal operation implementations
+//   - path.go: Path parsing and navigation
+//   - encoding.go: JSON encoding/decoding
+//   - api.go: Package-level API functions
+//   - file.go: File operations
+//   - iterator.go: Iteration utilities
+//   - recursive.go: Recursive processing
 package json
