@@ -1192,59 +1192,64 @@ func (urp *RecursiveProcessor) deepFlattenResults(results []any, flattened *[]an
 }
 
 // shouldUseDistributedArrayOperation determines if an array operation should be distributed
-// based on the actual data structure
+// based on the actual data structure. Optimized with early exit and sampling.
 func (urp *RecursiveProcessor) shouldUseDistributedArrayOperation(container []any) bool {
 	// Distributed operations should ONLY be used for extraction results, not regular nested arrays
 	// Regular nested arrays like [[1,2,3], [4,5,6]] should use normal array indexing
 	// Extraction results have specific patterns that distinguish them from regular nested arrays
 
+	n := len(container)
+
 	// If the container is empty, no distributed operation needed
-	if len(container) == 0 {
+	if n == 0 {
 		return false
 	}
 
-	// CRITICAL: Do NOT use distributed operations for regular nested arrays
-	// Only use distributed operations when we have clear extraction result patterns:
-	// 1. Triple-nested arrays like [[[item1, item2]]] (extraction wrapping)
-	// 2. Arrays where ALL elements are arrays AND they contain objects (extraction from array of objects)
-
-	// Check for triple-nested pattern (extraction result wrapper)
-	if len(container) == 1 {
-		if arr, ok := container[0].([]any); ok {
-			if len(arr) == 1 {
-				if _, ok := arr[0].([]any); ok {
-					// This is [[[...]]] pattern - extraction result
-					return true
-				}
+	// Fast path: Check for triple-nested pattern (extraction result wrapper)
+	// This is the most common extraction result pattern
+	if n == 1 {
+		if arr, ok := container[0].([]any); ok && len(arr) == 1 {
+			if _, ok := arr[0].([]any); ok {
+				// This is [[[...]]] pattern - extraction result
+				return true
 			}
 		}
 	}
 
-	// Check if ALL elements are arrays containing objects (extraction from array of objects)
-	// This distinguishes extraction results like [{name}] from regular nested arrays like [[1,2,3]]
+	// Optimization: Only check up to maxCheckElements to avoid O(n) traversal for large arrays
+	// Statistical sampling is sufficient for pattern detection
+	maxCheckElements := n
+	if n > 10 {
+		maxCheckElements = 10 // Check at most 10 elements
+	}
+
+	// Check if elements are arrays containing objects
+	// Early exit as soon as we find a non-array element
 	allArrays := true
 	hasObjects := false
-	for _, item := range container {
-		if arr, ok := item.([]any); ok {
-			// Check if this array contains objects
-			for _, elem := range arr {
-				if _, isObj := elem.(map[string]any); isObj {
-					hasObjects = true
-					break
-				}
-			}
-		} else {
+
+	for i := 0; i < maxCheckElements; i++ {
+		item := container[i]
+		arr, ok := item.([]any)
+		if !ok {
 			allArrays = false
 			break
+		}
+
+		// Check if this array contains objects (check first few elements only)
+		maxInnerCheck := len(arr)
+		if maxInnerCheck > 5 {
+			maxInnerCheck = 5
+		}
+		for j := 0; j < maxInnerCheck; j++ {
+			if _, isObj := arr[j].(map[string]any); isObj {
+				hasObjects = true
+				break
+			}
 		}
 	}
 
 	// Only use distributed operation if ALL elements are arrays AND at least one contains objects
 	// This prevents treating [[1,2,3], [4,5,6]] as an extraction result
-	if allArrays && hasObjects {
-		return true
-	}
-
-	// Default to normal indexing for regular nested arrays
-	return false
+	return allArrays && hasObjects
 }

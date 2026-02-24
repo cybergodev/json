@@ -28,41 +28,9 @@ type ArrayExtensionNeededError struct {
 }
 
 func (e *ArrayExtensionNeededError) Error() string {
-	return e.error()
-}
-
-func (e *ArrayExtensionNeededError) error() string {
-	return "array extension needed: current length " + itoa(e.CurrentLength) +
-		", required length " + itoa(e.RequiredLength) + " for slice [" +
-		itoa(e.Start) + ":" + itoa(e.End) + "]"
-}
-
-// itoa converts int to string without importing strconv (for error message efficiency)
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-
-	negative := i < 0
-	if negative {
-		i = -i
-	}
-
-	var buf [32]byte
-	pos := len(buf)
-
-	for i > 0 {
-		pos--
-		buf[pos] = byte('0' + i%10)
-		i /= 10
-	}
-
-	if negative {
-		pos--
-		buf[pos] = '-'
-	}
-
-	return string(buf[pos:])
+	return "array extension needed: current length " + strconv.Itoa(e.CurrentLength) +
+		", required length " + strconv.Itoa(e.RequiredLength) + " for slice [" +
+		strconv.Itoa(e.Start) + ":" + strconv.Itoa(e.End) + "]"
 }
 
 func (p *Processor) handleArrayAccess(data any, segment PathSegment) PropertyAccessResult {
@@ -417,11 +385,6 @@ func (p *Processor) extendArrayInPath(data any, segments []PathSegment, currentL
 
 	return nil
 }
-
-func (p *Processor) extendArrayAtPath(data any, segments []PathSegment, currentLen, requiredLen int) error {
-	return p.extendArrayInPath(data, segments, currentLen, requiredLen)
-}
-
 func (p *Processor) replaceArrayInParentContext(data any, segments []PathSegment, arrayIndex int, newArray []any) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
@@ -1535,10 +1498,6 @@ func (p *Processor) handlePostExtractionArrayAccess(data any, segment PathSegmen
 	return p.applySingleArrayOperation(data, segment)
 }
 
-func (p *Processor) handleDistributedArrayAccess(data any, segment PathSegment) any {
-	return p.handlePostExtractionArrayAccess(data, segment)
-}
-
 func (p *Processor) handlePostExtractionArraySlice(data any, segment PathSegment) any {
 	// Check if data is an array of arrays (result of extraction)
 	if arr, ok := data.([]any); ok {
@@ -1705,9 +1664,8 @@ func (p *Processor) setValueAdvancedPath(data any, path string, value any, creat
 	// Check if this is a complex path that should use RecursiveProcessor
 	// But exclude simple array slice paths that need array extension support
 	if p.isComplexPath(path) && !p.isSimpleArraySlicePath(path) {
-		// Use RecursiveProcessor for complex paths like flat extraction
-		unifiedProcessor := NewRecursiveProcessor(p)
-		_, err := unifiedProcessor.ProcessRecursivelyWithOptions(data, path, OpSet, value, createPaths)
+		// Use cached RecursiveProcessor for complex paths like flat extraction
+		_, err := p.recursiveProcessor.ProcessRecursivelyWithOptions(data, path, OpSet, value, createPaths)
 		return err
 	}
 

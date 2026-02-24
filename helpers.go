@@ -112,7 +112,10 @@ func (ah *ArrayHelper) PerformSlice(arr []any, start, end, step int) []any {
 // Global array helper instance
 var globalArrayHelper = &ArrayHelper{}
 
-// ParseArrayIndexGlobal is a package-level function for backward compatibility
+// ParseArrayIndexGlobal is a package-level function for backward compatibility.
+//
+// Deprecated: Use ArrayHelper.ParseArrayIndex method instead for better testability.
+// This function will be removed in a future major version (v2.0.0).
 func ParseArrayIndexGlobal(indexStr string) int {
 	return globalArrayHelper.ParseArrayIndex(indexStr)
 }
@@ -330,12 +333,30 @@ func ConvertToBool(value any) (bool, bool) {
 	switch v := value.(type) {
 	case bool:
 		return v, true
-	case int, int8, int16, int32, int64:
-		return reflect.ValueOf(v).Int() != 0, true
-	case uint, uint8, uint16, uint32, uint64:
-		return reflect.ValueOf(v).Uint() != 0, true
-	case float32, float64:
-		return reflect.ValueOf(v).Float() != 0.0, true
+	case int:
+		return v != 0, true
+	case int8:
+		return v != 0, true
+	case int16:
+		return v != 0, true
+	case int32:
+		return v != 0, true
+	case int64:
+		return v != 0, true
+	case uint:
+		return v != 0, true
+	case uint8:
+		return v != 0, true
+	case uint16:
+		return v != 0, true
+	case uint32:
+		return v != 0, true
+	case uint64:
+		return v != 0, true
+	case float32:
+		return v != 0.0, true
+	case float64:
+		return v != 0.0, true
 	case string:
 		switch strings.ToLower(v) {
 		case "true", "1", "yes", "on":
@@ -583,23 +604,122 @@ func ValidatePath(path string) error {
 }
 
 // DeepCopy creates a deep copy of JSON-compatible data
+// Uses direct recursive copying for better performance (avoids marshal/unmarshal overhead)
 func DeepCopy(data any) (any, error) {
+	return deepCopyValue(data)
+}
+
+// deepCopyValue performs recursive deep copy without serialization
+func deepCopyValue(data any) (any, error) {
+	if data == nil {
+		return nil, nil
+	}
+
+	// Fast path for primitive types (no allocation needed)
 	switch v := data.(type) {
-	case nil, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, string:
+	case bool:
+		return v, nil
+	case int:
+		return v, nil
+	case int8:
+		return v, nil
+	case int16:
+		return v, nil
+	case int32:
+		return v, nil
+	case int64:
+		return v, nil
+	case uint:
+		return v, nil
+	case uint8:
+		return v, nil
+	case uint16:
+		return v, nil
+	case uint32:
+		return v, nil
+	case uint64:
+		return v, nil
+	case float32:
+		return v, nil
+	case float64:
+		return v, nil
+	case string:
+		return v, nil
+	case json.Number:
+		// json.Number is immutable, return as-is
 		return v, nil
 	}
 
-	jsonBytes, err := json.Marshal(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal data for deep copy: %v", err)
+	// Handle complex types with type-specific optimizations
+	switch v := data.(type) {
+	case map[string]any:
+		return deepCopyMap(v)
+	case []any:
+		return deepCopySlice(v)
+	case map[string]string:
+		// Fast path for map[string]string - no recursion needed
+		result := make(map[string]string, len(v))
+		for key, val := range v {
+			result[key] = val
+		}
+		return result, nil
+	case []string:
+		// Fast path for []string - no recursion needed
+		result := make([]string, len(v))
+		copy(result, v)
+		return result, nil
+	case []int:
+		// Fast path for []int - no recursion needed
+		result := make([]int, len(v))
+		copy(result, v)
+		return result, nil
+	case []float64:
+		// Fast path for []float64 - no recursion needed
+		result := make([]float64, len(v))
+		copy(result, v)
+		return result, nil
+	case []bool:
+		// Fast path for []bool - no recursion needed
+		result := make([]bool, len(v))
+		copy(result, v)
+		return result, nil
+	default:
+		// Fallback to marshal/unmarshal for unknown types (structs, custom types, etc.)
+		jsonBytes, err := json.Marshal(data)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal data for deep copy: %v", err)
+		}
+		var result any
+		if err := json.Unmarshal(jsonBytes, &result); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal data for deep copy: %v", err)
+		}
+		return result, nil
 	}
+}
 
-	decoder := NewNumberPreservingDecoder(true)
-	result, err := decoder.DecodeToAny(string(jsonBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal data for deep copy: %v", err)
+// deepCopyMap creates a deep copy of a map
+func deepCopyMap(m map[string]any) (map[string]any, error) {
+	result := make(map[string]any, len(m))
+	for key, val := range m {
+		copied, err := deepCopyValue(val)
+		if err != nil {
+			return nil, fmt.Errorf("error copying key '%s': %v", key, err)
+		}
+		result[key] = copied
 	}
+	return result, nil
+}
 
+// deepCopySlice creates a deep copy of a slice
+func deepCopySlice(s []any) ([]any, error) {
+	result := make([]any, len(s))
+	for i, val := range s {
+		copied, err := deepCopyValue(val)
+		if err != nil {
+			return nil, fmt.Errorf("error copying index %d: %v", i, err)
+		}
+		result[i] = copied
+	}
 	return result, nil
 }
 
@@ -664,24 +784,6 @@ func MergeJson(json1, json2 string) (string, error) {
 	}
 
 	return string(result), nil
-}
-
-// deepMerge recursively merges two JSON values using union merge strategy
-// - If both values are objects, recursively merge their keys
-// - If both values are arrays, merge with deduplication (union)
-// - For all other cases (primitives), value2 takes precedence
-func deepMerge(base, override any) any {
-	return internal.DeepMerge(base, override)
-}
-
-// arrayItemKey generates a unique key for array item deduplication
-func arrayItemKey(item any) string {
-	return internal.ArrayItemKey(item)
-}
-
-// formatNumberForDedup formats a number for deduplication key generation
-func formatNumberForDedup(f float64) string {
-	return internal.FormatNumberForDedup(f)
 }
 
 // GetTypedWithProcessor retrieves a typed value from JSON using a specific processor
@@ -898,21 +1000,4 @@ func isSlicePath(path string) bool {
 
 func isExtractionPath(path string) bool {
 	return internal.IsExtractionPath(path)
-}
-
-func isJsonObject(data any) bool {
-	return internal.IsJSONObject(data)
-}
-
-func isJsonArray(data any) bool {
-	return internal.IsJSONArray(data)
-}
-
-func isJsonPrimitive(data any) bool {
-	return internal.IsJSONPrimitive(data)
-}
-
-// tryConvertToArray attempts to convert a map to an array if it has numeric keys
-func tryConvertToArray(m map[string]any) ([]any, bool) {
-	return internal.TryConvertToArray(m)
 }

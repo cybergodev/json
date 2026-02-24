@@ -209,10 +209,6 @@ func (p *Processor) preprocessPath(path string, sb *strings.Builder) string {
 	return internal.PreprocessPath(path, sb)
 }
 
-func (p *Processor) needsDotBefore(prevChar rune) bool {
-	return internal.NeedsDotBefore(prevChar)
-}
-
 func (p *Processor) splitPathIntoSegments(path string, segments []PathSegment) []PathSegment {
 	return internal.SplitPathIntoSegments(path, segments)
 }
@@ -383,17 +379,7 @@ func (p *Processor) FormatCompact(jsonStr string, opts ...*ProcessorOptions) (st
 }
 
 // CompactBuffer appends to dst the JSON-encoded src with insignificant space characters elided.
-//
-// This method provides compatibility with the encoding/json.Compact function signature,
-// with the addition of optional ProcessorOptions for advanced customization.
-//
-// API Design Note:
-//   - Processor.Compact(jsonStr) operates on strings and returns formatted strings
-//   - Processor.CompactBuffer(dst, src) operates on buffers for stream processing
-//   - This naming convention distinguishes string operations from buffer operations
-//   - Both methods support optional ProcessorOptions for consistency
-//
-// For package-level usage with standard library signature, see json.Compact(dst, src).
+// Compatible with encoding/json.Compact with optional ProcessorOptions support.
 func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, opts ...*ProcessorOptions) error {
 	compacted, err := p.Compact(string(src), opts...)
 	if err != nil {
@@ -404,17 +390,7 @@ func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, opts ...*Proces
 }
 
 // IndentBuffer appends to dst an indented form of the JSON-encoded src.
-//
-// This method provides compatibility with the encoding/json.Indent function signature,
-// with the addition of optional ProcessorOptions for advanced customization.
-//
-// API Design Note:
-//   - Processor.FormatPretty(jsonStr) operates on strings for pretty formatting
-//   - Processor.IndentBuffer(dst, src, prefix, indent) operates on buffers for stream processing
-//   - This naming convention distinguishes string operations from buffer operations
-//   - Both approaches support optional ProcessorOptions for consistency
-//
-// For package-level usage with standard library signature, see json.Indent(dst, src, prefix, indent).
+// Compatible with encoding/json.Indent with optional ProcessorOptions support.
 func (p *Processor) IndentBuffer(dst *bytes.Buffer, src []byte, prefix, indent string, opts ...*ProcessorOptions) error {
 	var data any
 	if err := p.Unmarshal(src, &data, opts...); err != nil {
@@ -429,19 +405,8 @@ func (p *Processor) IndentBuffer(dst *bytes.Buffer, src []byte, prefix, indent s
 }
 
 // HTMLEscapeBuffer appends to dst the JSON-encoded src with HTML-safe escaping.
-//
-// This method provides compatibility with the encoding/json.HTMLEscape function signature,
-// with the addition of optional ProcessorOptions for advanced customization.
-//
-// The function replaces &, <, and > with \u0026, \u003c, and \u003e to avoid certain
-// safety problems that can arise when embedding JSON in HTML.
-//
-// API Design Note:
-//   - The "Buffer" suffix distinguishes this buffer operation from potential string operations
-//   - This naming is consistent with CompactBuffer and IndentBuffer
-//   - Processor methods use descriptive names to avoid ambiguity
-//
-// For package-level usage with standard library signature, see json.HTMLEscape(dst, src).
+// Replaces &, <, and > with \u0026, \u003c, and \u003e for safe HTML embedding.
+// Compatible with encoding/json.HTMLEscape with optional ProcessorOptions support.
 func (p *Processor) HTMLEscapeBuffer(dst *bytes.Buffer, src []byte, opts ...*ProcessorOptions) {
 	var data any
 	if err := p.Unmarshal(src, &data, opts...); err != nil {
@@ -614,13 +579,6 @@ func (p *Processor) handlePropertyAccessValue(data any, property string) any {
 		return result.Value
 	}
 	return nil
-}
-
-func (p *Processor) parseArrayIndexFromPath(property string) int {
-	if index, ok := internal.ParseArrayIndex(property); ok {
-		return index
-	}
-	return -1
 }
 
 // NumberPreservingDecoder provides JSON decoding with optimized number format preservation
@@ -922,7 +880,8 @@ func (p *Processor) deepCopyData(data any) any {
 }
 
 func (p *Processor) deepCopyStringMap(data map[string]any) map[string]any {
-	result := make(map[string]any)
+	// Pre-allocate capacity to avoid map growth during copy
+	result := make(map[string]any, len(data))
 	for key, value := range data {
 		result[key] = p.deepCopyData(value)
 	}
@@ -930,7 +889,8 @@ func (p *Processor) deepCopyStringMap(data map[string]any) map[string]any {
 }
 
 func (p *Processor) deepCopyAnyMap(data map[any]any) map[any]any {
-	result := make(map[any]any)
+	// Pre-allocate capacity to avoid map growth during copy
+	result := make(map[any]any, len(data))
 	for key, value := range data {
 		result[key] = p.deepCopyData(value)
 	}
@@ -938,6 +898,7 @@ func (p *Processor) deepCopyAnyMap(data map[any]any) map[any]any {
 }
 
 func (p *Processor) deepCopyArray(data []any) []any {
+	// Pre-allocate exact capacity since we know the length
 	result := make([]any, len(data))
 	for i, value := range data {
 		result[i] = p.deepCopyData(value)
@@ -1025,9 +986,4 @@ func (p *Processor) isValidSliceRange(rangeStr string) bool {
 
 func (p *Processor) wrapError(err error, context string) error {
 	return internal.WrapError(err, context)
-}
-
-// createPathError creates a path-specific error
-func (p *Processor) createPathError(path string, operation string, err error) error {
-	return internal.CreatePathError(path, operation, err)
 }

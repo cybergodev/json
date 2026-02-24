@@ -12,11 +12,22 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/cybergodev/json/internal"
+)
+
+// Pre-compiled regex patterns for schema validation
+var (
+	// emailLocalRegex validates local part of email addresses
+	emailLocalRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+$`)
+	// emailDomainRegex validates domain part of email addresses
+	emailDomainRegex = regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
+	// uuidRegex validates UUID format (v4 pattern)
+	uuidRegex = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	// ipv6Regex validates IPv6 address format
+	ipv6Regex = regexp.MustCompile(`^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$`)
 )
 
 // Token holds a value of one of these types:
@@ -61,18 +72,6 @@ func isSpace(c byte) bool {
 func isDigit(c byte) bool {
 	return internal.IsDigit(c)
 }
-
-// Buffer pools for custom encoder memory optimization
-// Note: Pool is now managed in internal package, keep local vars for compatibility
-var (
-	encoderBufferPool = sync.Pool{
-		New: func() any {
-			buf := &bytes.Buffer{}
-			buf.Grow(2048)
-			return buf
-		},
-	}
-)
 
 func getEncoderBuffer() *bytes.Buffer {
 	return internal.GetEncoderBuffer()
@@ -942,11 +941,9 @@ func (p *Processor) EncodePretty(value any, config ...*EncodeConfig) (string, er
 
 // CustomEncoder provides advanced JSON encoding with configurable options
 type CustomEncoder struct {
-	config      *EncodeConfig
-	buffer      *bytes.Buffer
-	depth       int
-	keyBuffer   *bytes.Buffer
-	valueBuffer *bytes.Buffer
+	config *EncodeConfig
+	buffer *bytes.Buffer
+	depth  int
 }
 
 // NewCustomEncoder creates a new custom encoder with the given configuration
@@ -955,11 +952,9 @@ func NewCustomEncoder(config *EncodeConfig) *CustomEncoder {
 		config = DefaultEncodeConfig()
 	}
 	return &CustomEncoder{
-		config:      config,
-		buffer:      getEncoderBuffer(),
-		keyBuffer:   getEncoderBuffer(),
-		valueBuffer: getEncoderBuffer(),
-		depth:       0,
+		config: config,
+		buffer: getEncoderBuffer(),
+		depth:  0,
 	}
 }
 
@@ -969,21 +964,11 @@ func (e *CustomEncoder) Close() {
 		putEncoderBuffer(e.buffer)
 		e.buffer = nil
 	}
-	if e.keyBuffer != nil {
-		putEncoderBuffer(e.keyBuffer)
-		e.keyBuffer = nil
-	}
-	if e.valueBuffer != nil {
-		putEncoderBuffer(e.valueBuffer)
-		e.valueBuffer = nil
-	}
 }
 
 // Encode encodes the given value to JSON string using custom options
 func (e *CustomEncoder) Encode(value any) (string, error) {
 	e.buffer.Reset()
-	e.keyBuffer.Reset()
-	e.valueBuffer.Reset()
 	e.depth = 0
 
 	if err := e.encodeValue(value); err != nil {
@@ -1908,10 +1893,7 @@ func (p *Processor) validateEmailFormat(email, path string, errors *[]Validation
 	}
 
 	// Basic character validation for local and domain parts
-	localRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+-]+$`)
-	domainRegex := regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
-
-	if !localRegex.MatchString(localPart) || !domainRegex.MatchString(domainPart) {
+	if !emailLocalRegex.MatchString(localPart) || !emailDomainRegex.MatchString(domainPart) {
 		*errors = append(*errors, ValidationError{
 			Path:    path,
 			Message: fmt.Sprintf("'%s' contains invalid characters in email address", email),
@@ -1972,13 +1954,7 @@ func (p *Processor) validateURIFormat(uri, path string, errors *[]ValidationErro
 
 // validateUUIDFormat validates UUID format
 func (p *Processor) validateUUIDFormat(uuid, path string, errors *[]ValidationError) error {
-	// UUID v4 regex pattern
-	uuidRegex := `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
-	matched, err := regexp.MatchString(uuidRegex, uuid)
-	if err != nil {
-		return err
-	}
-	if !matched {
+	if !uuidRegex.MatchString(uuid) {
 		*errors = append(*errors, ValidationError{
 			Path:    path,
 			Message: fmt.Sprintf("'%s' is not a valid UUID format", uuid),
@@ -2022,13 +1998,8 @@ func (p *Processor) validateIPv6Format(ip, path string, errors *[]ValidationErro
 		return nil
 	}
 
-	// More detailed validation could be added here
-	ipv6Regex := `^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$`
-	matched, err := regexp.MatchString(ipv6Regex, ip)
-	if err != nil {
-		return err
-	}
-	if !matched {
+	// Use pre-compiled regex for validation
+	if !ipv6Regex.MatchString(ip) {
 		*errors = append(*errors, ValidationError{
 			Path:    path,
 			Message: fmt.Sprintf("'%s' is not a valid IPv6 format", ip),

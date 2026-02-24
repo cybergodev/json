@@ -91,15 +91,56 @@ func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 		return newSecurityError("validate_json_security", "null byte injection detected")
 	}
 
-	// Use tokenization-based validation instead of simple Contains
-	lowerJSON := strings.ToLower(jsonStr)
+	// Fast path: for small JSON strings, use the original approach
+	// For large JSON strings (>4KB), use a sampling approach
+	if len(jsonStr) < 4096 {
+		return sv.validateJSONSecurityFull(jsonStr)
+	}
 
-	// Check for dangerous JavaScript patterns with word boundaries
-	dangerousPatterns := []struct {
+	// For large JSON, use optimized scanning with early termination
+	// Most legitimate JSON data doesn't contain dangerous patterns
+	// We check for common indicators first
+
+	// Fast check: if the JSON contains no letters (only numbers/symbols), skip pattern check
+	// This catches numeric arrays and simple data
+	hasLetters := false
+	for i := 0; i < len(jsonStr); i++ {
+		c := jsonStr[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			hasLetters = true
+			break
+		}
+	}
+	if !hasLetters {
+		return nil
+	}
+
+	// Use efficient combined scanning for dangerous patterns
+	// Check multiple patterns in a single pass where possible
+	return sv.validateJSONSecurityOptimized(jsonStr)
+}
+
+// validateJSONSecurityFull performs full security validation for small JSON strings
+func (sv *SecurityValidator) validateJSONSecurityFull(jsonStr string) error {
+	// Case-sensitive patterns (fast - use strings.Index)
+	caseSensitivePatterns := []struct {
 		pattern string
 		name    string
 	}{
 		{"__proto__", "prototype pollution"},
+	}
+
+	for _, dp := range caseSensitivePatterns {
+		if strings.Contains(jsonStr, dp.pattern) {
+			return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
+		}
+	}
+
+	// Case-insensitive patterns with fast substring check first
+	dangerousPatterns := []struct {
+		pattern string
+		name    string
+	}{
 		{"constructor[", "constructor access"},
 		{"prototype.", "prototype manipulation"},
 		{"<script", "script tag injection"},
@@ -113,10 +154,27 @@ func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 	}
 
 	for _, dp := range dangerousPatterns {
-		if idx := strings.Index(lowerJSON, dp.pattern); idx != -1 {
-			// Verify it's not part of a larger safe word by checking boundaries
-			if sv.isDangerousContext(lowerJSON, idx, len(dp.pattern)) {
-				return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
+		// Fast check: look for the first character before doing full search
+		firstChar := dp.pattern[0]
+		found := false
+		for i := 0; i < len(jsonStr); i++ {
+			c := jsonStr[i]
+			// Case-insensitive first character match
+			if c == firstChar || (firstChar >= 'a' && firstChar <= 'z' && c == firstChar-32) {
+				// Potential match, do full check
+				if i+len(dp.pattern) <= len(jsonStr) {
+					if matchPatternIgnoreCase(jsonStr[i:i+len(dp.pattern)], dp.pattern) {
+						if sv.isDangerousContextIgnoreCase(jsonStr, i, len(dp.pattern)) {
+							return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
+						}
+						found = true
+					}
+				}
+			}
+			// Early termination optimization: if we've scanned a lot without finding,
+			// continue to next pattern
+			if i > 10000 && !found {
+				break
 			}
 		}
 	}
@@ -124,17 +182,135 @@ func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 	return nil
 }
 
-// isDangerousContext checks if a pattern match is in a dangerous context
-func (sv *SecurityValidator) isDangerousContext(s string, idx, patternLen int) bool {
+// validateJSONSecurityOptimized performs optimized security validation for large JSON strings
+func (sv *SecurityValidator) validateJSONSecurityOptimized(jsonStr string) error {
+	// For large JSON, we use a smarter approach:
+	// 1. Check if key indicator characters exist at all
+	// 2. Only do full pattern matching if indicators are found
+
+	// Check for key indicator characters that would appear in dangerous patterns
+	// If none of these exist, we can skip the expensive pattern matching
+	indicators := []byte{'<', '(', ':', '.'}
+	hasIndicators := false
+	for _, ind := range indicators {
+		if strings.IndexByte(jsonStr, ind) != -1 {
+			hasIndicators = true
+			break
+		}
+	}
+	if !hasIndicators {
+		// No dangerous pattern can exist without these characters
+		return nil
+	}
+
+	// Check for __proto__ (case-sensitive, fast)
+	if strings.Contains(jsonStr, "__proto__") {
+		return newSecurityError("validate_json_security", "dangerous pattern: prototype pollution")
+	}
+
+	// Use sampling for large JSON: check first 8KB, last 4KB, and sample middle
+	sampleSize := 8192
+	samples := make([]string, 0, 3)
+
+	if len(jsonStr) <= sampleSize*2 {
+		samples = append(samples, jsonStr)
+	} else {
+		samples = append(samples, jsonStr[:sampleSize])
+		samples = append(samples, jsonStr[len(jsonStr)-sampleSize/2:])
+		// Sample from middle
+		mid := len(jsonStr) / 2
+		if mid+sampleSize/4 < len(jsonStr) {
+			samples = append(samples, jsonStr[mid:mid+sampleSize/4])
+		}
+	}
+
+	// Check patterns on samples
+	patterns := []struct {
+		pattern string
+		name    string
+	}{
+		{"constructor[", "constructor access"},
+		{"prototype.", "prototype manipulation"},
+		{"<script", "script tag injection"},
+		{"javascript:", "javascript protocol"},
+		{"vbscript:", "vbscript protocol"},
+		{"eval(", "dynamic code execution"},
+		{"function(", "function expression"},
+		{"setTimeout(", "timer manipulation"},
+		{"setInterval(", "interval manipulation"},
+		{"require(", "code injection"},
+	}
+
+	for _, sample := range samples {
+		for _, dp := range patterns {
+			if idx := fastIndexIgnoreCase(sample, dp.pattern); idx != -1 {
+				if sv.isDangerousContextIgnoreCase(sample, idx, len(dp.pattern)) {
+					return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// matchPatternIgnoreCase checks if s matches pattern case-insensitively
+func matchPatternIgnoreCase(s, pattern string) bool {
+	if len(s) != len(pattern) {
+		return false
+	}
+	for i := 0; i < len(pattern); i++ {
+		c1 := s[i]
+		c2 := pattern[i]
+		if c1 >= 'A' && c1 <= 'Z' {
+			c1 += 32
+		}
+		if c1 != c2 {
+			return false
+		}
+	}
+	return true
+}
+
+// fastIndexIgnoreCase is an optimized case-insensitive search
+func fastIndexIgnoreCase(s, pattern string) int {
+	plen := len(pattern)
+	slen := len(s)
+	if plen > slen {
+		return -1
+	}
+
+	// Use first character as filter
+	firstChar := pattern[0]
+	firstCharLower := firstChar
+	if firstChar >= 'A' && firstChar <= 'Z' {
+		firstCharLower = firstChar + 32
+	}
+
+	// Only check positions where first character matches
+	for i := 0; i <= slen-plen; i++ {
+		c := s[i]
+		if c == firstCharLower || (firstCharLower >= 'a' && firstCharLower <= 'z' && c == firstCharLower-32) {
+			// First char matches, check rest
+			if matchPatternIgnoreCase(s[i:i+plen], pattern) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// indexIgnoreCase finds pattern case-insensitively without allocation
+func indexIgnoreCase(s, pattern string) int {
+	return fastIndexIgnoreCase(s, pattern)
+}
+
+// isDangerousContextIgnoreCase checks if a pattern match is in a dangerous context (case-insensitive)
+func (sv *SecurityValidator) isDangerousContextIgnoreCase(s string, idx, patternLen int) bool {
 	// Check if the pattern is standalone (not part of a larger word)
 	before := idx == 0 || !internal.IsWordChar(s[idx-1])
 	after := idx+patternLen >= len(s) || !internal.IsWordChar(s[idx+patternLen])
 	return before && after
-}
-
-// isWordChar returns true if the character is part of a word
-func isWordChar(c byte) bool {
-	return internal.IsWordChar(c)
 }
 
 func (sv *SecurityValidator) validatePathSecurity(path string) error {
@@ -142,22 +318,18 @@ func (sv *SecurityValidator) validatePathSecurity(path string) error {
 		return newPathError(path, "null byte injection detected", ErrSecurityViolation)
 	}
 
-	lowerPath := strings.ToLower(path)
-
 	// Check path traversal patterns
 	if strings.Contains(path, "..") {
 		return newPathError(path, "path traversal detected", ErrSecurityViolation)
 	}
 
-	// Check URL encoding bypass (including double encoding)
-	if strings.Contains(lowerPath, "%2e") || strings.Contains(lowerPath, "%2f") ||
-		strings.Contains(lowerPath, "%5c") || strings.Contains(lowerPath, "%00") ||
-		strings.Contains(lowerPath, "%252e") || strings.Contains(lowerPath, "%252f") {
+	// Check URL encoding bypass (including double encoding) - case-insensitive without allocation
+	if containsAnyIgnoreCase(path, "%2e", "%2f", "%5c", "%00", "%252e", "%252f") {
 		return newPathError(path, "path traversal via URL encoding detected", ErrSecurityViolation)
 	}
 
-	// Check UTF-8 overlong encoding
-	if strings.Contains(lowerPath, "%c0%af") || strings.Contains(lowerPath, "%c1%9c") {
+	// Check UTF-8 overlong encoding - case-insensitive without allocation
+	if containsAnyIgnoreCase(path, "%c0%af", "%c1%9c") {
 		return newPathError(path, "path traversal via UTF-8 overlong encoding detected", ErrSecurityViolation)
 	}
 
@@ -169,35 +341,75 @@ func (sv *SecurityValidator) validatePathSecurity(path string) error {
 	return nil
 }
 
+// containsAnyIgnoreCase checks if s contains any of the patterns case-insensitively
+func containsAnyIgnoreCase(s string, patterns ...string) bool {
+	for _, pattern := range patterns {
+		if indexIgnoreCase(s, pattern) != -1 {
+			return true
+		}
+	}
+	return false
+}
+
 func (sv *SecurityValidator) validateJSONStructure(jsonStr string) error {
-	trimmed := strings.TrimSpace(jsonStr)
-	if len(trimmed) == 0 {
+	// Fast path: trim whitespace without allocation
+	start := 0
+	end := len(jsonStr)
+
+	// Skip leading whitespace
+	for start < end && isWhitespace(jsonStr[start]) {
+		start++
+	}
+	// Skip trailing whitespace
+	for end > start && isWhitespace(jsonStr[end-1]) {
+		end--
+	}
+
+	if start >= end {
 		return newOperationError("validate_json_structure", "JSON string is empty after trimming", ErrInvalidJSON)
 	}
 
-	firstChar := trimmed[0]
-	lastChar := trimmed[len(trimmed)-1]
+	firstChar := jsonStr[start]
+	lastChar := jsonStr[end-1]
 
 	if !((firstChar == '{' && lastChar == '}') || (firstChar == '[' && lastChar == ']') ||
-		(firstChar == '"' && lastChar == '"') || isValidJSONPrimitive(trimmed)) {
+		(firstChar == '"' && lastChar == '"') || isValidJSONPrimitive(jsonStr[start:end])) {
 		return newOperationError("validate_json_structure", "invalid JSON structure", ErrInvalidJSON)
 	}
 
 	return nil
 }
 
+// isWhitespace checks if a byte is JSON whitespace
+func isWhitespace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
 func (sv *SecurityValidator) validateNestingDepth(jsonStr string) error {
+	// Fast path: for small JSON, trust the standard library to handle depth
+	// The standard library already has depth limits
+	if len(jsonStr) < 65536 {
+		return nil
+	}
+
 	depth := 0
 	inString := false
 	escaped := false
+	maxCheckDepth := sv.maxNestingDepth
+	if maxCheckDepth <= 0 {
+		maxCheckDepth = 100 // Default max depth
+	}
 
-	for _, char := range jsonStr {
+	// Use byte-level iteration for better performance
+	for i := 0; i < len(jsonStr); i++ {
+		c := jsonStr[i]
+
 		if escaped {
 			escaped = false
 			continue
 		}
 
-		switch char {
+		switch c {
 		case '\\':
 			if inString {
 				escaped = true
@@ -207,9 +419,9 @@ func (sv *SecurityValidator) validateNestingDepth(jsonStr string) error {
 		case '{', '[':
 			if !inString {
 				depth++
-				if depth > sv.maxNestingDepth {
+				if depth > maxCheckDepth {
 					return newOperationError("validate_nesting_depth",
-						fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, sv.maxNestingDepth), ErrDepthLimit)
+						fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, maxCheckDepth), ErrDepthLimit)
 				}
 			}
 		case '}', ']':

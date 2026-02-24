@@ -130,8 +130,8 @@ type Stats struct {
 type DetailedStats struct {
 	Stats             Stats             `json:"stats"`
 	state             int32             `json:"-"` // Processor state (0=active, 1=closing, 2=closed)
-	configSnapshot    Config            `json:"config_snapshot"`
-	resourcePoolStats ResourcePoolStats `json:"resource_pool_stats"`
+	configSnapshot    Config            `json:"-"` // Internal: config snapshot
+	resourcePoolStats ResourcePoolStats `json:"-"` // Internal: resource pool stats
 }
 
 // ResourcePoolStats provides statistics about resource pools

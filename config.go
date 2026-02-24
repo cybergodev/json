@@ -21,10 +21,7 @@ type ConfigInterface interface {
 	GetMaxNestingDepth() int
 }
 
-// ============================================================================
-// Configuration Constants
-// ============================================================================
-
+// Configuration constants with optimized defaults for production workloads.
 const (
 	// Buffer and Pool Sizes - Optimized for production workloads
 	DefaultBufferSize        = 1024
@@ -91,7 +88,7 @@ const (
 	ValidationBOMPrefix = "\uFEFF" // UTF-8 BOM prefix to detect and remove
 )
 
-// Error codes for machine-readable error identification
+// Error codes for machine-readable error identification.
 const (
 	ErrCodeInvalidJSON       = "ERR_INVALID_JSON"
 	ErrCodePathNotFound      = "ERR_PATH_NOT_FOUND"
@@ -106,11 +103,7 @@ const (
 	ErrCodeRateLimit         = "ERR_RATE_LIMIT"
 )
 
-// ============================================================================
-// Configuration Functions
-// ============================================================================
-
-// DefaultConfig returns the default configuration
+// DefaultConfig returns the default configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		MaxCacheSize:              DefaultCacheSize,

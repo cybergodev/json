@@ -2,7 +2,6 @@ package internal
 
 import (
 	"container/list"
-	"hash/fnv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -346,11 +345,19 @@ func (cm *CacheManager) getShard(key string) *cacheShard {
 	return cm.shards[hash&cm.shardMask]
 }
 
-// hashKey generates a hash for the key using FNV-1a (fast and sufficient for cache keys)
+// hashKey generates a hash for the key using inline FNV-1a (no allocations)
 func (cm *CacheManager) hashKey(key string) uint64 {
-	h := fnv.New64a()
-	h.Write([]byte(key))
-	return h.Sum64()
+	// Inline FNV-1a hash - no heap allocations
+	const (
+		offsetBasis = 14695981039346656037
+		prime       = 1099511628211
+	)
+	h := uint64(offsetBasis)
+	for i := 0; i < len(key); i++ {
+		h ^= uint64(key[i])
+		h *= prime
+	}
+	return h
 }
 
 // evictLRU evicts the least recently used entry from a shard

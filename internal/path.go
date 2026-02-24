@@ -2,10 +2,8 @@ package internal
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // EscapeJSONPointer escapes special characters for JSON Pointer
@@ -20,15 +18,6 @@ func UnescapeJSONPointer(s string) string {
 	s = strings.ReplaceAll(s, "~1", "/")
 	s = strings.ReplaceAll(s, "~0", "~")
 	return s
-}
-
-var (
-	arrayPattern     *regexp.Regexp
-	arrayPatternOnce sync.Once
-)
-
-func initArrayPattern() {
-	arrayPattern = regexp.MustCompile(`\[(-?\d+)`)
 }
 
 // PathSegment represents a single segment in a JSON path
@@ -484,6 +473,7 @@ func parseJSONPointer(path string) ([]PathSegment, error) {
 }
 
 // ValidatePath validates a path string for security and correctness
+// Uses single-pass validation for optimal performance (no regex)
 func ValidatePath(path string) error {
 	const (
 		maxPathLength = 1000
@@ -500,30 +490,12 @@ func ValidatePath(path string) error {
 		return nil
 	}
 
-	// Check path depth (prevent deeply nested paths)
-	segmentCount := strings.Count(path, ".") + strings.Count(path, "[")
-	if segmentCount > maxPathDepth {
-		return fmt.Errorf("path too deep: %d segments (max %d)", segmentCount, maxPathDepth)
-	}
-
-	// Validate array indices are within reasonable range
-	arrayPatternOnce.Do(initArrayPattern)
-	matches := arrayPattern.FindAllStringSubmatch(path, -1)
-	for _, match := range matches {
-		if len(match) > 1 {
-			index, err := strconv.Atoi(match[1])
-			if err != nil {
-				return fmt.Errorf("invalid array index: %s", match[1])
-			}
-			if index < -maxArrayIndex || index > maxArrayIndex {
-				return fmt.Errorf("array index out of reasonable range: %d (range: %d to %d)",
-					index, -maxArrayIndex, maxArrayIndex)
-			}
-		}
-	}
-
-	// Single-pass validation for control characters and dangerous patterns
+	// Single-pass validation for all checks
 	var prevChar byte
+	depth := 0
+	inBracket := false
+	bracketStart := 0
+
 	for i := 0; i < pathLen; i++ {
 		c := path[i]
 
@@ -532,7 +504,30 @@ func ValidatePath(path string) error {
 			return fmt.Errorf("path contains invalid control characters at position %d", i)
 		}
 
-		// Check for path traversal patterns (optimized)
+		// Track depth and validate brackets/array indices
+		switch c {
+		case '.':
+			if !inBracket {
+				depth++
+			}
+		case '[':
+			if !inBracket {
+				inBracket = true
+				bracketStart = i
+				depth++
+			}
+		case ']':
+			if inBracket {
+				// Validate array index/slice content inside brackets
+				content := path[bracketStart+1 : i]
+				if err := validateArrayIndexContent(content, maxArrayIndex); err != nil {
+					return err
+				}
+				inBracket = false
+			}
+		}
+
+		// Check for path traversal patterns
 		if c == '.' && i+1 < pathLen && path[i+1] == '.' {
 			if i+2 < pathLen && path[i+2] == '/' {
 				return fmt.Errorf("path contains traversal patterns at position %d", i)
@@ -560,6 +555,74 @@ func ValidatePath(path string) error {
 		}
 
 		prevChar = c
+	}
+
+	if depth > maxPathDepth {
+		return fmt.Errorf("path too deep: %d segments (max %d)", depth, maxPathDepth)
+	}
+
+	return nil
+}
+
+// validateArrayIndexContent validates array index or slice content
+func validateArrayIndexContent(content string, maxIndex int) error {
+	if content == "" {
+		return fmt.Errorf("empty array index")
+	}
+
+	// Handle wildcard
+	if content == "*" {
+		return nil
+	}
+
+	// Handle slice notation (e.g., "1:3", "::2", "::-1")
+	if strings.Contains(content, ":") {
+		parts := strings.Split(content, ":")
+		for _, part := range parts {
+			if part == "" {
+				continue // Empty parts are valid in slices
+			}
+			if err := validateNumericIndex(part, maxIndex); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Simple index
+	return validateNumericIndex(content, maxIndex)
+}
+
+// validateNumericIndex validates a single numeric index
+func validateNumericIndex(s string, maxIndex int) error {
+	// Allow negative sign
+	if len(s) == 0 {
+		return fmt.Errorf("empty index")
+	}
+
+	start := 0
+	if s[0] == '-' {
+		start = 1
+		if len(s) == 1 {
+			return fmt.Errorf("invalid index: %s", s)
+		}
+	}
+
+	// Check all characters are digits
+	for i := start; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return fmt.Errorf("invalid array index: %s", s)
+		}
+	}
+
+	// Parse and validate range
+	index, err := strconv.Atoi(s)
+	if err != nil {
+		return fmt.Errorf("invalid array index: %s", s)
+	}
+	if index < -maxIndex || index > maxIndex {
+		return fmt.Errorf("array index out of reasonable range: %d (range: %d to %d)",
+			index, -maxIndex, maxIndex)
 	}
 
 	return nil

@@ -9,17 +9,7 @@ import (
 	"strings"
 )
 
-// File operation methods have been refactored into separate files for better organization:
-//
-//   - file_read.go    : LoadFromFile, LoadFromFileAsData, LoadFromReader, etc.
-//   - file_write.go   : SaveToFile, SaveToWriter, MarshalToFile, UnmarshalFromFile
-//   - file_validate.go: validateFilePath, containsPathTraversal, validateUnixPath, validateWindowsPath
-//
-// This file is kept for backward compatibility and as a documentation reference.
-// All methods remain as private Processor methods in package json.
-
-// LoadFromFile loads JSON data from a file and returns the raw JSON string
-// This matches the package-level LoadFromFile signature for API consistency
+// LoadFromFile loads JSON data from a file and returns the raw JSON string.
 func (p *Processor) LoadFromFile(filePath string, opts ...*ProcessorOptions) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return "", err
@@ -43,8 +33,7 @@ func (p *Processor) LoadFromFile(filePath string, opts ...*ProcessorOptions) (st
 	return string(data), nil
 }
 
-// LoadFromFileAsData loads JSON data from a file and returns the parsed data structure
-// Use this method when you need the parsed JSON object instead of the raw string
+// LoadFromFileAsData loads JSON data from a file and returns the parsed data structure.
 func (p *Processor) LoadFromFileAsData(filePath string, opts ...*ProcessorOptions) (any, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
@@ -71,8 +60,7 @@ func (p *Processor) LoadFromFileAsData(filePath string, opts ...*ProcessorOption
 	return jsonData, err
 }
 
-// LoadFromReader loads JSON data from an io.Reader and returns the raw JSON string
-// This matches the LoadFromFile behavior for API consistency
+// LoadFromReader loads JSON data from an io.Reader and returns the raw JSON string.
 func (p *Processor) LoadFromReader(reader io.Reader, opts ...*ProcessorOptions) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return "", err
@@ -103,8 +91,7 @@ func (p *Processor) LoadFromReader(reader io.Reader, opts ...*ProcessorOptions) 
 	return string(data), nil
 }
 
-// LoadFromReaderAsData loads JSON data from an io.Reader and returns the parsed data structure
-// Use this method when you need the parsed JSON object instead of the raw string
+// LoadFromReaderAsData loads JSON data from an io.Reader and returns the parsed data structure.
 func (p *Processor) LoadFromReaderAsData(reader io.Reader, opts ...*ProcessorOptions) (any, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
@@ -138,8 +125,7 @@ func (p *Processor) LoadFromReaderAsData(reader io.Reader, opts ...*ProcessorOpt
 	return jsonData, err
 }
 
-// preprocessDataForEncoding normalizes string/[]byte inputs to parsed data
-// to prevent double-encoding issues when saving JSON files.
+// preprocessDataForEncoding normalizes string/[]byte inputs to prevent double-encoding.
 func (p *Processor) preprocessDataForEncoding(data any) (any, error) {
 	switch v := data.(type) {
 	case string:
@@ -170,7 +156,7 @@ func (p *Processor) preprocessDataForEncoding(data any) (any, error) {
 	}
 }
 
-// createDirectoryIfNotExists creates the directory structure for a file path if it doesn't exist
+// createDirectoryIfNotExists creates the directory structure for a file path if needed.
 func (p *Processor) createDirectoryIfNotExists(filePath string) error {
 	dir := filepath.Dir(filePath)
 	if dir == "." || dir == "/" {
@@ -462,10 +448,16 @@ func (p *Processor) validateFilePath(filePath string) error {
 }
 
 // containsPathTraversal checks for path traversal patterns comprehensively
+// Uses case-insensitive matching without allocation for better performance
 func containsPathTraversal(path string) bool {
+	// Fast path: check for standard traversal first (most common case)
+	if strings.Contains(path, "..") {
+		return true
+	}
+
 	// Check for various path traversal patterns including bypass attempts
+	// Using case-insensitive matching without allocation
 	patterns := []string{
-		"..",         // Standard traversal
 		"%2e%2e",     // URL encoded
 		"%252e%252e", // Double URL encoded
 		"..%2f",      // Mixed encoding
@@ -489,9 +481,8 @@ func containsPathTraversal(path string) bool {
 		"......",     // Six consecutive dots (defense in depth)
 	}
 
-	lowerPath := strings.ToLower(path)
 	for _, pattern := range patterns {
-		if strings.Contains(lowerPath, pattern) {
+		if indexIgnoreCaseFile(path, pattern) != -1 {
 			return true
 		}
 	}
@@ -501,20 +492,77 @@ func containsPathTraversal(path string) bool {
 		return true
 	}
 
-	// Check for encoded null bytes and control characters
+	// Check for encoded null bytes and control characters (case-insensitive)
 	encodedNulls := []string{"%00", "%0a", "%0d", "%09", "%20"}
 	for _, encoded := range encodedNulls {
-		if strings.Contains(lowerPath, encoded) {
+		if indexIgnoreCaseFile(path, encoded) != -1 {
 			return true
 		}
 	}
 
 	// Check for partial double encoding bypass attempts
-	if containsPartialDoubleEncoding(lowerPath) {
+	if containsPartialDoubleEncodingIgnoreCase(path) {
 		return true
 	}
 
 	return false
+}
+
+// indexIgnoreCase finds pattern case-insensitively without allocation
+// (duplicate of security.go version for local use)
+func indexIgnoreCaseFile(s, pattern string) int {
+	plen := len(pattern)
+	slen := len(s)
+	if plen > slen {
+		return -1
+	}
+	for i := 0; i <= slen-plen; i++ {
+		match := true
+		for j := 0; j < plen; j++ {
+			c1 := s[i+j]
+			c2 := pattern[j]
+			if c1 >= 'A' && c1 <= 'Z' {
+				c1 += 32
+			}
+			if c1 != c2 {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
+}
+
+// containsPartialDoubleEncodingIgnoreCase checks for partial double encoding bypass attempts (case-insensitive)
+func containsPartialDoubleEncodingIgnoreCase(path string) bool {
+	patterns := []string{"%2e%2", "%25%2e", "%2f%2", "%5c%2"}
+	for _, pattern := range patterns {
+		if indexIgnoreCaseFile(path, pattern) != -1 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPrefixIgnoreCase checks if s starts with prefix case-insensitively
+func hasPrefixIgnoreCase(s, prefix string) bool {
+	if len(prefix) > len(s) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		c1 := s[i]
+		c2 := prefix[i]
+		if c1 >= 'A' && c1 <= 'Z' {
+			c1 += 32
+		}
+		if c1 != c2 {
+			return false
+		}
+	}
+	return true
 }
 
 // containsConsecutiveDots checks for consecutive dots in any form
@@ -533,22 +581,9 @@ func containsConsecutiveDots(path string, minCount int) bool {
 	return false
 }
 
-// containsPartialDoubleEncoding checks for partial double encoding bypass attempts
-func containsPartialDoubleEncoding(path string) bool {
-	patterns := []string{"%2e%2", "%25%2e", "%2f%2", "%5c%2"}
-	for _, pattern := range patterns {
-		if strings.Contains(path, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
 // validateUnixPath validates Unix-specific path security
 func validateUnixPath(absPath string) error {
-	lowerPath := strings.ToLower(absPath)
-
-	// Block access to critical system directories
+	// Block access to critical system directories using case-insensitive matching
 	criticalDirs := []string{
 		"/dev/",
 		"/proc/",
@@ -569,7 +604,7 @@ func validateUnixPath(absPath string) error {
 	}
 
 	for _, dir := range criticalDirs {
-		if strings.HasPrefix(lowerPath, dir) {
+		if hasPrefixIgnoreCase(absPath, dir) {
 			return newSecurityError("validate_unix_path", "access to system directory not allowed")
 		}
 	}
