@@ -17,6 +17,14 @@ func NeedsPathPreprocessing(path string) bool {
 	return false
 }
 
+// NeedsDotBeforeByte determines if a dot should be inserted before a character (byte version for ASCII fast path)
+func NeedsDotBeforeByte(prevChar byte) bool {
+	return (prevChar >= 'a' && prevChar <= 'z') ||
+		(prevChar >= 'A' && prevChar <= 'Z') ||
+		(prevChar >= '0' && prevChar <= '9') ||
+		prevChar == '_' || prevChar == ']' || prevChar == '}'
+}
+
 // NeedsDotBefore determines if a dot should be inserted before a character
 func NeedsDotBefore(prevChar rune) bool {
 	return (prevChar >= 'a' && prevChar <= 'z') ||
@@ -29,21 +37,52 @@ func NeedsDotBefore(prevChar rune) bool {
 func PreprocessPath(path string, sb *strings.Builder) string {
 	sb.Reset()
 
-	runes := []rune(path)
-	for i, r := range runes {
-		switch r {
-		case '[':
-			if i > 0 && NeedsDotBefore(runes[i-1]) {
-				sb.WriteRune('.')
+	// Fast ASCII check - avoid rune conversion for ASCII paths
+	isASCII := true
+	for i := 0; i < len(path); i++ {
+		if path[i] >= 0x80 {
+			isASCII = false
+			break
+		}
+	}
+
+	if isASCII {
+		// Fast path: byte-level processing for ASCII
+		for i := 0; i < len(path); i++ {
+			c := path[i]
+			switch c {
+			case '[':
+				if i > 0 && NeedsDotBeforeByte(path[i-1]) {
+					sb.WriteByte('.')
+				}
+				sb.WriteByte(c)
+			case '{':
+				if i > 0 && NeedsDotBeforeByte(path[i-1]) {
+					sb.WriteByte('.')
+				}
+				sb.WriteByte(c)
+			default:
+				sb.WriteByte(c)
 			}
-			sb.WriteRune(r)
-		case '{':
-			if i > 0 && NeedsDotBefore(runes[i-1]) {
-				sb.WriteRune('.')
+		}
+	} else {
+		// Slow path: rune processing for non-ASCII
+		runes := []rune(path)
+		for i, r := range runes {
+			switch r {
+			case '[':
+				if i > 0 && NeedsDotBefore(runes[i-1]) {
+					sb.WriteRune('.')
+				}
+				sb.WriteRune(r)
+			case '{':
+				if i > 0 && NeedsDotBefore(runes[i-1]) {
+					sb.WriteRune('.')
+				}
+				sb.WriteRune(r)
+			default:
+				sb.WriteRune(r)
 			}
-			sb.WriteRune(r)
-		default:
-			sb.WriteRune(r)
 		}
 	}
 
@@ -51,19 +90,14 @@ func PreprocessPath(path string, sb *strings.Builder) string {
 }
 
 // IsComplexPath checks if a path contains complex patterns
+// Optimized: single scan instead of multiple Contains calls
 func IsComplexPath(path string) bool {
-	complexPatterns := []string{
-		"{", "}",
-		"[", "]",
-		":",
-	}
-
-	for _, pattern := range complexPatterns {
-		if strings.Contains(path, pattern) {
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c == '{' || c == '}' || c == '[' || c == ']' || c == ':' {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -287,14 +321,52 @@ func ReconstructPath(segments []PathSegment) string {
 }
 
 // NormalizePathSeparators removes duplicate dots and trims leading/trailing dots
+// Optimized: single-pass construction using strings.Builder
 func NormalizePathSeparators(path string) string {
-	for strings.Contains(path, "..") {
-		path = strings.ReplaceAll(path, "..", ".")
+	if len(path) == 0 {
+		return ""
 	}
 
-	path = strings.Trim(path, ".")
+	// Fast path: check if normalization is needed
+	needsNormalization := false
+	hasLeadingDot := path[0] == '.'
+	hasTrailingDot := path[len(path)-1] == '.'
 
-	return path
+	for i := 0; i < len(path)-1; i++ {
+		if path[i] == '.' && path[i+1] == '.' {
+			needsNormalization = true
+			break
+		}
+	}
+
+	// If no normalization needed, just trim
+	if !needsNormalization && !hasLeadingDot && !hasTrailingDot {
+		return path
+	}
+
+	// Build normalized path in single pass
+	var sb strings.Builder
+	sb.Grow(len(path))
+
+	inDotRun := false
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c == '.' {
+			if !inDotRun {
+				sb.WriteByte(c)
+				inDotRun = true
+			}
+		} else {
+			sb.WriteByte(c)
+			inDotRun = false
+		}
+	}
+
+	result := sb.String()
+	// Trim leading and trailing dots
+	result = strings.Trim(result, ".")
+
+	return result
 }
 
 // IsValidPropertyName checks if a name is a valid property name

@@ -43,10 +43,18 @@ type JsonsError struct {
 }
 
 func (e *JsonsError) Error() string {
+	var baseMsg string
 	if e.Path != "" {
-		return fmt.Sprintf("JSON %s failed at path '%s': %s", e.Op, e.Path, e.Message)
+		baseMsg = fmt.Sprintf("JSON %s failed at path '%s': %s", e.Op, e.Path, e.Message)
+	} else {
+		baseMsg = fmt.Sprintf("JSON %s failed: %s", e.Op, e.Message)
 	}
-	return fmt.Sprintf("JSON %s failed: %s", e.Op, e.Message)
+
+	// Include underlying error for complete error chain information
+	if e.Err != nil {
+		return fmt.Sprintf("%s (caused by: %v)", baseMsg, e.Err)
+	}
+	return baseMsg
 }
 
 // Unwrap returns the underlying error for error chain support

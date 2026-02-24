@@ -52,9 +52,11 @@ func GetWithDefault(jsonStr, path string, defaultValue any, opts ...*ProcessorOp
 }
 
 // GetTypedWithDefault retrieves a typed value from JSON at the specified path with a default fallback
+// Returns the default value only when an error occurs (e.g., path not found)
+// Valid zero values (0, false, "") are returned as-is
 func GetTypedWithDefault[T any](jsonStr, path string, defaultValue T, opts ...*ProcessorOptions) T {
 	result, err := GetTyped[T](jsonStr, path, opts...)
-	if err != nil || isZeroValue(result) {
+	if err != nil {
 		return defaultValue
 	}
 	return result
@@ -314,6 +316,7 @@ func FormatCompact(jsonStr string, opts ...*ProcessorOptions) (string, error) {
 }
 
 // Print prints any Go value as JSON to stdout in compact format.
+// Note: Writes errors to stderr. Use PrintE for error handling.
 func Print(data any) {
 	result, err := printData(data, false)
 	if err != nil {
@@ -324,6 +327,7 @@ func Print(data any) {
 }
 
 // PrintPretty prints any Go value as formatted JSON to stdout.
+// Note: Writes errors to stderr. Use PrintPrettyE for error handling.
 func PrintPretty(data any) {
 	result, err := printData(data, true)
 	if err != nil {
@@ -331,6 +335,28 @@ func PrintPretty(data any) {
 		return
 	}
 	fmt.Println(result)
+}
+
+// PrintE prints any Go value as JSON to stdout in compact format.
+// Returns an error instead of writing to stderr, allowing callers to handle errors.
+func PrintE(data any) error {
+	result, err := printData(data, false)
+	if err != nil {
+		return fmt.Errorf("json.Print error: %w", err)
+	}
+	fmt.Println(result)
+	return nil
+}
+
+// PrintPrettyE prints any Go value as formatted JSON to stdout.
+// Returns an error instead of writing to stderr, allowing callers to handle errors.
+func PrintPrettyE(data any) error {
+	result, err := printData(data, true)
+	if err != nil {
+		return fmt.Errorf("json.PrintPretty error: %w", err)
+	}
+	fmt.Println(result)
+	return nil
 }
 
 // printData handles the core logic for Print and PrintPretty

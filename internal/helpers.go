@@ -3,6 +3,7 @@ package internal
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -12,10 +13,26 @@ import (
 // - If both values are arrays, merge with deduplication (union)
 // - For all other cases (primitives), value2 takes precedence
 func DeepMerge(base, override any) any {
+	return deepMerge(base, override, 0, make(map[uintptr]bool))
+}
+
+func deepMerge(base, override any, depth int, visited map[uintptr]bool) any {
+	if depth > MaxDeepMergeDepth {
+		return override
+	}
+
 	baseMap, baseIsMap := base.(map[string]any)
 	overrideMap, overrideIsMap := override.(map[string]any)
 
 	if baseIsMap && overrideIsMap {
+		// Cycle detection using map pointer
+		basePtr := reflect.ValueOf(baseMap).Pointer()
+		if visited[basePtr] {
+			return override // Cycle detected, return override to break recursion
+		}
+		visited[basePtr] = true
+		defer delete(visited, basePtr)
+
 		result := make(map[string]any)
 
 		// First, copy all keys from base
@@ -27,7 +44,7 @@ func DeepMerge(base, override any) any {
 		for key, overrideValue := range overrideMap {
 			if baseValue, exists := baseMap[key]; exists {
 				// Both exist - recursively merge
-				result[key] = DeepMerge(baseValue, overrideValue)
+				result[key] = deepMerge(baseValue, overrideValue, depth+1, visited)
 			} else {
 				// Only in override - add directly
 				result[key] = overrideValue
@@ -41,6 +58,27 @@ func DeepMerge(base, override any) any {
 	overrideArray, overrideIsArray := override.([]any)
 
 	if baseIsArray && overrideIsArray {
+		// Cycle detection for arrays using pointer comparison
+		basePtr := reflect.ValueOf(baseArray).Pointer()
+		overridePtr := reflect.ValueOf(overrideArray).Pointer()
+
+		// Check if either array is already being visited
+		if visited[basePtr] || visited[overridePtr] {
+			return override // Cycle detected, return override to break recursion
+		}
+
+		// Mark both arrays as visited
+		visited[basePtr] = true
+		if basePtr != overridePtr {
+			visited[overridePtr] = true
+		}
+		defer func() {
+			delete(visited, basePtr)
+			if basePtr != overridePtr {
+				delete(visited, overridePtr)
+			}
+		}()
+
 		// Merge arrays with deduplication
 		result := make([]any, 0, len(baseArray)+len(overrideArray))
 		seen := make(map[string]bool)
@@ -186,4 +224,56 @@ func TryConvertToArray(m map[string]any) ([]any, bool) {
 	}
 
 	return arr, true
+}
+
+// IndexIgnoreCase finds a pattern in s case-insensitively without allocation
+// This is a shared utility function used by multiple packages for security pattern matching
+func IndexIgnoreCase(s, pattern string) int {
+	plen := len(pattern)
+	slen := len(s)
+	if plen > slen {
+		return -1
+	}
+
+	// Use first character as filter
+	firstChar := pattern[0]
+	firstCharLower := firstChar
+	if firstChar >= 'A' && firstChar <= 'Z' {
+		firstCharLower = firstChar + 32
+	}
+
+	// Only check positions where first character matches
+	for i := 0; i <= slen-plen; i++ {
+		c := s[i]
+		if c == firstCharLower || (firstCharLower >= 'a' && firstCharLower <= 'z' && c == firstCharLower-32) {
+			// First char matches, check rest
+			if matchPatternIgnoreCase(s[i:i+plen], pattern) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// matchPatternIgnoreCase checks if s matches pattern case-insensitively
+func matchPatternIgnoreCase(s, pattern string) bool {
+	if len(s) != len(pattern) {
+		return false
+	}
+	for i := 0; i < len(pattern); i++ {
+		c1 := s[i]
+		c2 := pattern[i]
+		if c1 >= 'A' && c1 <= 'Z' {
+			c1 += 32
+		}
+		if c1 != c2 {
+			return false
+		}
+	}
+	return true
+}
+
+// IsMatchPatternIgnoreCase is the exported version for use by other packages
+func IsMatchPatternIgnoreCase(s, pattern string) bool {
+	return matchPatternIgnoreCase(s, pattern)
 }

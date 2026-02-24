@@ -3,10 +3,14 @@ package json
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/cybergodev/json/internal"
+	"golang.org/x/text/unicode/norm"
 )
 
 // LoadFromFile loads JSON data from a file and returns the raw JSON string.
@@ -449,8 +453,22 @@ func (p *Processor) validateFilePath(filePath string) error {
 
 // containsPathTraversal checks for path traversal patterns comprehensively
 // Uses case-insensitive matching without allocation for better performance
+// Includes Unicode normalization and recursive URL decoding for enhanced security
 func containsPathTraversal(path string) bool {
+	// SECURITY: First apply Unicode NFC normalization to detect homograph attacks
+	// This ensures that visually similar characters are normalized before checking
+	normalized := norm.NFC.String(path)
+
+	// SECURITY: Recursively decode URL encoding to catch multi-layered obfuscation
+	// Decode up to 3 levels to handle double/triple encoding
+	decoded := recursiveURLDecode(normalized)
+
 	// Fast path: check for standard traversal first (most common case)
+	if strings.Contains(decoded, "..") {
+		return true
+	}
+
+	// Also check original path for patterns that might be hidden by encoding
 	if strings.Contains(path, "..") {
 		return true
 	}
@@ -458,82 +476,139 @@ func containsPathTraversal(path string) bool {
 	// Check for various path traversal patterns including bypass attempts
 	// Using case-insensitive matching without allocation
 	patterns := []string{
-		"%2e%2e",     // URL encoded
-		"%252e%252e", // Double URL encoded
-		"..%2f",      // Mixed encoding
-		"..%5c",      // Windows backslash encoded
-		"..%c0%af",   // UTF-8 overlong encoding
-		"..%c1%9c",   // UTF-8 overlong encoding variant
-		".%2e",       // Partial encoding
-		"%2e.",       // Partial encoding variant
-		"%2e%2e%2f",  // Full URL encoded traversal
-		"%2e%2e%5c",  // Windows variant
-		"..\\",       // Windows backslash
-		"..\\/",      // Mixed separators
-		"..%00",      // Null byte injection
-		"..%0a",      // Newline injection
-		"..%0d",      // Carriage return injection
-		"..%09",      // Tab injection
-		"..%20",      // Space injection
-		"....//",     // Double dot with double slash
-		"....\\\\",   // Double dot with double backslash
-		".....",      // Five consecutive dots
-		"......",     // Six consecutive dots (defense in depth)
+		"%2e%2e",         // URL encoded
+		"%252e%252e",     // Double URL encoded
+		"%25252e%25252e", // Triple URL encoded
+		"..%2f",          // Mixed encoding
+		"..%5c",          // Windows backslash encoded
+		"..%c0%af",       // UTF-8 overlong encoding
+		"..%c1%9c",       // UTF-8 overlong encoding variant
+		".%2e",           // Partial encoding
+		"%2e.",           // Partial encoding variant
+		"%2e%2e%2f",      // Full URL encoded traversal
+		"%2e%2e%5c",      // Windows variant
+		"..\\",           // Windows backslash
+		"..\\/",          // Mixed separators
+		"..%00",          // Null byte injection
+		"..%0a",          // Newline injection
+		"..%0d",          // Carriage return injection
+		"..%09",          // Tab injection
+		"..%20",          // Space injection
+		"....//",         // Double dot with double slash
+		"....\\\\",       // Double dot with double backslash
+		".....",          // Five consecutive dots
+		"......",         // Six consecutive dots (defense in depth)
+		// Additional patterns for comprehensive security
+		"%2E%2E",       // Mixed case URL encoded
+		"%2E%2e",       // Mixed case variant
+		"%2e%2E",       // Mixed case variant
+		"..%2F",        // Mixed case encoding
+		"..%5C",        // Mixed case Windows variant
+		"%c0%ae",       // UTF-8 overlong encoding for dot
+		"%c1%1c",       // UTF-8 overlong encoding variant
+		"%c1%9c",       // UTF-8 overlong encoding variant
+		"..%255c",      // Double encoded backslash
+		"..%c0%af",     // UTF-8 overlong encoded slash
+		"..%c1%9c",     // UTF-8 overlong encoded backslash
+		"%uff0e%uff0e", // Fullwidth dot encoding
+		"..%ef%bc%8f",  // Fullwidth slash encoding
 	}
 
+	// Check both original and decoded paths
 	for _, pattern := range patterns {
-		if indexIgnoreCaseFile(path, pattern) != -1 {
+		if indexIgnoreCaseFile(decoded, pattern) != -1 ||
+			indexIgnoreCaseFile(path, pattern) != -1 {
 			return true
 		}
 	}
 
 	// Additional check: consecutive dots in any form (3 or more)
-	if containsConsecutiveDots(path, 3) {
+	if containsConsecutiveDots(decoded, 3) || containsConsecutiveDots(path, 3) {
 		return true
 	}
 
 	// Check for encoded null bytes and control characters (case-insensitive)
 	encodedNulls := []string{"%00", "%0a", "%0d", "%09", "%20"}
 	for _, encoded := range encodedNulls {
-		if indexIgnoreCaseFile(path, encoded) != -1 {
+		if indexIgnoreCaseFile(decoded, encoded) != -1 ||
+			indexIgnoreCaseFile(path, encoded) != -1 {
 			return true
 		}
 	}
 
 	// Check for partial double encoding bypass attempts
-	if containsPartialDoubleEncodingIgnoreCase(path) {
+	if containsPartialDoubleEncodingIgnoreCase(decoded) ||
+		containsPartialDoubleEncodingIgnoreCase(path) {
+		return true
+	}
+
+	// SECURITY: Check for Unicode lookalike characters that could be used for bypass
+	if containsUnicodeLookalikes(decoded) {
 		return true
 	}
 
 	return false
 }
 
-// indexIgnoreCase finds pattern case-insensitively without allocation
-// (duplicate of security.go version for local use)
+// recursiveURLDecode recursively decodes URL-encoded strings to catch multi-layered obfuscation
+func recursiveURLDecode(s string) string {
+	decoded := s
+	for i := 0; i < 3; i++ { // Maximum 3 levels of decoding
+		newDecoded, err := url.PathUnescape(decoded)
+		if err != nil || newDecoded == decoded {
+			break
+		}
+		decoded = newDecoded
+	}
+	return decoded
+}
+
+// containsUnicodeLookalikes checks for Unicode characters that look like path traversal characters
+// SECURITY: Comprehensive detection of Unicode lookalike variants for defense in depth
+func containsUnicodeLookalikes(s string) bool {
+	for _, r := range s {
+		// Check for fullwidth dots and slashes (common bypass technique)
+		switch r {
+		// Fullwidth dot variants
+		case '\uFF0E', // Fullwidth full stop (looks like .)
+			'\u2024', // One dot leader (looks like .)
+			'\u2025', // Two dot leader (looks like ..)
+			'\u2026': // Horizontal ellipsis (looks like ...)
+			return true
+
+		// Fullwidth slash variants
+		case '\uFF0F', // Fullwidth solidus (looks like /)
+			'\uFF3C', // Fullwidth reverse solidus (looks like \)
+			'\u2044', // Fraction slash
+			'\u2215', // Division slash
+			'\u29F8', // Big solidus
+			'\uFE68': // Small reverse solidus
+			return true
+
+		// Additional potentially dangerous Unicode characters
+		case '\uFF04', // Fullwidth dollar sign (template injection)
+			'\uFEFF', // Byte order mark
+			'\u2060', // Word joiner
+			'\u200B', // Zero-width space
+			'\u200C', // Zero-width non-joiner
+			'\u200D', // Zero-width joiner
+			'\u3000', // Ideographic space
+			'\u00AD', // Soft hyphen
+			'\u034F', // Combining grapheme joiner
+			'\u061C', // Arabic letter mark
+			'\u115F', // Korean jamo filler (choseong)
+			'\u1160', // Korean jamo filler (jungseong)
+			'\u180E': // Mongolian vowel separator
+			return true
+		}
+	}
+	return false
+}
+
+// indexIgnoreCaseFile finds pattern case-insensitively without allocation
+// Delegates to shared implementation in internal package
 func indexIgnoreCaseFile(s, pattern string) int {
-	plen := len(pattern)
-	slen := len(s)
-	if plen > slen {
-		return -1
-	}
-	for i := 0; i <= slen-plen; i++ {
-		match := true
-		for j := 0; j < plen; j++ {
-			c1 := s[i+j]
-			c2 := pattern[j]
-			if c1 >= 'A' && c1 <= 'Z' {
-				c1 += 32
-			}
-			if c1 != c2 {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
+	return internal.IndexIgnoreCase(s, pattern)
 }
 
 // containsPartialDoubleEncodingIgnoreCase checks for partial double encoding bypass attempts (case-insensitive)

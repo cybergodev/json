@@ -77,12 +77,14 @@ const (
 	SmallJSONThreshold  = 256  // Threshold for lightweight JSON normalization
 	MediumJSONThreshold = 1024 // Threshold for full JSON normalization
 
-	// Cache key constants
-	CacheKeyHashLength   = 32   // Length for cache key hash
-	SmallJSONCacheLimit  = 2048 // Limit for caching small JSON strings
-	EstimatedKeyOverhead = 32   // Estimated overhead for cache key generation
-	LargeJSONKeyOverhead = 64   // Overhead for large JSON cache keys
-	MaxCacheKeyLength    = 500  // Maximum allowed cache key length
+	// Cache key constants - OPTIMIZED: Increased limits for better cache hit rate
+	CacheKeyHashLength   = 32      // Length for cache key hash
+	SmallJSONCacheLimit  = 2048    // Limit for caching small JSON strings (fast path)
+	MediumJSONCacheLimit = 51200   // Limit for caching medium JSON strings (50KB)
+	LargeJSONCacheLimit  = 1048576 // Limit for caching large JSON strings (1MB) - OPTIMIZED: increased for better performance
+	EstimatedKeyOverhead = 32      // Estimated overhead for cache key generation
+	LargeJSONKeyOverhead = 64      // Overhead for large JSON cache keys
+	MaxCacheKeyLength    = 500     // Maximum allowed cache key length
 
 	// Validation constants
 	ValidationBOMPrefix = "\uFEFF" // UTF-8 BOM prefix to detect and remove

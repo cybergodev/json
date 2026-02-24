@@ -3,6 +3,7 @@ package json
 import (
 	"context"
 	"fmt"
+	"math"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -48,6 +49,9 @@ type Config struct {
 	PreserveNumbers   bool `json:"preserve_numbers"`
 	ValidateInput     bool `json:"validate_input"`
 	ValidateFilePath  bool `json:"validate_file_path"`
+	// FullSecurityScan enables full security validation for large JSON instead of sampling
+	// This provides maximum security but may impact performance for very large JSON
+	FullSecurityScan bool `json:"full_security_scan"`
 }
 
 // GetSecurityLimits returns a summary of current security limits
@@ -74,6 +78,10 @@ type ProcessorOptions struct {
 	CleanupNulls    bool            `json:"cleanup_nulls"`
 	CompactArrays   bool            `json:"compact_arrays"`
 	ContinueOnError bool            `json:"continue_on_error"`
+	// OPTIMIZED: SkipValidation allows skipping security validation for trusted input
+	// WARNING: Only use this option when you are certain the input is safe
+	// Use with caution - skipping validation may expose security vulnerabilities
+	SkipValidation bool `json:"skip_validation"`
 }
 
 // Clone creates a deep copy of ProcessorOptions
@@ -92,6 +100,7 @@ func (opts *ProcessorOptions) Clone() *ProcessorOptions {
 		CleanupNulls:    opts.CleanupNulls,
 		CompactArrays:   opts.CompactArrays,
 		ContinueOnError: opts.ContinueOnError,
+		SkipValidation:  opts.SkipValidation,
 	}
 }
 
@@ -111,8 +120,19 @@ var defaultOptions = &ProcessorOptions{
 }
 
 // DefaultOptions returns default processor options as a singleton.
-// Returns an immutable pointer - callers MUST NOT modify the returned value.
+// IMPORTANT: Returns an immutable pointer - callers MUST NOT modify the returned value.
+// Modifying the returned value will affect all users of DefaultOptions().
 // Use DefaultOptionsClone() if you need a modifiable copy.
+//
+// Example:
+//
+//	// Read-only access (safe):
+//	opts := json.DefaultOptions()
+//	if opts.MaxDepth > 10 { ... }
+//
+//	// Modification (use clone):
+//	opts := json.DefaultOptionsClone()
+//	opts.MaxDepth = 100
 func DefaultOptions() *ProcessorOptions {
 	return defaultOptions
 }
@@ -122,6 +142,21 @@ func DefaultOptions() *ProcessorOptions {
 func DefaultOptionsClone() *ProcessorOptions {
 	clone := *defaultOptions
 	return &clone
+}
+
+// ParsedJSON represents a pre-parsed JSON document that can be reused for multiple operations.
+// This is a performance optimization for scenarios where the same JSON is queried multiple times.
+// OPTIMIZED: Pre-parsing avoids repeated JSON parsing overhead for repeated queries.
+type ParsedJSON struct {
+	data      any
+	hash      uint64
+	jsonLen   int
+	processor *Processor
+}
+
+// Data returns the underlying parsed data
+func (p *ParsedJSON) Data() any {
+	return p.data
 }
 
 // Stats provides processor performance statistics
@@ -880,7 +915,9 @@ type TypeSafeAccessResult struct {
 	Type   string
 }
 
-// AsString safely converts the result to string
+// AsString safely converts the result to string.
+// Returns ErrTypeMismatch if the value is not a string type.
+// Use AsStringConverted() for explicit type conversion with formatting.
 func (r TypeSafeAccessResult) AsString() (string, error) {
 	if !r.Exists {
 		return "", ErrPathNotFound
@@ -888,10 +925,25 @@ func (r TypeSafeAccessResult) AsString() (string, error) {
 	if str, ok := r.Value.(string); ok {
 		return str, nil
 	}
+	// SECURITY: Return error for non-string types instead of silent conversion
+	return "", fmt.Errorf("cannot convert %T to string: type mismatch", r.Value)
+}
+
+// AsStringConverted converts the result to string using fmt.Sprintf formatting.
+// Use this when you explicitly want string representation of any type.
+// For strict type checking, use AsString() instead.
+func (r TypeSafeAccessResult) AsStringConverted() (string, error) {
+	if !r.Exists {
+		return "", ErrPathNotFound
+	}
+	if str, ok := r.Value.(string); ok {
+		return str, nil
+	}
+	// Explicit conversion requested - use formatting
 	return fmt.Sprintf("%v", r.Value), nil
 }
 
-// AsInt safely converts the result to int
+// AsInt safely converts the result to int with overflow and precision checks
 func (r TypeSafeAccessResult) AsInt() (int, error) {
 	if !r.Exists {
 		return 0, ErrPathNotFound
@@ -900,14 +952,143 @@ func (r TypeSafeAccessResult) AsInt() (int, error) {
 	switch v := r.Value.(type) {
 	case int:
 		return v, nil
+	case int8:
+		return int(v), nil
+	case int16:
+		return int(v), nil
+	case int32:
+		return int(v), nil
 	case int64:
+		// SECURITY: Check for overflow when converting int64 to int
+		if v > int64(1<<(strconv.IntSize-1)-1) || v < int64(-1<<(strconv.IntSize-1)) {
+			return 0, fmt.Errorf("value %d overflows int on %d-bit system", v, strconv.IntSize)
+		}
+		return int(v), nil
+	case uint:
+		// SECURITY: Check for overflow when converting uint to int
+		if v > uint(1<<(strconv.IntSize-1)-1) {
+			return 0, fmt.Errorf("value %d overflows int on %d-bit system", v, strconv.IntSize)
+		}
+		return int(v), nil
+	case uint8:
+		return int(v), nil
+	case uint16:
+		return int(v), nil
+	case uint32:
+		// SECURITY: Check for overflow when converting uint32 to int
+		// On 32-bit systems, MaxInt32 = 2147483647, on 64-bit systems it's much larger
+		// uint32 max is 4294967295, so on 32-bit systems we need to check
+		if strconv.IntSize == 32 && v > math.MaxInt32 {
+			return 0, fmt.Errorf("value %d overflows int on %d-bit system", v, strconv.IntSize)
+		}
+		return int(v), nil
+	case uint64:
+		// SECURITY: Check for overflow when converting uint64 to int
+		// uint64 can hold values larger than MaxInt64
+		if v > uint64(math.MaxInt64) {
+			return 0, fmt.Errorf("value %d overflows int on %d-bit system", v, strconv.IntSize)
+		}
+		// Additional check for 32-bit systems
+		if strconv.IntSize == 32 && v > math.MaxInt32 {
+			return 0, fmt.Errorf("value %d overflows int on %d-bit system", v, strconv.IntSize)
+		}
+		return int(v), nil
+	case float32:
+		// SECURITY: Check for overflow and precision loss
+		if v > float32(1<<(strconv.IntSize-1)-1) || v < float32(-1<<(strconv.IntSize-1)) {
+			return 0, fmt.Errorf("value %v overflows int", v)
+		}
+		if v != float32(int32(v)) {
+			return 0, fmt.Errorf("value %v is not an integer", v)
+		}
 		return int(v), nil
 	case float64:
+		// SECURITY: Check for overflow and precision loss
+		maxInt := float64(1<<(strconv.IntSize-1) - 1)
+		minInt := float64(-1 << (strconv.IntSize - 1))
+		if v > maxInt || v < minInt {
+			return 0, fmt.Errorf("value %v overflows int on %d-bit system", v, strconv.IntSize)
+		}
+		if v != float64(int64(v)) {
+			return 0, fmt.Errorf("value %v is not an integer", v)
+		}
 		return int(v), nil
 	case string:
-		return strconv.Atoi(v)
+		// Try parsing as integer first
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			// Check for overflow
+			if i > int64(1<<(strconv.IntSize-1)-1) || i < int64(-1<<(strconv.IntSize-1)) {
+				return 0, fmt.Errorf("value %s overflows int on %d-bit system", v, strconv.IntSize)
+			}
+			return int(i), nil
+		}
+		// Try parsing as float (e.g., "123.0")
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			if f != float64(int64(f)) {
+				return 0, fmt.Errorf("value %s is not an integer", v)
+			}
+			return int(f), nil
+		}
+		return 0, fmt.Errorf("cannot convert %q to int", v)
+	case Number:
+		// Handle Number type (defined in encoding.go)
+		if i, err := v.Int64(); err == nil {
+			if i > int64(1<<(strconv.IntSize-1)-1) || i < int64(-1<<(strconv.IntSize-1)) {
+				return 0, fmt.Errorf("value %s overflows int on %d-bit system", v, strconv.IntSize)
+			}
+			return int(i), nil
+		}
+		return 0, fmt.Errorf("cannot convert Number %s to int", v)
 	default:
 		return 0, fmt.Errorf("cannot convert %T to int", v)
+	}
+}
+
+// AsFloat64 safely converts the result to float64 with precision checks
+func (r TypeSafeAccessResult) AsFloat64() (float64, error) {
+	if !r.Exists {
+		return 0, ErrPathNotFound
+	}
+
+	switch v := r.Value.(type) {
+	case float64:
+		return v, nil
+	case float32:
+		return float64(v), nil
+	case int:
+		return float64(v), nil
+	case int8:
+		return float64(v), nil
+	case int16:
+		return float64(v), nil
+	case int32:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case uint:
+		return float64(v), nil
+	case uint8:
+		return float64(v), nil
+	case uint16:
+		return float64(v), nil
+	case uint32:
+		return float64(v), nil
+	case uint64:
+		return float64(v), nil
+	case string:
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return 0, fmt.Errorf("cannot convert %q to float64: %w", v, err)
+		}
+		return f, nil
+	case Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("cannot convert Number %s to float64: %w", v, err)
+		}
+		return f, nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to float64", v)
 	}
 }
 

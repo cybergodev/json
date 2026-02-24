@@ -15,6 +15,45 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
+// sensitivePatterns contains patterns for detecting sensitive data in cache values
+// PERFORMANCE: Defined at package level to avoid allocation on each containsSensitivePatterns() call
+var sensitivePatterns = []string{
+	// Authentication and authorization
+	"password", "passwd", "pwd",
+	"token", "bearer", "jwt", "access_token", "refresh_token", "auth_token",
+	"secret", "secret_key", "client_secret",
+	"apikey", "api_key", "api-key", "x-api-key",
+	"auth", "authorization", "authenticate",
+	"credential", "credentials",
+	"private", "private_key",
+
+	// Personal Identifiable Information (PII)
+	"ssn", "social_security", "social_security_number",
+	"credit_card", "creditcard", "card_number", "cvv", "cvc",
+	"passport", "passport_number",
+	"driver_license", "license_number",
+
+	// Financial sensitive data
+	"account_number", "bank_account", "routing_number",
+	"pin", "pin_number",
+
+	// Cryptographic keys
+	"private_key", "public_key", "encryption_key", "signing_key",
+	"certificate", "private_certificate",
+
+	// Session and cookies
+	"session", "session_id", "session_key",
+	"cookie", "csrf", "xsrf",
+
+	// Database and infrastructure
+	"database_url", "db_password", "db_user", "db_pass",
+	"connection_string", "connectionstring",
+
+	// Cloud provider keys
+	"aws_access_key", "aws_secret", "aws_key",
+	"azure_key", "gcp_key", "gcp_credentials",
+}
+
 // Processor is the main JSON processing engine with thread safety and performance optimization
 type Processor struct {
 	config            *Config
@@ -28,6 +67,12 @@ type Processor struct {
 	securityValidator *SecurityValidator
 	// Cached RecursiveProcessor for reuse across operations (performance optimization)
 	recursiveProcessor *RecursiveProcessor
+	// Wait group for tracking active operations during Close()
+	activeOps sync.WaitGroup
+	// OPTIMIZED: Hash cache for large JSON strings to avoid repeated hash calculations
+	hashCache     map[string]uint64
+	hashCacheMu   sync.RWMutex
+	hashCacheSize int
 }
 
 type processorResources struct {
@@ -71,6 +116,7 @@ func New(config ...*Config) *Processor {
 			cfg.MaxJSONSize,
 			MaxPathLength,
 			cfg.MaxNestingDepthSecurity,
+			cfg.FullSecurityScan,
 		),
 		resources: &processorResources{
 			lastPoolReset:   0,
@@ -78,10 +124,13 @@ func New(config ...*Config) *Processor {
 			memoryPressure:  0,
 		},
 		metrics: &processorMetrics{
-			operationWindow:      0,
+			operationWindow:      0, // Disabled by default for better performance
 			concurrencySemaphore: make(chan struct{}, cfg.MaxConcurrency),
 			enabled:              cfg.EnableMetrics,
 		},
+		// OPTIMIZED: Initialize hash cache for large JSON strings
+		hashCache:     make(map[string]uint64, 64),
+		hashCacheSize: 64,
 	}
 
 	// Initialize logger atomically for thread safety
@@ -99,19 +148,68 @@ func New(config ...*Config) *Processor {
 }
 
 // Close closes the processor and cleans up resources
+// This method is idempotent and thread-safe
 func (p *Processor) Close() error {
 	p.cleanupOnce.Do(func() {
+		// Mark as closing (state 1) to prevent new operations
 		atomic.StoreInt32(&p.state, 1)
 
+		// Wait for all active operations to complete with timeout
+		done := make(chan struct{})
+		go func() {
+			p.activeOps.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// All operations completed normally
+		case <-time.After(5 * time.Second):
+			// Timeout waiting for operations
+			// Log warning if logger is available (non-blocking)
+			if logger, ok := p.logger.Load().(*slog.Logger); ok && logger != nil {
+				logger.Warn("timeout waiting for active operations during close")
+			}
+		}
+
+		// Drain the concurrency semaphore to release any waiting goroutines
+		// Use a separate goroutine with timeout to prevent indefinite blocking
+		if p.metrics != nil && p.metrics.concurrencySemaphore != nil {
+			drainDone := make(chan struct{})
+			go func() {
+				defer close(drainDone)
+				for {
+					select {
+					case <-p.metrics.concurrencySemaphore:
+						// Drained one slot
+					default:
+						// Semaphore is empty
+						return
+					}
+				}
+			}()
+
+			select {
+			case <-drainDone:
+				// Drain completed
+			case <-time.After(1 * time.Second):
+				// Timeout on drain - continue with cleanup
+			}
+		}
+
+		// Safely clear cache with nil check
 		if p.cache != nil {
 			p.cache.Clear()
 		}
 
 		// Reset resource tracking
-		atomic.StoreInt32(&p.resources.memoryPressure, 0)
-		atomic.StoreInt64(&p.resources.lastMemoryCheck, 0)
-		atomic.StoreInt64(&p.resources.lastPoolReset, 0)
+		if p.resources != nil {
+			atomic.StoreInt32(&p.resources.memoryPressure, 0)
+			atomic.StoreInt64(&p.resources.lastMemoryCheck, 0)
+			atomic.StoreInt64(&p.resources.lastPoolReset, 0)
+		}
 
+		// Mark as fully closed (state 2)
 		atomic.StoreInt32(&p.state, 2)
 	})
 	return nil
@@ -359,6 +457,7 @@ func (p *Processor) warmupCacheWithSampleData(sampleData map[string]string, opts
 }
 
 // hashStringToUint64 generates a fast 64-bit hash using inline FNV-1a (no allocations)
+// PERFORMANCE: For large strings (> 4KB), uses sampling to avoid full scan
 func hashStringToUint64(s string) uint64 {
 	// Inline FNV-1a hash - no heap allocations
 	const (
@@ -366,6 +465,59 @@ func hashStringToUint64(s string) uint64 {
 		prime       = 1099511628211
 	)
 	h := uint64(offsetBasis)
+
+	// PERFORMANCE: For large strings, sample instead of scanning entire string
+	// This provides a good enough hash for cache purposes while being much faster
+	if len(s) > 4096 {
+		// Include length in hash
+		length := len(s)
+		h ^= uint64(length)
+		h *= prime
+		h ^= uint64(length >> 8)
+		h *= prime
+
+		// Sample: first 512 bytes, middle 256 bytes, last 512 bytes
+		// This covers most structural variations in JSON
+		sampleSize := 512
+		middleSample := 256
+
+		// First sample
+		end := sampleSize
+		if end > len(s) {
+			end = len(s)
+		}
+		for i := 0; i < end; i++ {
+			h ^= uint64(s[i])
+			h *= prime
+		}
+
+		// Middle sample
+		midStart := len(s)/2 - middleSample/2
+		if midStart > sampleSize {
+			midEnd := midStart + middleSample
+			if midEnd > len(s) {
+				midEnd = len(s)
+			}
+			for i := midStart; i < midEnd; i++ {
+				h ^= uint64(s[i])
+				h *= prime
+			}
+		}
+
+		// Last sample
+		start := len(s) - sampleSize
+		if start < end {
+			start = end
+		}
+		for i := start; i < len(s); i++ {
+			h ^= uint64(s[i])
+			h *= prime
+		}
+
+		return h
+	}
+
+	// Small string: full hash
 	for i := 0; i < len(s); i++ {
 		h ^= uint64(s[i])
 		h *= prime
@@ -373,16 +525,115 @@ func hashStringToUint64(s string) uint64 {
 	return h
 }
 
+// computeHashCacheKey computes a strong cache lookup key for large JSON strings
+// PERFORMANCE: Uses FNV-1a on first 1KB + last 1KB + length for better distribution
+// This avoids collisions from just first/last 4 bytes
+func computeHashCacheKey(s string) uint64 {
+	const (
+		offsetBasis = 14695981039346656037
+		prime       = 1099511628211
+	)
+
+	h := uint64(offsetBasis)
+	lenS := len(s)
+
+	// Hash first 1KB
+	endFirst := 1024
+	if endFirst > lenS {
+		endFirst = lenS
+	}
+	for i := 0; i < endFirst; i++ {
+		h ^= uint64(s[i])
+		h *= prime
+	}
+
+	// Hash last 1KB
+	startLast := lenS - 1024
+	if startLast < endFirst {
+		startLast = endFirst
+	}
+	for i := startLast; i < lenS; i++ {
+		h ^= uint64(s[i])
+		h *= prime
+	}
+
+	// Include length to prevent prefix/suffix collisions
+	h ^= uint64(lenS)
+	h *= prime
+
+	return h
+}
+
+// evictOldestHashCacheEntries removes a portion of entries from the hash cache
+// PERFORMANCE: Incremental eviction prevents cache thrashing and maintains consistent performance
+func (p *Processor) evictOldestHashCacheEntries(count int) {
+	removed := 0
+	for key := range p.hashCache {
+		delete(p.hashCache, key)
+		removed++
+		if removed >= count {
+			break
+		}
+	}
+}
+
+// getOrCacheHash gets a cached hash for a JSON string, or computes and caches it
+// OPTIMIZED: Caches hashes for large JSON strings to avoid repeated calculations
+func (p *Processor) getOrCacheHash(jsonStr string) uint64 {
+	// For small strings, just compute directly (no caching overhead)
+	if len(jsonStr) <= 4096 {
+		return hashStringToUint64(jsonStr)
+	}
+
+	// For large strings, try to use cache
+	// PERFORMANCE: Use strong FNV-1a hash of first/last 1KB + length for cache key
+	cacheLookupKey := computeHashCacheKey(jsonStr)
+
+	// Convert uint64 to string key using formatUint64HexString
+	cacheLookupKeyStr := formatUint64HexString(cacheLookupKey)
+
+	// Fast path: read lock lookup
+	p.hashCacheMu.RLock()
+	if h, ok := p.hashCache[cacheLookupKeyStr]; ok {
+		p.hashCacheMu.RUnlock()
+		return h
+	}
+	p.hashCacheMu.RUnlock()
+
+	// Slow path: compute and cache
+	h := hashStringToUint64(jsonStr)
+
+	// Cache the result with size limit
+	p.hashCacheMu.Lock()
+	if len(p.hashCache) < p.hashCacheSize {
+		p.hashCache[cacheLookupKeyStr] = h
+	} else if len(p.hashCache) >= p.hashCacheSize*2 {
+		// PERFORMANCE: Incremental eviction (25%) instead of complete clear
+		// This prevents cache thrashing and maintains more consistent performance
+		p.evictOldestHashCacheEntries(len(p.hashCache) / 4)
+		p.hashCache[cacheLookupKeyStr] = h
+	}
+	p.hashCacheMu.Unlock()
+
+	return h
+}
+
 // createCacheKey creates a cache key with optimized efficiency
 // Uses direct hash values instead of hex strings for better performance
+// OPTIMIZED: Uses cached hash for large JSON strings
 func (p *Processor) createCacheKey(operation, jsonStr, path string, options *ProcessorOptions) string {
+	// OPTIMIZED: Use cached hash for large JSON strings
+	jsonHash := p.getOrCacheHash(jsonStr)
+	return p.createCacheKeyWithHash(operation, jsonHash, path, options)
+}
+
+// createCacheKeyWithHash creates a cache key using a pre-computed hash
+// PERFORMANCE: Allows hash reuse across multiple cache key creations
+func (p *Processor) createCacheKeyWithHash(operation string, jsonHash uint64, path string, options *ProcessorOptions) string {
 	// Use a fixed-size array buffer for small keys to avoid allocations
 	// Most cache keys are < 128 bytes
 	var buf [128]byte
 	var key string
-
-	// Calculate hash of JSON string directly
-	jsonHash := hashStringToUint64(jsonStr)
 
 	// Try to use stack-allocated buffer
 	estimatedLen := len(operation) + 1 + 16 + 1 + len(path) + 16 // op:hash16:path:opts
@@ -499,47 +750,66 @@ func createCacheKey(prefix, data string) string {
 }
 
 // getCachedPathSegments gets parsed path segments using unified cache
+// PERFORMANCE: Creates cache key once and reuses for both lookup and storage
+// PERFORMANCE: Returns cached segments directly (immutable after creation)
 func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, error) {
 	// Use unified cache manager
 	if p.config.EnableCache {
+		// PERFORMANCE: Create cache key once for both lookup and storage
 		cacheKey := createCacheKey("path", path)
 		if cached, ok := p.cache.Get(cacheKey); ok {
 			if segments, ok := cached.([]internal.PathSegment); ok {
-				// Get slice from pool for result copy
-				result := *getPathSegmentSlice()
-				if cap(result) >= len(segments) {
-					result = result[:len(segments)]
-				} else {
-					result = make([]internal.PathSegment, len(segments))
-				}
-				copy(result, segments)
-				return result, nil
+				// PERFORMANCE: Return cached segments directly - they are immutable after creation
+				return segments, nil
 			}
 		}
+
+		// Parse path
+		segments, err := internal.ParsePath(path)
+		if err != nil {
+			return nil, err
+		}
+
+		// Cache the result using unified cache - reuse the cache key
+		if atomic.LoadInt32(&p.state) == 0 {
+			cached := make([]internal.PathSegment, len(segments))
+			copy(cached, segments)
+			p.cache.Set(cacheKey, cached)
+		}
+
+		return segments, nil
 	}
 
-	// Parse path
+	// Parse path without caching
 	segments, err := internal.ParsePath(path)
 	if err != nil {
 		return nil, err
-	}
-
-	// Cache the result using unified cache
-	if p.config.EnableCache && atomic.LoadInt32(&p.state) == 0 {
-		cacheKey := createCacheKey("path", path)
-		cached := make([]internal.PathSegment, len(segments))
-		copy(cached, segments)
-		p.cache.Set(cacheKey, cached)
 	}
 
 	return segments, nil
 }
 
 // getCachedParsedJSON gets parsed JSON using unified cache
+// OPTIMIZED: Support caching for larger JSON files with tiered limits
 func (p *Processor) getCachedParsedJSON(jsonStr string) (any, error) {
-	// Only cache small JSON strings
-	if len(jsonStr) < 2048 && p.config.EnableCache {
-		cacheKey := createCacheKey("json", jsonStr)
+	jsonLen := len(jsonStr)
+
+	// Determine cache eligibility based on size
+	// Small JSON: always cache with full key
+	// Medium JSON: cache with hash-based key
+	// Large JSON: cache with hash-based key (up to LargeJSONCacheLimit)
+	canCache := p.config.EnableCache && jsonLen <= LargeJSONCacheLimit
+
+	if canCache {
+		// Use hash-based key for larger JSON to reduce memory usage
+		var cacheKey string
+		if jsonLen <= SmallJSONCacheLimit {
+			cacheKey = createCacheKey("json", jsonStr)
+		} else {
+			// For medium/large JSON, use hash-based key
+			cacheKey = createCacheKey("jsonh", formatUint64HexString(hashStringToUint64(jsonStr)))
+		}
+
 		if cached, ok := p.cache.Get(cacheKey); ok {
 			return cached, nil
 		}
@@ -552,9 +822,14 @@ func (p *Processor) getCachedParsedJSON(jsonStr string) (any, error) {
 		return nil, err
 	}
 
-	// Cache small JSON strings using unified cache
-	if len(jsonStr) < 2048 && p.config.EnableCache && atomic.LoadInt32(&p.state) == 0 {
-		cacheKey := createCacheKey("json", jsonStr)
+	// Cache parsed JSON based on size limits
+	if canCache && atomic.LoadInt32(&p.state) == 0 {
+		var cacheKey string
+		if jsonLen <= SmallJSONCacheLimit {
+			cacheKey = createCacheKey("json", jsonStr)
+		} else {
+			cacheKey = createCacheKey("jsonh", formatUint64HexString(hashStringToUint64(jsonStr)))
+		}
 		p.cache.Set(cacheKey, data)
 	}
 
@@ -593,9 +868,35 @@ func (p *Processor) setCachedResult(key string, result any, options ...*Processo
 	p.cache.Set(key, result)
 }
 
+// setCachedResultInternal stores a result in cache without sensitive data check
+// PERFORMANCE: For trusted internal results (parsed JSON, navigation results) where
+// security validation already happened at input. Skips expensive sensitive data scanning.
+func (p *Processor) setCachedResultInternal(key string, result any) {
+	if !p.config.EnableCache {
+		return
+	}
+
+	// Validate cache key to prevent injection
+	if !p.isValidCacheKey(key) {
+		return
+	}
+
+	p.cache.Set(key, result)
+}
+
 // containsSensitiveData checks if the result contains sensitive information
-// Optimized version: only checks map keys and top-level string values, not entire content
+// SECURITY: Uses recursive detection with depth limit to prevent DoS
 func (p *Processor) containsSensitiveData(result any) bool {
+	return p.containsSensitiveDataRecursive(result, 0, 10) // max depth of 10
+}
+
+// containsSensitiveDataRecursive recursively checks for sensitive data with depth limit
+func (p *Processor) containsSensitiveDataRecursive(result any, depth, maxDepth int) bool {
+	// SECURITY: Enforce depth limit to prevent DoS
+	if depth > maxDepth {
+		return false
+	}
+
 	if result == nil {
 		return false
 	}
@@ -613,30 +914,31 @@ func (p *Processor) containsSensitiveData(result any) bool {
 		return p.containsSensitivePatterns(str)
 	}
 
-	// For maps, only check keys (not values) to avoid deep traversal
+	// For maps, check keys and recursively check values
 	if m, ok := result.(map[string]any); ok {
-		for key := range m {
+		for key, value := range m {
+			// Check key for sensitive patterns
 			if p.containsSensitivePatterns(key) {
+				return true
+			}
+			// Recursively check value
+			if p.containsSensitiveDataRecursive(value, depth+1, maxDepth) {
 				return true
 			}
 		}
 		return false
 	}
 
-	// For slices, only check if it's a small slice of maps with sensitive keys
+	// For slices, recursively check elements with limit
 	if arr, ok := result.([]any); ok {
-		// Only check first few elements to avoid performance hit on large arrays
+		// Only check first 50 elements to avoid performance hit on large arrays
 		checkLimit := len(arr)
-		if checkLimit > 10 {
-			checkLimit = 10
+		if checkLimit > 50 {
+			checkLimit = 50
 		}
 		for i := 0; i < checkLimit; i++ {
-			if item, ok := arr[i].(map[string]any); ok {
-				for key := range item {
-					if p.containsSensitivePatterns(key) {
-						return true
-					}
-				}
+			if p.containsSensitiveDataRecursive(arr[i], depth+1, maxDepth) {
+				return true
 			}
 		}
 		return false
@@ -646,10 +948,11 @@ func (p *Processor) containsSensitiveData(result any) bool {
 }
 
 // containsSensitivePatterns checks if a string contains sensitive patterns
+// SECURITY: Extended pattern list for comprehensive sensitive data detection
+// PERFORMANCE: Uses package-level sensitivePatterns slice to avoid allocation
 func (p *Processor) containsSensitivePatterns(s string) bool {
 	// Fast lowercase conversion and check
 	s = strings.ToLower(s)
-	sensitivePatterns := []string{"password", "token", "secret", "apikey", "auth", "credential", "private"}
 	for _, pattern := range sensitivePatterns {
 		if strings.Contains(s, pattern) {
 			return true
@@ -662,7 +965,8 @@ func (p *Processor) containsSensitivePatterns(s string) bool {
 // Optimized: uses single-pass byte range check instead of individual byte iteration
 func (p *Processor) isValidCacheKey(key string) bool {
 	keyLen := len(key)
-	if keyLen > 500 { // Prevent excessively long keys
+	// Use unified constant from internal package for consistency
+	if keyLen > internal.MaxCacheKeyLength {
 		return false
 	}
 
@@ -1070,8 +1374,11 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 		p.logOperation(ctx, "get", path, duration)
 	}()
 
+	// PERFORMANCE: Compute hash ONCE for entire operation, reuse for all cache keys
+	jsonHash := p.getOrCacheHash(jsonStr)
+
 	// Check cache first with optimized key generation (BEFORE validation for performance)
-	cacheKey := p.createCacheKey("get", jsonStr, path, options)
+	cacheKey := p.createCacheKeyWithHash("get", jsonHash, path, options)
 	if cached, ok := p.getCachedResult(cacheKey); ok {
 		// Record cache hit operation
 		if p.metrics != nil && p.metrics.collector != nil {
@@ -1081,17 +1388,20 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 		return cached, nil
 	}
 
-	// Validate input only if cache miss
-	if err := p.validateInput(jsonStr); err != nil {
-		p.incrementErrorCount()
-		recordMetrics(false)
-		return nil, err
-	}
+	// Validate input only if cache miss and validation not skipped
+	// OPTIMIZED: Allow skipping validation for trusted input
+	if !options.SkipValidation {
+		if err := p.validateInput(jsonStr); err != nil {
+			p.incrementErrorCount()
+			recordMetrics(false)
+			return nil, err
+		}
 
-	if err := p.validatePath(path); err != nil {
-		p.incrementErrorCount()
-		recordMetrics(false)
-		return nil, err
+		if err := p.validatePath(path); err != nil {
+			p.incrementErrorCount()
+			recordMetrics(false)
+			return nil, err
+		}
 	}
 
 	// Record cache miss
@@ -1099,8 +1409,8 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 		p.metrics.collector.RecordCacheMiss()
 	}
 
-	// Try to get parsed data from cache first
-	parseCacheKey := p.createCacheKey("parse", jsonStr, "", options)
+	// Try to get parsed data from cache first - reuse pre-computed hash
+	parseCacheKey := p.createCacheKeyWithHash("parse", jsonHash, "", options)
 	var data any
 
 	if cachedData, ok := p.getCachedResult(parseCacheKey); ok {
@@ -1115,9 +1425,11 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 			return nil, parseErr
 		}
 
-		// Cache parsed data for reuse
-		if options.CacheResults && p.config.EnableCache {
-			p.setCachedResult(parseCacheKey, data, options)
+		// Cache parsed data for reuse - always cache if global cache is enabled
+		// PERFORMANCE: Use setCachedResultInternal to skip sensitive data check
+		// since this is trusted internal data from our parser
+		if p.config.EnableCache {
+			p.setCachedResultInternal(parseCacheKey, data)
 		}
 	}
 
@@ -1141,6 +1453,154 @@ func (p *Processor) Get(jsonStr, path string, opts ...*ProcessorOptions) (any, e
 	recordMetrics(true)
 
 	return result, nil
+}
+
+// PreParse parses a JSON string and returns a ParsedJSON object that can be reused
+// for multiple Get operations. This is a performance optimization for scenarios where
+// the same JSON is queried multiple times.
+//
+// OPTIMIZED: Pre-parsing avoids repeated JSON parsing overhead for repeated queries.
+//
+// Example:
+//
+//	parsed, err := processor.PreParse(jsonStr)
+//	if err != nil { return err }
+//	value1, _ := processor.GetFromParsed(parsed, "path1")
+//	value2, _ := processor.GetFromParsed(parsed, "path2")
+func (p *Processor) PreParse(jsonStr string, opts ...*ProcessorOptions) (*ParsedJSON, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	options, err := p.prepareOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate input
+	if err := p.validateInput(jsonStr); err != nil {
+		return nil, err
+	}
+
+	// Try to get from cache first
+	parseCacheKey := p.createCacheKey("parse", jsonStr, "", options)
+	var data any
+
+	if cachedData, ok := p.getCachedResult(parseCacheKey); ok {
+		data = cachedData
+	} else {
+		// Parse JSON
+		parseErr := p.Parse(jsonStr, &data, opts...)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+
+		// Cache parsed data - PERFORMANCE: Use internal method to skip sensitive check
+		if p.config.EnableCache {
+			p.setCachedResultInternal(parseCacheKey, data)
+		}
+	}
+
+	return &ParsedJSON{
+		data:      data,
+		hash:      p.getOrCacheHash(jsonStr),
+		jsonLen:   len(jsonStr),
+		processor: p,
+	}, nil
+}
+
+// GetFromParsed retrieves a value from a pre-parsed JSON document at the specified path.
+// This is significantly faster than Get() for repeated queries on the same JSON.
+//
+// OPTIMIZED: Skips JSON parsing, goes directly to path navigation.
+func (p *Processor) GetFromParsed(parsed *ParsedJSON, path string, opts ...*ProcessorOptions) (any, error) {
+	if parsed == nil {
+		return nil, &JsonsError{
+			Op:      "get_from_parsed",
+			Message: "parsed JSON is nil",
+			Err:     ErrOperationFailed,
+		}
+	}
+
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	options, err := p.prepareOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := p.validatePath(path); err != nil {
+		return nil, err
+	}
+
+	// Use unified recursive processor for path navigation
+	result, err := p.recursiveProcessor.ProcessRecursively(parsed.data, path, OpGet, nil)
+	if err != nil {
+		return nil, &JsonsError{
+			Op:      "get_from_parsed",
+			Path:    path,
+			Message: err.Error(),
+			Err:     err,
+		}
+	}
+
+	// Cache result if enabled
+	if p.config.EnableCache && options.CacheResults {
+		cacheKey := p.createCacheKey("get", string(rune(parsed.hash)), path, options)
+		p.setCachedResult(cacheKey, result, options)
+	}
+
+	return result, nil
+}
+
+// SetFromParsed modifies a pre-parsed JSON document at the specified path.
+// Returns a new ParsedJSON with the modified data (original is not modified).
+//
+// OPTIMIZED: Skips JSON parsing, works directly on parsed data.
+func (p *Processor) SetFromParsed(parsed *ParsedJSON, path string, value any, opts ...*ProcessorOptions) (*ParsedJSON, error) {
+	if parsed == nil {
+		return nil, &JsonsError{
+			Op:      "set_from_parsed",
+			Message: "parsed JSON is nil",
+			Err:     ErrOperationFailed,
+		}
+	}
+
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	options, err := p.prepareOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := p.validatePath(path); err != nil {
+		return nil, err
+	}
+
+	// Deep copy the data before modification
+	dataCopy := p.deepCopyData(parsed.data)
+
+	// Use unified recursive processor for path navigation and modification
+	result, err := p.recursiveProcessor.ProcessRecursivelyWithOptions(dataCopy, path, OpSet, value, options.CreatePaths)
+	if err != nil {
+		return nil, &JsonsError{
+			Op:      "set_from_parsed",
+			Path:    path,
+			Message: err.Error(),
+			Err:     err,
+		}
+	}
+
+	return &ParsedJSON{
+		data:      result,
+		hash:      0, // New hash will be computed when needed
+		jsonLen:   0, // Length unknown until serialized
+		processor: p,
+	}, nil
 }
 
 // GetString retrieves a string value from JSON at the specified path
@@ -2235,14 +2695,8 @@ func isValidNumberStart(c byte) bool {
 
 // validatePath validates a JSON path string with enhanced security and efficiency
 func (p *Processor) validatePath(path string) error {
-	// Use the unified security validator
-	validator := NewSecurityValidator(
-		p.config.MaxJSONSize,
-		MaxPathLength,
-		p.config.MaxNestingDepthSecurity,
-	)
-
-	return validator.ValidatePathInput(path)
+	// Use the cached security validator instead of creating a new one each time
+	return p.securityValidator.ValidatePathInput(path)
 }
 
 // validateSingleSegment validates a single path segment

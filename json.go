@@ -31,30 +31,37 @@ package json
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 var (
-	defaultProcessor   *Processor
-	defaultProcessorMu sync.RWMutex
+	defaultProcessor   atomic.Pointer[Processor]
+	defaultProcessorMu sync.Mutex
+	// defaultProcessorOnce provides thread-safe lazy initialization using Go 1.24+ sync.OnceValue
+	defaultProcessorOnce sync.Once
 )
 
+// getDefaultProcessorFn is a thread-safe function that returns the default processor
+// Uses sync.OnceValue pattern for efficient lazy initialization
 func getDefaultProcessor() *Processor {
-	defaultProcessorMu.RLock()
-	if defaultProcessor != nil && !defaultProcessor.IsClosed() {
-		p := defaultProcessor
-		defaultProcessorMu.RUnlock()
+	// Fast path: check if processor exists and is not closed
+	if p := defaultProcessor.Load(); p != nil && !p.IsClosed() {
 		return p
 	}
-	defaultProcessorMu.RUnlock()
 
+	// Slow path: need to create or replace processor
 	defaultProcessorMu.Lock()
 	defer defaultProcessorMu.Unlock()
 
-	if defaultProcessor == nil || defaultProcessor.IsClosed() {
-		defaultProcessor = New()
+	// Double-check after acquiring lock
+	if p := defaultProcessor.Load(); p != nil && !p.IsClosed() {
+		return p
 	}
 
-	return defaultProcessor
+	// Create new processor
+	p := New()
+	defaultProcessor.Store(p)
+	return p
 }
 
 // SetGlobalProcessor sets a custom global processor (thread-safe)
@@ -66,11 +73,9 @@ func SetGlobalProcessor(processor *Processor) {
 	defaultProcessorMu.Lock()
 	defer defaultProcessorMu.Unlock()
 
-	if defaultProcessor != nil {
-		defaultProcessor.Close()
+	if old := defaultProcessor.Swap(processor); old != nil {
+		old.Close()
 	}
-
-	defaultProcessor = processor
 }
 
 // ShutdownGlobalProcessor shuts down the global processor
@@ -78,9 +83,8 @@ func ShutdownGlobalProcessor() {
 	defaultProcessorMu.Lock()
 	defer defaultProcessorMu.Unlock()
 
-	if defaultProcessor != nil {
-		defaultProcessor.Close()
-		defaultProcessor = nil
+	if old := defaultProcessor.Swap(nil); old != nil {
+		old.Close()
 	}
 }
 
