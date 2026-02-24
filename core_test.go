@@ -417,9 +417,9 @@ func TestHandleExtraction(t *testing.T) {
 				map[string]any{"items": []any{3, 4}},
 			},
 			segment: PathSegment{
-				Type:   internal.ExtractSegment,
-				Key:    "items",
-				IsFlat: true,
+				Type:  internal.ExtractSegment,
+				Key:   "items",
+				Flags: internal.FlagIsFlat,
 			},
 			expectedLen: 4, // Flattened: [1, 2, 3, 4]
 			expectError: false,
@@ -704,8 +704,8 @@ func TestParseExtractionSegment(t *testing.T) {
 				t.Errorf("Extraction key = %s; want %s", extractSeg.Key, tt.expectedKey)
 			}
 
-			if extractSeg.IsFlat != tt.expectedIsFlat {
-				t.Errorf("IsFlat = %v; want %v", extractSeg.IsFlat, tt.expectedIsFlat)
+			if extractSeg.IsFlatExtract() != tt.expectedIsFlat {
+				t.Errorf("IsFlatExtract() = %v; want %v", extractSeg.IsFlatExtract(), tt.expectedIsFlat)
 			}
 		})
 	}

@@ -38,18 +38,18 @@ func TestPathSegment(t *testing.T) {
 		end := 5
 		step := 2
 
-		seg := NewArraySliceSegment(&start, &end, &step)
+		seg := NewArraySliceSegment(start, end, step, true, true, true)
 
 		if seg.Type != ArraySliceSegment {
 			t.Error("Type should be ArraySliceSegment")
 		}
-		if seg.Start == nil || *seg.Start != 1 {
+		if !seg.HasStart() || seg.Index != 1 {
 			t.Error("Start should be 1")
 		}
-		if seg.End == nil || *seg.End != 5 {
+		if !seg.HasEnd() || seg.End != 5 {
 			t.Error("End should be 5")
 		}
-		if seg.Step == nil || *seg.Step != 2 {
+		if !seg.HasStep() || seg.Step != 2 {
 			t.Error("Step should be 2")
 		}
 		if seg.TypeString() != "slice" {
@@ -66,7 +66,7 @@ func TestPathSegment(t *testing.T) {
 		if seg.Key != "email" {
 			t.Errorf("Expected key 'email', got '%s'", seg.Key)
 		}
-		if seg.IsFlat {
+		if seg.IsFlatExtract() {
 			t.Error("Should not be flat extraction")
 		}
 	})
@@ -80,7 +80,7 @@ func TestPathSegment(t *testing.T) {
 		if seg.Key != "email" {
 			t.Errorf("Expected key 'email', got '%s'", seg.Key)
 		}
-		if !seg.IsFlat {
+		if !seg.IsFlatExtract() {
 			t.Error("Should be flat extraction")
 		}
 	})

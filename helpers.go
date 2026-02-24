@@ -51,12 +51,27 @@ func (ah *ArrayHelper) ClampIndex(index, length int) int {
 }
 
 // CompactArray removes nil values and deletion markers from an array
+// Optimized: first pass counts removable elements, avoiding allocation if none found
 func (ah *ArrayHelper) CompactArray(arr []any) []any {
 	if len(arr) == 0 {
 		return arr
 	}
 
-	result := make([]any, 0, len(arr))
+	// First pass: count elements to remove
+	removeCount := 0
+	for _, item := range arr {
+		if item == nil || item == DeletedMarker {
+			removeCount++
+		}
+	}
+
+	// Fast path: no elements to remove, return original array
+	if removeCount == 0 {
+		return arr
+	}
+
+	// Second pass: build result with exact capacity
+	result := make([]any, 0, len(arr)-removeCount)
 	for _, item := range arr {
 		if item != nil && item != DeletedMarker {
 			result = append(result, item)

@@ -15,10 +15,12 @@ type UnifiedResourceManager struct {
 	stringBuilderPool *sync.Pool
 	pathSegmentPool   *sync.Pool
 	bufferPool        *sync.Pool
+	optionsPool       *sync.Pool // Pool for ProcessorOptions to reduce allocations
 
 	allocatedBuilders int64
 	allocatedSegments int64
 	allocatedBuffers  int64
+	allocatedOptions  int64
 
 	lastCleanup     int64
 	cleanupInterval int64
@@ -44,6 +46,12 @@ func NewUnifiedResourceManager() *UnifiedResourceManager {
 				return make([]byte, 0, 1024)
 			},
 		},
+		optionsPool: &sync.Pool{
+			New: func() any {
+				opts := DefaultOptionsClone() // Use clone for pool objects
+				return opts
+			},
+		},
 		cleanupInterval: 300,
 		lastCleanup:     time.Now().Unix(),
 	}
@@ -62,11 +70,13 @@ func (urm *UnifiedResourceManager) PutStringBuilder(sb *strings.Builder) {
 	const minBuilderCap = MinPoolBufferSize // 256 - consistent with constants
 
 	if sb != nil {
+		// Always decrement counter when returning (or discarding) to maintain accuracy
+		defer atomic.AddInt64(&urm.allocatedBuilders, -1)
+
 		c := sb.Cap()
 		if c >= minBuilderCap && c <= maxBuilderCap {
 			sb.Reset()
 			urm.stringBuilderPool.Put(sb)
-			atomic.AddInt64(&urm.allocatedBuilders, -1)
 		}
 		// oversized builders are discarded to prevent pool bloat
 	}
@@ -84,10 +94,15 @@ func (urm *UnifiedResourceManager) PutPathSegments(segments []internal.PathSegme
 	const maxSegmentCap = 32 // Reduced from 64
 	const minSegmentCap = 4  // Keep minimum
 
-	if segments != nil && cap(segments) >= minSegmentCap && cap(segments) <= maxSegmentCap {
-		segments = segments[:0]
-		urm.pathSegmentPool.Put(segments)
-		atomic.AddInt64(&urm.allocatedSegments, -1)
+	if segments != nil {
+		// Always decrement counter when returning (or discarding) to maintain accuracy
+		defer atomic.AddInt64(&urm.allocatedSegments, -1)
+
+		if cap(segments) >= minSegmentCap && cap(segments) <= maxSegmentCap {
+			segments = segments[:0]
+			urm.pathSegmentPool.Put(segments)
+		}
+		// oversized segments are discarded to prevent pool bloat
 	}
 }
 
@@ -103,10 +118,44 @@ func (urm *UnifiedResourceManager) PutBuffer(buf []byte) {
 	const maxBufferCap = MaxPoolBufferSize // 8192 - consistent with constants
 	const minBufferCap = MinPoolBufferSize // 256 - consistent with constants
 
-	if buf != nil && cap(buf) >= minBufferCap && cap(buf) <= maxBufferCap {
-		buf = buf[:0]
-		urm.bufferPool.Put(buf)
-		atomic.AddInt64(&urm.allocatedBuffers, -1)
+	if buf != nil {
+		// Always decrement counter when returning (or discarding) to maintain accuracy
+		defer atomic.AddInt64(&urm.allocatedBuffers, -1)
+
+		if cap(buf) >= minBufferCap && cap(buf) <= maxBufferCap {
+			buf = buf[:0]
+			urm.bufferPool.Put(buf)
+		}
+		// oversized buffers are discarded to prevent pool bloat
+	}
+}
+
+// GetOptions gets a ProcessorOptions from the pool
+func (urm *UnifiedResourceManager) GetOptions() *ProcessorOptions {
+	opts := urm.optionsPool.Get().(*ProcessorOptions)
+	// Reset to default values
+	*opts = ProcessorOptions{
+		CacheResults:    true,
+		StrictMode:      false,
+		MaxDepth:        50,
+		AllowComments:   false,
+		PreserveNumbers: false,
+		CreatePaths:     false,
+		CleanupNulls:    false,
+		CompactArrays:   false,
+		ContinueOnError: false,
+	}
+	atomic.AddInt64(&urm.allocatedOptions, 1)
+	return opts
+}
+
+// PutOptions returns a ProcessorOptions to the pool
+func (urm *UnifiedResourceManager) PutOptions(opts *ProcessorOptions) {
+	if opts != nil {
+		defer atomic.AddInt64(&urm.allocatedOptions, -1)
+		// Clear context to prevent memory leaks
+		opts.Context = nil
+		urm.optionsPool.Put(opts)
 	}
 }
 
@@ -132,6 +181,7 @@ func (urm *UnifiedResourceManager) GetStats() ResourceManagerStats {
 		AllocatedBuilders: atomic.LoadInt64(&urm.allocatedBuilders),
 		AllocatedSegments: atomic.LoadInt64(&urm.allocatedSegments),
 		AllocatedBuffers:  atomic.LoadInt64(&urm.allocatedBuffers),
+		AllocatedOptions:  atomic.LoadInt64(&urm.allocatedOptions),
 		LastCleanup:       atomic.LoadInt64(&urm.lastCleanup),
 	}
 }
@@ -140,6 +190,7 @@ type ResourceManagerStats struct {
 	AllocatedBuilders int64 `json:"allocated_builders"`
 	AllocatedSegments int64 `json:"allocated_segments"`
 	AllocatedBuffers  int64 `json:"allocated_buffers"`
+	AllocatedOptions  int64 `json:"allocated_options"`
 	LastCleanup       int64 `json:"last_cleanup"`
 }
 

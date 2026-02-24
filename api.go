@@ -234,6 +234,7 @@ func HTMLEscape(dst *bytes.Buffer, src []byte) {
 }
 
 // htmlEscape performs HTML escaping on JSON string
+// Compatible with encoding/json: escapes <, >, &, U+2028, U+2029
 func htmlEscape(s string) string {
 	var buf bytes.Buffer
 	buf.Grow(len(s))
@@ -245,6 +246,10 @@ func htmlEscape(s string) string {
 			buf.WriteString("\\u003e")
 		case '&':
 			buf.WriteString("\\u0026")
+		case '\u2028': // Line Separator - required for JSON-in-JS compatibility
+			buf.WriteString("\\u2028")
+		case '\u2029': // Paragraph Separator - required for JSON-in-JS compatibility
+			buf.WriteString("\\u2029")
 		default:
 			buf.WriteRune(r)
 		}
@@ -481,7 +486,7 @@ func mergeOptionsWithOverride(opts []*ProcessorOptions, override func(*Processor
 	if len(opts) > 0 && opts[0] != nil {
 		result = opts[0].Clone()
 	} else {
-		result = DefaultOptions()
+		result = DefaultOptionsClone() // Use clone since we modify the result
 	}
 	override(result)
 	return result

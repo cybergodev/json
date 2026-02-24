@@ -95,19 +95,33 @@ func (opts *ProcessorOptions) Clone() *ProcessorOptions {
 	}
 }
 
-// DefaultOptions returns default processor options
+// defaultOptions is a singleton containing default processor options.
+// This eliminates allocations when callers only need to read defaults.
+// DO NOT MODIFY this singleton - use DefaultOptionsClone() if modification is needed.
+var defaultOptions = &ProcessorOptions{
+	CacheResults:    true,
+	StrictMode:      false,
+	MaxDepth:        50,
+	AllowComments:   false,
+	PreserveNumbers: false, // Disable number preservation for encoding/json compatibility
+	CreatePaths:     false, // Conservative default - don't auto-create paths
+	CleanupNulls:    false, // Conservative default - don't auto-cleanup nulls
+	CompactArrays:   false, // Conservative default - don't auto-compact arrays
+	ContinueOnError: false, // Conservative default - fail fast on errors
+}
+
+// DefaultOptions returns default processor options as a singleton.
+// Returns an immutable pointer - callers MUST NOT modify the returned value.
+// Use DefaultOptionsClone() if you need a modifiable copy.
 func DefaultOptions() *ProcessorOptions {
-	return &ProcessorOptions{
-		CacheResults:    true,
-		StrictMode:      false,
-		MaxDepth:        50,
-		AllowComments:   false,
-		PreserveNumbers: false, // Disable number preservation for encoding/json compatibility
-		CreatePaths:     false, // Conservative default - don't auto-create paths
-		CleanupNulls:    false, // Conservative default - don't auto-cleanup nulls
-		CompactArrays:   false, // Conservative default - don't auto-compact arrays
-		ContinueOnError: false, // Conservative default - fail fast on errors
-	}
+	return defaultOptions
+}
+
+// DefaultOptionsClone returns a modifiable copy of the default processor options.
+// Use this when you need to customize the options before passing to operations.
+func DefaultOptionsClone() *ProcessorOptions {
+	clone := *defaultOptions
+	return &clone
 }
 
 // Stats provides processor performance statistics

@@ -842,17 +842,17 @@ func navigateToPathWithArraySupport(data any, path string) (any, error) {
 				return nil, newPathError(path, fmt.Sprintf("cannot slice type %T", current), ErrTypeMismatch)
 			}
 
-			// Build slice string from Start, End, Step
+			// Build slice string from segment flags and values
 			var sliceStr string
-			if segment.Start != nil {
-				sliceStr += fmt.Sprintf("%d", *segment.Start)
+			if segment.HasStart() {
+				sliceStr += fmt.Sprintf("%d", segment.Index) // Index stores start for slices
 			}
 			sliceStr += ":"
-			if segment.End != nil {
-				sliceStr += fmt.Sprintf("%d", *segment.End)
+			if segment.HasEnd() {
+				sliceStr += fmt.Sprintf("%d", segment.End)
 			}
-			if segment.Step != nil {
-				sliceStr += fmt.Sprintf(":%d", *segment.Step)
+			if segment.HasStep() {
+				sliceStr += fmt.Sprintf(":%d", segment.Step)
 			}
 
 			start, end, step, err := internal.ParseSliceComponents(sliceStr)

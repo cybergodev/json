@@ -24,7 +24,7 @@ type Processor struct {
 	resources         *processorResources
 	metrics           *processorMetrics
 	resourceMonitor   *ResourceMonitor
-	logger            *slog.Logger
+	logger            atomic.Value // *slog.Logger - thread-safe logger storage
 	securityValidator *SecurityValidator
 	// Cached RecursiveProcessor for reuse across operations (performance optimization)
 	recursiveProcessor *RecursiveProcessor
@@ -67,7 +67,6 @@ func New(config ...*Config) *Processor {
 		config:          cfg,
 		cache:           internal.NewCacheManager(cfg),
 		resourceMonitor: NewResourceMonitor(),
-		logger:          slog.Default().With("component", "json-processor"),
 		securityValidator: NewSecurityValidator(
 			cfg.MaxJSONSize,
 			MaxPathLength,
@@ -84,6 +83,9 @@ func New(config ...*Config) *Processor {
 			enabled:              cfg.EnableMetrics,
 		},
 	}
+
+	// Initialize logger atomically for thread safety
+	p.logger.Store(slog.Default().With("component", "json-processor"))
 
 	// Only create metrics collector if metrics are enabled
 	if cfg.EnableMetrics {
@@ -476,11 +478,31 @@ func putPathSegmentSlice(s *[]internal.PathSegment) {
 	pathSegmentPool.Put(s)
 }
 
+// createCacheKey creates a cache key with stack-allocated buffer for small keys
+// This avoids heap allocation for common case of small paths
+func createCacheKey(prefix, data string) string {
+	totalLen := len(prefix) + 1 + len(data) // prefix + ":" + data
+
+	// Use stack-allocated buffer for small keys (up to 256 bytes)
+	const maxStackKeySize = 256
+	if totalLen <= maxStackKeySize {
+		var buf [maxStackKeySize]byte
+		n := copy(buf[:], prefix)
+		buf[n] = ':'
+		n++
+		n += copy(buf[n:], data)
+		return string(buf[:n])
+	}
+
+	// Fall back to heap allocation for large keys
+	return prefix + ":" + data
+}
+
 // getCachedPathSegments gets parsed path segments using unified cache
 func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, error) {
 	// Use unified cache manager
 	if p.config.EnableCache {
-		cacheKey := "path:" + path
+		cacheKey := createCacheKey("path", path)
 		if cached, ok := p.cache.Get(cacheKey); ok {
 			if segments, ok := cached.([]internal.PathSegment); ok {
 				// Get slice from pool for result copy
@@ -504,7 +526,7 @@ func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, 
 
 	// Cache the result using unified cache
 	if p.config.EnableCache && atomic.LoadInt32(&p.state) == 0 {
-		cacheKey := "path:" + path
+		cacheKey := createCacheKey("path", path)
 		cached := make([]internal.PathSegment, len(segments))
 		copy(cached, segments)
 		p.cache.Set(cacheKey, cached)
@@ -517,7 +539,7 @@ func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, 
 func (p *Processor) getCachedParsedJSON(jsonStr string) (any, error) {
 	// Only cache small JSON strings
 	if len(jsonStr) < 2048 && p.config.EnableCache {
-		cacheKey := "json:" + jsonStr
+		cacheKey := createCacheKey("json", jsonStr)
 		if cached, ok := p.cache.Get(cacheKey); ok {
 			return cached, nil
 		}
@@ -532,7 +554,7 @@ func (p *Processor) getCachedParsedJSON(jsonStr string) (any, error) {
 
 	// Cache small JSON strings using unified cache
 	if len(jsonStr) < 2048 && p.config.EnableCache && atomic.LoadInt32(&p.state) == 0 {
-		cacheKey := "json:" + jsonStr
+		cacheKey := createCacheKey("json", jsonStr)
 		p.cache.Set(cacheKey, data)
 	}
 
@@ -682,10 +704,18 @@ func (p *Processor) GetConfig() *Config {
 // SetLogger sets a custom structured logger for the processor
 func (p *Processor) SetLogger(logger *slog.Logger) {
 	if logger != nil {
-		p.logger = logger.With("component", "json-processor")
+		p.logger.Store(logger.With("component", "json-processor"))
 	} else {
-		p.logger = slog.Default().With("component", "json-processor")
+		p.logger.Store(slog.Default().With("component", "json-processor"))
 	}
+}
+
+// getLogger safely retrieves the current logger (thread-safe)
+func (p *Processor) getLogger() *slog.Logger {
+	if l, ok := p.logger.Load().(*slog.Logger); ok {
+		return l
+	}
+	return slog.Default().With("component", "json-processor")
 }
 
 // checkClosed returns an error if the processor is closed or closing
@@ -731,7 +761,7 @@ func (p *Processor) Delete(jsonStr, path string, opts ...*ProcessorOptions) (str
 		return "", err
 	}
 
-	_, err := p.prepareOptions(opts...)
+	options, err := p.prepareOptions(opts...)
 	if err != nil {
 		return "", err
 	}
@@ -751,22 +781,17 @@ func (p *Processor) Delete(jsonStr, path string, opts ...*ProcessorOptions) (str
 		return jsonStr, err
 	}
 
-	// Get the effective options
-	var effectiveOpts *ProcessorOptions
-	if len(opts) > 0 && opts[0] != nil {
-		effectiveOpts = opts[0]
-	} else {
-		effectiveOpts = &ProcessorOptions{}
-	}
-
-	// Determine cleanup options
-	cleanupNulls := effectiveOpts.CleanupNulls || p.config.CleanupNulls
-	compactArrays := effectiveOpts.CompactArrays || p.config.CompactArrays
+	// Determine cleanup options from prepared options and config
+	cleanupNulls := options.CleanupNulls || p.config.CleanupNulls
+	compactArrays := options.CompactArrays || p.config.CompactArrays
 
 	// If compactArrays is enabled, automatically enable cleanupNulls
 	if compactArrays {
 		cleanupNulls = true
 	}
+
+	// Check if path contains array access - only then we need DeletedMarker cleanup
+	needsMarkerCleanup := p.isArrayDeletePath(path)
 
 	// Delete the value at the specified path
 	err = p.deleteValueAtPath(data, path)
@@ -781,8 +806,11 @@ func (p *Processor) Delete(jsonStr, path string, opts ...*ProcessorOptions) (str
 		}
 	}
 
-	// Clean up deleted markers from the data (this handles array element removal)
-	data = p.cleanupDeletedMarkers(data)
+	// Only clean up deleted markers if the path involved array operations
+	// This optimization avoids unnecessary data structure recreation for map deletions
+	if needsMarkerCleanup {
+		data = p.cleanupDeletedMarkers(data)
+	}
 
 	// Cleanup nulls if requested
 	if cleanupNulls {
@@ -802,6 +830,17 @@ func (p *Processor) Delete(jsonStr, path string, opts ...*ProcessorOptions) (str
 	}
 
 	return string(resultBytes), nil
+}
+
+// isArrayDeletePath checks if the path involves array operations that require marker cleanup
+func (p *Processor) isArrayDeletePath(path string) bool {
+	// Check if path contains array bracket notation
+	for i := 0; i < len(path); i++ {
+		if path[i] == '[' {
+			return true
+		}
+	}
+	return false
 }
 
 // DeleteWithCleanNull removes a value from JSON and cleans up null values
@@ -1362,7 +1401,8 @@ func (p *Processor) incrementErrorCount() {
 
 // logError logs an error with structured logging
 func (p *Processor) logError(ctx context.Context, operation, path string, err error) {
-	if p.logger == nil {
+	logger := p.getLogger()
+	if logger == nil {
 		return
 	}
 
@@ -1379,7 +1419,7 @@ func (p *Processor) logError(ctx context.Context, operation, path string, err er
 	sanitizedPath := sanitizePath(path)
 	sanitizedError := sanitizeError(err)
 
-	p.logger.ErrorContext(ctx, "JSON operation failed",
+	logger.ErrorContext(ctx, "JSON operation failed",
 		slog.String("operation", operation),
 		slog.String("path", sanitizedPath),
 		slog.String("error", sanitizedError),
@@ -1440,7 +1480,8 @@ func truncateString(s string, maxLen int) string {
 
 // logOperation logs a successful operation with structured logging and performance warnings
 func (p *Processor) logOperation(ctx context.Context, operation, path string, duration time.Duration) {
-	if p.logger == nil {
+	logger := p.getLogger()
+	if logger == nil {
 		return
 	}
 
@@ -1456,10 +1497,10 @@ func (p *Processor) logOperation(ctx context.Context, operation, path string, du
 	if duration > SlowOperationThreshold {
 		// Log as warning for slow operations
 		attrs := append(commonAttrs, slog.Int64("threshold_ms", SlowOperationThreshold.Milliseconds()))
-		p.logger.LogAttrs(ctx, slog.LevelWarn, "Slow JSON operation detected", attrs...)
+		logger.LogAttrs(ctx, slog.LevelWarn, "Slow JSON operation detected", attrs...)
 	} else {
 		// Log as debug for normal operations
-		p.logger.LogAttrs(ctx, slog.LevelDebug, "JSON operation completed", commonAttrs...)
+		logger.LogAttrs(ctx, slog.LevelDebug, "JSON operation completed", commonAttrs...)
 	}
 }
 
@@ -1477,8 +1518,20 @@ func (p *Processor) executeWithConcurrencyControl(
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// Use buffered channel to ensure goroutine can always send result
+	// This prevents goroutine leak when timeout occurs
 	errChan := make(chan error, 1)
+
 	go func() {
+		// Recover from panics to prevent goroutine leak
+		defer func() {
+			if r := recover(); r != nil {
+				select {
+				case errChan <- fmt.Errorf("operation panic: %v", r):
+				default:
+				}
+			}
+		}()
 		errChan <- operation()
 	}()
 
@@ -1486,6 +1539,11 @@ func (p *Processor) executeWithConcurrencyControl(
 	case err := <-errChan:
 		return err
 	case <-ctx.Done():
+		// Drain the channel in a separate goroutine to prevent sender from blocking
+		// The result will be discarded since we've already timed out
+		go func() {
+			<-errChan
+		}()
 		return fmt.Errorf("operation timeout after %v", timeout)
 	}
 }
@@ -1510,8 +1568,8 @@ func (p *Processor) executeOperation(operationName string, operation func() erro
 
 	if err != nil {
 		atomic.AddInt64(&p.metrics.errorCount, 1)
-		if p.logger != nil {
-			p.logger.Error("Operation failed",
+		if p.getLogger() != nil {
+			p.getLogger().Error("Operation failed",
 				"operation", operationName,
 				"error", err,
 				"duration", time.Since(start),
@@ -1560,7 +1618,7 @@ func (p *Processor) performMaintenance() {
 	if p.resourceMonitor != nil {
 		if issues := p.resourceMonitor.CheckForLeaks(); len(issues) > 0 {
 			for _, issue := range issues {
-				p.logger.Warn("Resource issue detected", "issue", issue)
+				p.getLogger().Warn("Resource issue detected", "issue", issue)
 			}
 		}
 	}
@@ -1606,16 +1664,18 @@ func (p *Processor) Set(jsonStr, path string, value any, opts ...*ProcessorOptio
 		}
 	}
 
-	// Create a deep copy of the data for modification attempts
-	// This ensures we don't modify the original data if the operation fails
-	// Using deepCopyData instead of Marshal/Unmarshal for better performance
-	dataCopy := p.deepCopyData(data)
+	// Note: We directly modify the parsed data instead of creating a deep copy.
+	// This is safe because:
+	// 1. If the set operation fails, we return the original JSON string (jsonStr)
+	// 2. If marshaling fails, we also return the original JSON string
+	// 3. The parsed data is only used within this function scope
+	// This optimization reduces memory allocations significantly.
 
 	// Determine if we should create paths
 	createPaths := options.CreatePaths || p.config.CreatePaths
 
-	// Set the value at the specified path on the copy
-	err = p.setValueAtPathWithOptions(dataCopy, path, value, createPaths)
+	// Set the value at the specified path
+	err = p.setValueAtPathWithOptions(data, path, value, createPaths)
 	if err != nil {
 		// Return original data and detailed error information
 		var setError *JsonsError
@@ -1638,7 +1698,7 @@ func (p *Processor) Set(jsonStr, path string, value any, opts ...*ProcessorOptio
 	}
 
 	// Convert modified data back to JSON string
-	resultBytes, err := json.Marshal(dataCopy)
+	resultBytes, err := json.Marshal(data)
 	if err != nil {
 		// Return original data if marshaling fails
 		return jsonStr, &JsonsError{

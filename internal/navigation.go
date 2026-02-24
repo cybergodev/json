@@ -151,32 +151,40 @@ func ParseArraySegment(part string, segments []PathSegment) []PathSegment {
 	bracketContent := part[openBracket+1 : closeBracket]
 
 	if strings.Contains(bracketContent, ":") {
-		segment := PathSegment{
-			Type: ArraySliceSegment,
-		}
+		var start, end, step int
+		var flags uint8
 
 		parts := strings.Split(bracketContent, ":")
 		if len(parts) >= 2 {
 			if parts[0] != "" {
-				if start, err := strconv.Atoi(parts[0]); err == nil {
-					segment.Start = &start
+				if startVal, err := strconv.Atoi(parts[0]); err == nil {
+					start = startVal
+					flags |= FlagHasStart
 				}
 			}
 
 			if parts[1] != "" {
-				if end, err := strconv.Atoi(parts[1]); err == nil {
-					segment.End = &end
+				if endVal, err := strconv.Atoi(parts[1]); err == nil {
+					end = endVal
+					flags |= FlagHasEnd
 				}
 			}
 
 			if len(parts) == 3 && parts[2] != "" {
-				if step, err := strconv.Atoi(parts[2]); err == nil {
-					segment.Step = &step
+				if stepVal, err := strconv.Atoi(parts[2]); err == nil {
+					step = stepVal
+					flags |= FlagHasStep
 				}
 			}
 		}
 
-		segments = append(segments, segment)
+		segments = append(segments, PathSegment{
+			Type:  ArraySliceSegment,
+			Index: start, // Use Index field for start value
+			End:   end,
+			Step:  step,
+			Flags: flags,
+		})
 	} else {
 		segment := PathSegment{
 			Type: ArrayIndexSegment,
@@ -222,18 +230,20 @@ func ParseExtractionSegment(part string, segments []PathSegment) []PathSegment {
 
 	braceContent := part[openBrace+1 : closeBrace]
 
-	extractSegment := PathSegment{
-		Type: ExtractSegment,
-	}
-
+	var flags uint8
+	var key string
 	if strings.HasPrefix(braceContent, "flat:") {
-		extractSegment.Key = braceContent[5:]
-		extractSegment.IsFlat = true
+		key = braceContent[5:]
+		flags |= FlagIsFlat
 	} else {
-		extractSegment.Key = braceContent
+		key = braceContent
 	}
 
-	segments = append(segments, extractSegment)
+	segments = append(segments, PathSegment{
+		Type:  ExtractSegment,
+		Key:   key,
+		Flags: flags,
+	})
 
 	if closeBrace+1 < len(part) {
 		remaining := part[closeBrace+1:]

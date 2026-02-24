@@ -39,6 +39,7 @@ type CacheManager struct {
 	evictions   int64
 	shardCount  int
 	shardMask   uint64
+	entryPool   *sync.Pool // Pool for lruEntry structs
 }
 
 // cacheShard represents a single cache shard with LRU eviction
@@ -63,6 +64,13 @@ type lruEntry struct {
 
 // NewCacheManager creates a new cache manager with sharding
 func NewCacheManager(config CacheConfig) *CacheManager {
+	// Create entry pool for reuse
+	entryPool := &sync.Pool{
+		New: func() any {
+			return &lruEntry{}
+		},
+	}
+
 	if config == nil || !config.IsCacheEnabled() {
 		// Return disabled cache manager
 		return &CacheManager{
@@ -70,6 +78,7 @@ func NewCacheManager(config CacheConfig) *CacheManager {
 			config:     nil,
 			shardCount: 1,
 			shardMask:  0,
+			entryPool:  entryPool,
 		}
 	}
 
@@ -91,6 +100,7 @@ func NewCacheManager(config CacheConfig) *CacheManager {
 		config:     config,
 		shardCount: shardCount,
 		shardMask:  uint64(shardCount - 1),
+		entryPool:  entryPool,
 	}
 }
 
@@ -162,6 +172,18 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 		shard.size--
 		atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
 		atomic.AddInt64(&cm.missCount, 1)
+
+		// Return entry to pool if available
+		if cm.entryPool != nil {
+			entry.key = ""
+			entry.value = nil
+			entry.timestamp = 0
+			entry.accessTime = 0
+			entry.size = 0
+			entry.hits = 0
+			cm.entryPool.Put(entry)
+		}
+
 		return nil, false
 	}
 
@@ -184,14 +206,14 @@ func (cm *CacheManager) Set(key string, value any) {
 	now := time.Now().UnixNano()
 	entrySize := cm.estimateSize(value)
 
-	entry := &lruEntry{
-		key:        key,
-		value:      value,
-		timestamp:  now,
-		accessTime: now,
-		size:       int32(entrySize),
-		hits:       1,
-	}
+	// Get entry from pool
+	entry := cm.entryPool.Get().(*lruEntry)
+	entry.key = key
+	entry.value = value
+	entry.timestamp = now
+	entry.accessTime = now
+	entry.size = int32(entrySize)
+	entry.hits = 1
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
@@ -250,6 +272,17 @@ func (cm *CacheManager) Delete(key string) {
 		delete(shard.items, key)
 		shard.evictList.Remove(element)
 		shard.size--
+
+		// Return entry to pool if available
+		if cm.entryPool != nil {
+			entry.key = ""
+			entry.value = nil
+			entry.timestamp = 0
+			entry.accessTime = 0
+			entry.size = 0
+			entry.hits = 0
+			cm.entryPool.Put(entry)
+		}
 	}
 }
 
@@ -373,6 +406,15 @@ func (cm *CacheManager) evictLRU(shard *cacheShard) {
 	shard.size--
 	atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
 	atomic.AddInt64(&cm.evictions, 1)
+
+	// Reset and return entry to pool
+	entry.key = ""
+	entry.value = nil
+	entry.timestamp = 0
+	entry.accessTime = 0
+	entry.size = 0
+	entry.hits = 0
+	cm.entryPool.Put(entry)
 }
 
 // cleanupShard removes expired entries from a shard
@@ -396,6 +438,16 @@ func (cm *CacheManager) cleanupShard(shard *cacheShard) {
 			shard.evictList.Remove(element)
 			shard.size--
 			atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
+
+			// Reset and return entry to pool
+			entry.key = ""
+			entry.value = nil
+			entry.timestamp = 0
+			entry.accessTime = 0
+			entry.size = 0
+			entry.hits = 0
+			cm.entryPool.Put(entry)
+
 			element = prev
 		} else {
 			break

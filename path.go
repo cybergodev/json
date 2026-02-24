@@ -482,7 +482,7 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 			if i+1 < len(segments) {
 				nextSegment := segments[i+1]
 				if nextSegment.TypeString() == "array" || nextSegment.TypeString() == "slice" {
-					if segment.IsFlat {
+					if segment.IsFlatExtract() {
 						if nextSegment.TypeString() == "slice" {
 							result := p.handleArraySlice(current, nextSegment)
 							if result.Exists {

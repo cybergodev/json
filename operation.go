@@ -67,7 +67,24 @@ func (p *Processor) handleArraySlice(data any, segment PathSegment) PropertyAcce
 		return PropertyAccessResult{Value: nil, Exists: false}
 	}
 
-	result := p.performArraySlice(arr, segment.Start, segment.End, segment.Step)
+	// Extract slice parameters from segment
+	var start, end, step *int
+	var startVal, endVal, stepVal int
+
+	if segment.HasStart() {
+		startVal = segment.Index // Index stores start for slices
+		start = &startVal
+	}
+	if segment.HasEnd() {
+		endVal = segment.End
+		end = &endVal
+	}
+	if segment.HasStep() {
+		stepVal = segment.Step
+		step = &stepVal
+	}
+
+	result := p.performArraySlice(arr, start, end, step)
 	return PropertyAccessResult{Value: result, Exists: true}
 }
 
@@ -230,10 +247,11 @@ func (p *Processor) parseSliceSegment(segment *PathSegment) error {
 		return err
 	}
 
-	// Set slice properties
-	segment.Start = &start
-	segment.End = &end
-	segment.Step = &step
+	// Set slice properties using direct values and flags
+	segment.Index = start // Use Index field for start value
+	segment.End = end
+	segment.Step = step
+	segment.Flags = internal.FlagHasStart | internal.FlagHasEnd | internal.FlagHasStep
 
 	return nil
 }
@@ -737,20 +755,9 @@ func (p *Processor) deleteValueComplexPath(data any, path string) error {
 	}
 
 	// Convert to internal segments for complex processing
+	// Since PathSegment is now an alias for internal.PathSegment, we can copy directly
 	internalSegments := make([]internal.PathSegment, len(segments))
-	for i, seg := range segments {
-		internalSegments[i] = internal.PathSegment{
-			Type:       seg.Type,
-			Key:        seg.Key,
-			Index:      seg.Index,
-			Start:      seg.Start,
-			End:        seg.End,
-			Step:       seg.Step,
-			IsNegative: seg.Index < 0,
-			IsWildcard: seg.Type == internal.WildcardSegment,
-			IsFlat:     seg.IsFlat,
-		}
-	}
+	copy(internalSegments, segments)
 
 	return p.deleteValueWithInternalSegments(data, internalSegments)
 }
@@ -1214,7 +1221,7 @@ func (p *Processor) handleExtraction(data any, segment PathSegment) (any, error)
 		for _, item := range arr {
 			// Use the existing handlePropertyAccessValue function for consistent field extraction
 			if value := p.handlePropertyAccessValue(item, field); value != nil {
-				if segment.IsFlat {
+				if segment.IsFlatExtract() {
 					// For flat extraction, always flatten arrays recursively
 					p.flattenValue(value, &results)
 				} else {
@@ -1327,7 +1334,7 @@ func (p *Processor) hasMixedExtractionOperations(segments []PathSegment) bool {
 
 	for _, segment := range segments {
 		if segment.TypeString() == "extract" {
-			if segment.IsFlat {
+			if segment.IsFlatExtract() {
 				hasFlat = true
 			} else {
 				hasRegular = true
@@ -2062,24 +2069,24 @@ func (p *Processor) getSliceParameters(segment PathSegment, arrayLength int) (st
 	step = 1
 
 	// Get start
-	if segment.Start != nil {
-		start = *segment.Start
+	if segment.HasStart() {
+		start = segment.Index // Index stores start for slices
 		if start < 0 {
 			start = arrayLength + start
 		}
 	}
 
 	// Get end
-	if segment.End != nil {
-		end = *segment.End
+	if segment.HasEnd() {
+		end = segment.End
 		if end < 0 {
 			end = arrayLength + end
 		}
 	}
 
 	// Get step
-	if segment.Step != nil {
-		step = *segment.Step
+	if segment.HasStep() {
+		step = segment.Step
 	}
 
 	// Ensure step is positive for extension purposes
@@ -2313,14 +2320,14 @@ func (p *Processor) setValueForArraySlice(current any, segment PathSegment, valu
 	end := len(arr)
 	step := 1
 
-	if segment.Start != nil {
-		start = *segment.Start
+	if segment.HasStart() {
+		start = segment.Index // Index stores start for slices
 	}
-	if segment.End != nil {
-		end = *segment.End
+	if segment.HasEnd() {
+		end = segment.End
 	}
-	if segment.Step != nil {
-		step = *segment.Step
+	if segment.HasStep() {
+		step = segment.Step
 	}
 
 	// Handle negative indices
@@ -2469,8 +2476,8 @@ func (p *Processor) createContainerForNextSegment(allSegments []PathSegment, cur
 	case "slice":
 		// For slice access, we need to create an array large enough for the slice
 		end := 0
-		if nextSegment.End != nil {
-			end = *nextSegment.End
+		if nextSegment.HasEnd() {
+			end = nextSegment.End
 		}
 		if end > 0 {
 			return make([]any, end), nil
@@ -2491,7 +2498,7 @@ func (p *Processor) setValueForExtract(current any, segment PathSegment, value a
 
 	// Handle array extraction
 	if arr, ok := current.([]any); ok {
-		if segment.IsFlat {
+		if segment.IsFlatExtract() {
 			return p.setValueForArrayExtractFlat(arr, field, value)
 		} else {
 			return p.setValueForArrayExtract(arr, field, value)

@@ -57,7 +57,7 @@ func (urp *RecursiveProcessor) ProcessRecursivelyWithOptions(data any, path stri
 		// This is important for paths like orders{flat:items}{flat:tags}[0:3]
 		flatSegmentIndex := -1
 		for i, segment := range segments {
-			if segment.Type == internal.ExtractSegment && segment.IsFlat {
+			if segment.Type == internal.ExtractSegment && segment.IsFlatExtract() {
 				flatSegmentIndex = i // Keep updating to find the last one
 			}
 		}
@@ -344,8 +344,8 @@ func (urp *RecursiveProcessor) handlePropertySegmentUnified(data any, segment in
 			case internal.ArraySliceSegment:
 				// For array slice, create array with sufficient size based on slice end
 				requiredSize := 0
-				if nextSegment.End != nil {
-					requiredSize = *nextSegment.End
+				if nextSegment.HasEnd() {
+					requiredSize = nextSegment.End
 				}
 				if requiredSize <= 0 {
 					requiredSize = 1
@@ -426,13 +426,13 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 				}
 
 				var startVal, endVal int
-				if segment.Start != nil {
-					startVal = *segment.Start
+				if segment.HasStart() {
+					startVal = segment.Index // Index stores start for slices
 				} else {
 					startVal = 0
 				}
-				if segment.End != nil {
-					endVal = *segment.End
+				if segment.HasEnd() {
+					endVal = segment.End
 				} else {
 					endVal = len(targetArray)
 				}
@@ -441,15 +441,18 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 					switch operation {
 					case OpGet:
 						// Use the array utils for proper slicing with step support
-						startPtr := &startVal
-						endPtr := &endVal
-						if segment.Start == nil {
-							startPtr = nil
+						var startPtr, endPtr, stepPtr *int
+						if segment.HasStart() {
+							startPtr = &startVal
 						}
-						if segment.End == nil {
-							endPtr = nil
+						if segment.HasEnd() {
+							endPtr = &endVal
 						}
-						sliceResult := internal.PerformArraySlice(targetArray, startPtr, endPtr, segment.Step)
+						if segment.HasStep() {
+							stepVal := segment.Step
+							stepPtr = &stepVal
+						}
+						sliceResult := internal.PerformArraySlice(targetArray, startPtr, endPtr, stepPtr)
 						results = append(results, sliceResult)
 					case OpSet:
 						// For distributed set operations on slices, we need special handling
@@ -460,15 +463,18 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 					}
 				} else {
 					// Recursively process next segment on sliced result
-					startPtr := &startVal
-					endPtr := &endVal
-					if segment.Start == nil {
-						startPtr = nil
+					var startPtr, endPtr, stepPtr *int
+					if segment.HasStart() {
+						startPtr = &startVal
 					}
-					if segment.End == nil {
-						endPtr = nil
+					if segment.HasEnd() {
+						endPtr = &endVal
 					}
-					sliceResult := internal.PerformArraySlice(targetArray, startPtr, endPtr, segment.Step)
+					if segment.HasStep() {
+						stepVal := segment.Step
+						stepPtr = &stepVal
+					}
+					sliceResult := internal.PerformArraySlice(targetArray, startPtr, endPtr, stepPtr)
 
 					result, err := urp.processRecursivelyAtSegmentsWithOptions(sliceResult, segments, segmentIndex+1, operation, value, createPaths)
 					if err != nil {
@@ -493,13 +499,13 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 
 		// Non-distributed slice operation
 		var startVal, endVal int
-		if segment.Start != nil {
-			startVal = *segment.Start
+		if segment.HasStart() {
+			startVal = segment.Index // Index stores start for slices
 		} else {
 			startVal = 0
 		}
-		if segment.End != nil {
-			endVal = *segment.End
+		if segment.HasEnd() {
+			endVal = segment.End
 		} else {
 			endVal = len(container)
 		}
@@ -510,15 +516,18 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 			switch operation {
 			case OpGet:
 				// Use the array utils for proper slicing with step support
-				startPtr := &startVal
-				endPtr := &endVal
-				if segment.Start == nil {
-					startPtr = nil
+				var startPtr, endPtr, stepPtr *int
+				if segment.HasStart() {
+					startPtr = &startVal
 				}
-				if segment.End == nil {
-					endPtr = nil
+				if segment.HasEnd() {
+					endPtr = &endVal
 				}
-				return internal.PerformArraySlice(container, startPtr, endPtr, segment.Step), nil
+				if segment.HasStep() {
+					stepVal := segment.Step
+					stepPtr = &stepVal
+				}
+				return internal.PerformArraySlice(container, startPtr, endPtr, stepPtr), nil
 			case OpSet:
 				// Check if we need to extend the array for slice assignment
 				if end > len(container) && createPaths {
@@ -617,7 +626,7 @@ func (urp *RecursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 // handleExtractSegmentUnified handles extraction segments for all operations
 func (urp *RecursiveProcessor) handleExtractSegmentUnified(data any, segment internal.PathSegment, segments []internal.PathSegment, segmentIndex int, isLastSegment bool, operation Operation, value any, createPaths bool) (any, error) {
 	// Check for special flat extraction syntax - use the IsFlat flag from parsing
-	isFlat := segment.IsFlat
+	isFlat := segment.IsFlatExtract()
 	actualKey := segment.Key
 	if isFlat {
 		// The key should already be cleaned by the parser, but double-check
@@ -867,13 +876,13 @@ func (urp *RecursiveProcessor) handleExtractThenSlice(data any, extractSegment, 
 	// Now apply the slice to the extracted results
 	if len(extractedResults) > 0 {
 		var startVal, endVal int
-		if sliceSegment.Start != nil {
-			startVal = *sliceSegment.Start
+		if sliceSegment.HasStart() {
+			startVal = sliceSegment.Index // Index stores start for slices
 		} else {
 			startVal = 0
 		}
-		if sliceSegment.End != nil {
-			endVal = *sliceSegment.End
+		if sliceSegment.HasEnd() {
+			endVal = sliceSegment.End
 		} else {
 			endVal = len(extractedResults)
 		}
@@ -968,13 +977,13 @@ func (urp *RecursiveProcessor) handleExtractThenSliceDelete(data any, extractSeg
 // applySliceDeletion applies slice deletion to an array
 func (urp *RecursiveProcessor) applySliceDeletion(arr []any, sliceSegment internal.PathSegment) error {
 	var startVal, endVal int
-	if sliceSegment.Start != nil {
-		startVal = *sliceSegment.Start
+	if sliceSegment.HasStart() {
+		startVal = sliceSegment.Index // Index stores start for slices
 	} else {
 		startVal = 0
 	}
-	if sliceSegment.End != nil {
-		endVal = *sliceSegment.End
+	if sliceSegment.HasEnd() {
+		endVal = sliceSegment.End
 	} else {
 		endVal = len(arr)
 	}
