@@ -688,6 +688,7 @@ func parseJSONPointer(path string) ([]PathSegment, error) {
 
 // ValidatePath validates a path string for security and correctness
 // Uses single-pass validation for optimal performance (no regex)
+// PERFORMANCE: Added fast path for simple property paths
 func ValidatePath(path string) error {
 	const (
 		maxPathLength = 1000
@@ -704,9 +705,35 @@ func ValidatePath(path string) error {
 		return nil
 	}
 
+	// FAST PATH: Simple property path (alphanumeric + dots + underscores only)
+	// This handles the vast majority of cases without complex validation
+	isSimple := true
+	depth := 1 // Start with 1 for the first segment
+	for i := 0; i < pathLen; i++ {
+		c := path[i]
+		// Check for simple characters only
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '.') {
+			isSimple = false
+			break
+		}
+		if c == '.' {
+			depth++
+		}
+	}
+
+	if isSimple {
+		// Simple validation passed - just check depth
+		if depth > maxPathDepth {
+			return fmt.Errorf("path too deep: %d segments (max %d)", depth, maxPathDepth)
+		}
+		return nil
+	}
+
+	// SLOW PATH: Complex path with brackets, braces, etc.
 	// Single-pass validation for all checks
 	var prevChar byte
-	depth := 0
+	depth = 0
 	inBracket := false
 	bracketStart := 0
 
@@ -779,25 +806,38 @@ func ValidatePath(path string) error {
 }
 
 // validateArrayIndexContent validates array index or slice content
+// PERFORMANCE: Optimized to avoid strings.Contains and strings.Split allocations
 func validateArrayIndexContent(content string, maxIndex int) error {
 	if content == "" {
 		return fmt.Errorf("empty array index")
 	}
 
-	// Handle wildcard
+	// Handle wildcard - single character check
 	if content == "*" {
 		return nil
 	}
 
-	// Handle slice notation (e.g., "1:3", "::2", "::-1")
-	if strings.Contains(content, ":") {
-		parts := strings.Split(content, ":")
-		for _, part := range parts {
-			if part == "" {
-				continue // Empty parts are valid in slices
-			}
-			if err := validateNumericIndex(part, maxIndex); err != nil {
-				return err
+	// Fast path: scan for colon without allocation
+	hasColon := false
+	for i := 0; i < len(content); i++ {
+		if content[i] == ':' {
+			hasColon = true
+			break
+		}
+	}
+
+	if hasColon {
+		// Parse slice notation without strings.Split allocation
+		start := 0
+		for i := 0; i <= len(content); i++ {
+			if i == len(content) || content[i] == ':' {
+				if i > start {
+					part := content[start:i]
+					if err := validateNumericIndex(part, maxIndex); err != nil {
+						return err
+					}
+				}
+				start = i + 1
 			}
 		}
 		return nil
@@ -808,32 +848,51 @@ func validateArrayIndexContent(content string, maxIndex int) error {
 }
 
 // validateNumericIndex validates a single numeric index
+// PERFORMANCE: Manual parsing avoids strconv.Atoi allocation
 func validateNumericIndex(s string, maxIndex int) error {
 	// Allow negative sign
-	if len(s) == 0 {
+	sLen := len(s)
+	if sLen == 0 {
 		return fmt.Errorf("empty index")
 	}
 
+	negative := false
 	start := 0
 	if s[0] == '-' {
+		negative = true
 		start = 1
-		if len(s) == 1 {
+		if sLen == 1 {
 			return fmt.Errorf("invalid index: %s", s)
 		}
 	}
 
-	// Check all characters are digits
-	for i := start; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
+	// Fast path for single digit
+	if sLen-start == 1 {
+		c := s[start]
+		if c < '0' || c > '9' {
 			return fmt.Errorf("invalid array index: %s", s)
 		}
+		return nil
 	}
 
-	// Parse and validate range
-	index, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("invalid array index: %s", s)
+	// Check all characters are digits and parse value
+	index := 0
+	for i := start; i < sLen; i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return fmt.Errorf("invalid array index: %s", s)
+		}
+		// Check for overflow before multiplying
+		if index > (maxIndex / 10) {
+			return fmt.Errorf("array index out of reasonable range")
+		}
+		index = index*10 + int(c-'0')
 	}
+
+	if negative {
+		index = -index
+	}
+
 	if index < -maxIndex || index > maxIndex {
 		return fmt.Errorf("array index out of reasonable range: %d (range: %d to %d)",
 			index, -maxIndex, maxIndex)

@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -129,13 +130,21 @@ func newCacheShard(maxSize int) *cacheShard {
 	}
 }
 
-// calculateOptimalShardCount determines optimal shard count based on cache size
+// calculateOptimalShardCount determines optimal shard count based on cache size and CPU count
+// PERFORMANCE: CPU-aware sharding reduces lock contention on multi-core systems
 func calculateOptimalShardCount(maxSize int) int {
-	if maxSize > 1000 {
-		return 16
+	cpuCount := runtime.GOMAXPROCS(0)
+	if maxSize > 10000 {
+		// Large cache: scale with CPU count, minimum 32 shards
+		return max(cpuCount*4, 32)
+	} else if maxSize > 1000 {
+		// Medium cache: scale with CPU count, minimum 16 shards
+		return max(cpuCount*2, 16)
 	} else if maxSize > 100 {
-		return 8
+		// Small cache: scale with CPU count, minimum 8 shards
+		return max(cpuCount, 8)
 	}
+	// Very small cache: minimum 4 shards
 	return 4
 }
 
@@ -157,7 +166,10 @@ func nextPowerOf2(n int) int {
 }
 
 // Get retrieves a value from cache with O(1) complexity
-// Optimized to use RLock for reads and only upgrade to Lock when necessary
+// PERFORMANCE: Optimized to minimize lock contention
+// - Uses RLock for the common fast path
+// - Only upgrades to Lock when TTL expiration needs cleanup
+// - LRU position update is deferred to reduce write lock frequency
 func (cm *CacheManager) Get(key string) (any, bool) {
 	if cm.config == nil || !cm.config.IsCacheEnabled() {
 		atomic.AddInt64(&cm.missCount, 1)
@@ -171,7 +183,7 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 		ttlNanos = int64(cm.config.GetCacheTTL().Nanoseconds())
 	}
 
-	// First, try with read lock for fast path
+	// Fast path: read lock only
 	shard.mu.RLock()
 	element, exists := shard.items[key]
 	if !exists {
@@ -214,19 +226,30 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 
 	// Entry exists and is valid, copy value before releasing lock
 	value := entry.value
+	// PERFORMANCE: Update hit count atomically without lock
+	hits := atomic.AddInt64(&entry.hits, 1)
 	shard.mu.RUnlock()
 
-	// Update LRU statistics and move to front (requires write lock)
-	// This is done asynchronously to not block reads
-	shard.mu.Lock()
-	// Verify entry still exists (could have been deleted between unlock and lock)
-	if element, exists := shard.items[key]; exists {
-		entry := element.Value.(*lruEntry)
-		entry.accessTime = now
-		atomic.AddInt64(&entry.hits, 1)
-		shard.evictList.MoveToFront(element)
+	// PERFORMANCE: Adaptive LRU update intervals based on hit count
+	// Hot keys get less frequent position updates to reduce write lock contention
+	updateInterval := int64(8)
+	if hits > 100 {
+		updateInterval = 32 // Less frequent updates for hot keys
+	} else if hits > 50 {
+		updateInterval = 16
 	}
-	shard.mu.Unlock()
+
+	// Only move to front periodically to reduce write lock frequency
+	if hits%updateInterval == 1 {
+		shard.mu.Lock()
+		// Verify entry still exists (could have been deleted between unlock and lock)
+		if element, exists := shard.items[key]; exists {
+			entry := element.Value.(*lruEntry)
+			entry.accessTime = now
+			shard.evictList.MoveToFront(element)
+		}
+		shard.mu.Unlock()
+	}
 
 	atomic.AddInt64(&cm.hitCount, 1)
 	return value, true

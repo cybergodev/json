@@ -12,6 +12,30 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
+// smallIntStrings contains pre-computed string representations for integers 0-99
+// PERFORMANCE: Avoids strconv.Itoa allocations for common array indices
+var smallIntStrings = [100]string{
+	"0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+	"10", "11", "12", "13", "14", "15", "16", "17", "18", "19",
+	"20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
+	"30", "31", "32", "33", "34", "35", "36", "37", "38", "39",
+	"40", "41", "42", "43", "44", "45", "46", "47", "48", "49",
+	"50", "51", "52", "53", "54", "55", "56", "57", "58", "59",
+	"60", "61", "62", "63", "64", "65", "66", "67", "68", "69",
+	"70", "71", "72", "73", "74", "75", "76", "77", "78", "79",
+	"80", "81", "82", "83", "84", "85", "86", "87", "88", "89",
+	"90", "91", "92", "93", "94", "95", "96", "97", "98", "99",
+}
+
+// intToStringFast converts an integer to string using pre-computed values for small integers
+// PERFORMANCE: Avoids strconv.Itoa allocations for values 0-99
+func intToStringFast(n int) string {
+	if n >= 0 && n < 100 {
+		return smallIntStrings[n]
+	}
+	return strconv.Itoa(n)
+}
+
 func (p *Processor) isArrayType(data any) bool {
 	return internal.IsArrayType(data)
 }
@@ -674,30 +698,67 @@ func (d *NumberPreservingDecoder) convertNumbers(value any) any {
 }
 
 // convertJSONNumber converts json.Number with precision handling
+// PERFORMANCE: Optimized to minimize allocations and use manual parsing where possible
 func (d *NumberPreservingDecoder) convertJSONNumber(num json.Number) any {
 	numStr := string(num)
 	numLen := len(numStr)
 
 	// Ultra-fast path for single digits
 	if numLen == 1 {
-		if numStr[0] >= '0' && numStr[0] <= '9' {
-			return int(numStr[0] - '0')
+		c := numStr[0]
+		if c >= '0' && c <= '9' {
+			return int(c - '0')
+		}
+	}
+
+	// PERFORMANCE: Single scan to detect number format
+	hasDecimal := false
+	hasScientific := false
+	for i := 0; i < numLen; i++ {
+		c := numStr[i]
+		if c == '.' {
+			hasDecimal = true
+		} else if c == 'e' || c == 'E' {
+			hasScientific = true
 		}
 	}
 
 	// Fast path for small integers without decimal or scientific notation
-	if numLen <= 10 && !containsAnyByte(numStr, ".eE") {
-		if i, err := strconv.Atoi(numStr); err == nil {
-			return i
+	if !hasDecimal && !hasScientific && numLen <= 10 {
+		// Try manual parsing for small integers
+		negative := false
+		start := 0
+		if numStr[0] == '-' {
+			negative = true
+			start = 1
+		}
+
+		if numLen-start > 0 && numLen-start <= 10 {
+			var result int64
+			valid := true
+			for i := start; i < numLen; i++ {
+				c := numStr[i]
+				if c < '0' || c > '9' {
+					valid = false
+					break
+				}
+				result = result*10 + int64(c-'0')
+			}
+			if valid {
+				if negative {
+					result = -result
+				}
+				// Check if it fits in int32
+				if result >= -2147483648 && result <= 2147483647 {
+					return int(result)
+				}
+				return result
+			}
 		}
 	}
 
-	// Check for integer format (no decimal point and no scientific notation)
-	hasDecimal := strings.Contains(numStr, ".")
-	hasScientific := containsAnyByte(numStr, "eE")
-
+	// Integer parsing with optimized range checking
 	if !hasDecimal && !hasScientific {
-		// Integer parsing with optimized range checking
 		if i, err := strconv.ParseInt(numStr, 10, 64); err == nil {
 			// Use bit operations for faster range checking
 			if i >= -2147483648 && i <= 2147483647 { // int32 range
@@ -716,7 +777,7 @@ func (d *NumberPreservingDecoder) convertJSONNumber(num json.Number) any {
 	}
 
 	// Handle "clean" floats (ending with .0)
-	if hasDecimal && strings.HasSuffix(numStr, ".0") {
+	if hasDecimal && numLen > 2 && numStr[numLen-2] == '.' && numStr[numLen-1] == '0' {
 		intStr := numStr[:numLen-2]
 		if i, err := strconv.ParseInt(intStr, 10, 64); err == nil {
 			if i >= -2147483648 && i <= 2147483647 {

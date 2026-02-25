@@ -8,6 +8,45 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
+// PathType represents the complexity level of a path
+type PathType int
+
+const (
+	// PathTypeSimple indicates a single key with no dots or brackets
+	PathTypeSimple PathType = iota
+	// PathTypeComplex indicates a path containing dots or brackets
+	PathTypeComplex
+)
+
+// pathTypeCache caches path type results for frequently used paths
+// PERFORMANCE: Avoids repeated string scanning for the same keys
+var pathTypeCache = make(map[string]PathType)
+
+// GetPathType determines if a path is simple or complex
+// Simple paths are single keys with no dots or brackets
+func GetPathType(path string) PathType {
+	// Check cache first (only for short paths to avoid memory bloat)
+	if len(path) <= 64 {
+		if pt, ok := pathTypeCache[path]; ok {
+			return pt
+		}
+	}
+
+	var pt PathType
+	if strings.ContainsAny(path, ".[]") {
+		pt = PathTypeComplex
+	} else {
+		pt = PathTypeSimple
+	}
+
+	// Cache short paths
+	if len(path) <= 64 {
+		pathTypeCache[path] = pt
+	}
+
+	return pt
+}
+
 // SafeTypeAssert performs a safe type assertion with generics
 func SafeTypeAssert[T any](value any) (T, bool) {
 	var zero T
@@ -39,6 +78,8 @@ type Iterator struct {
 	data      any
 	options   *ProcessorOptions
 	position  int
+	keys      []string // Cached keys for map iteration
+	keysInit  bool     // Flag for lazy initialization
 }
 
 // NewIterator creates a new Iterator
@@ -51,13 +92,30 @@ func NewIterator(processor *Processor, data any, opts *ProcessorOptions) *Iterat
 	}
 }
 
+// initKeysOnce lazily initializes cached keys for map iteration
+// PERFORMANCE: Avoids allocating a new slice on every Next() call
+func (it *Iterator) initKeysOnce() {
+	if it.keysInit {
+		return
+	}
+	if obj, ok := it.data.(map[string]any); ok {
+		it.keys = make([]string, 0, len(obj))
+		for k := range obj {
+			it.keys = append(it.keys, k)
+		}
+	}
+	it.keysInit = true
+}
+
 // HasNext checks if there are more elements
 func (it *Iterator) HasNext() bool {
 	if arr, ok := it.data.([]any); ok {
 		return it.position < len(arr)
 	}
-	if obj, ok := it.data.(map[string]any); ok {
-		return it.position < len(obj)
+	if _, ok := it.data.(map[string]any); ok {
+		// PERFORMANCE: Use cached keys instead of calling len() on map
+		it.initKeysOnce()
+		return it.position < len(it.keys)
 	}
 	return false
 }
@@ -75,9 +133,11 @@ func (it *Iterator) Next() (any, bool) {
 	}
 
 	if obj, ok := it.data.(map[string]any); ok {
-		keys := reflect.ValueOf(obj).MapKeys()
-		if it.position < len(keys) {
-			key := keys[it.position].String()
+		// PERFORMANCE: Use cached keys instead of reflect.ValueOf(obj).MapKeys()
+		// which allocates a new slice on every call
+		it.initKeysOnce()
+		if it.position < len(it.keys) {
+			key := it.keys[it.position]
 			it.position++
 			return obj[key], true
 		}
@@ -128,8 +188,9 @@ func (iv *IterableValue) Get(path string) any {
 // GetString returns a string value by key or path
 // Supports path navigation with dot notation and array indices (e.g., "user.address.city" or "users[0].name")
 func (iv *IterableValue) GetString(key string) string {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return ""
@@ -138,31 +199,32 @@ func (iv *IterableValue) GetString(key string) string {
 			return str
 		}
 		return ConvertToString(val)
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return ""
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return ""
-	}
+		val, exists := obj[key]
+		if !exists {
+			return ""
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return ""
-	}
+		if str, ok := val.(string); ok {
+			return str
+		}
 
-	if str, ok := val.(string); ok {
-		return str
+		return ConvertToString(val)
 	}
-
-	return ConvertToString(val)
+	return ""
 }
 
 // GetInt returns an int value by key or path
 // Supports path navigation with dot notation and array indices (e.g., "user.age" or "users[0].id")
 func (iv *IterableValue) GetInt(key string) int {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return 0
@@ -171,31 +233,30 @@ func (iv *IterableValue) GetInt(key string) int {
 			return result
 		}
 		return 0
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return 0
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return 0
-	}
+		val, exists := obj[key]
+		if !exists {
+			return 0
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return 0
+		if result, ok := ConvertToInt(val); ok {
+			return result
+		}
 	}
-
-	if result, ok := ConvertToInt(val); ok {
-		return result
-	}
-
 	return 0
 }
 
 // GetFloat64 returns a float64 value by key or path
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetFloat64(key string) float64 {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return 0
@@ -204,31 +265,30 @@ func (iv *IterableValue) GetFloat64(key string) float64 {
 			return result
 		}
 		return 0
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return 0
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return 0
-	}
+		val, exists := obj[key]
+		if !exists {
+			return 0
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return 0
+		if result, ok := ConvertToFloat64(val); ok {
+			return result
+		}
 	}
-
-	if result, ok := ConvertToFloat64(val); ok {
-		return result
-	}
-
 	return 0
 }
 
 // GetBool returns a bool value by key or path
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetBool(key string) bool {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return false
@@ -237,31 +297,30 @@ func (iv *IterableValue) GetBool(key string) bool {
 			return result
 		}
 		return false
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return false
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return false
-	}
+		val, exists := obj[key]
+		if !exists {
+			return false
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return false
+		if result, ok := ConvertToBool(val); ok {
+			return result
+		}
 	}
-
-	if result, ok := ConvertToBool(val); ok {
-		return result
-	}
-
 	return false
 }
 
 // GetArray returns an array value by key or path
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetArray(key string) []any {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return nil
@@ -270,31 +329,30 @@ func (iv *IterableValue) GetArray(key string) []any {
 			return arr
 		}
 		return nil
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return nil
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return nil
-	}
+		val, exists := obj[key]
+		if !exists {
+			return nil
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return nil
+		if arr, ok := val.([]any); ok {
+			return arr
+		}
 	}
-
-	if arr, ok := val.([]any); ok {
-		return arr
-	}
-
 	return nil
 }
 
 // GetObject returns an object value by key or path
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetObject(key string) map[string]any {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return nil
@@ -303,57 +361,57 @@ func (iv *IterableValue) GetObject(key string) map[string]any {
 			return result
 		}
 		return nil
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return nil
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return nil
-	}
+		val, exists := obj[key]
+		if !exists {
+			return nil
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return nil
+		if result, ok := val.(map[string]any); ok {
+			return result
+		}
 	}
-
-	if result, ok := val.(map[string]any); ok {
-		return result
-	}
-
 	return nil
 }
 
 // GetWithDefault returns a value by key or path with a default fallback
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetWithDefault(key string, defaultValue any) any {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return defaultValue
 		}
 		return val
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return defaultValue
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return defaultValue
-	}
+		val, exists := obj[key]
+		if !exists {
+			return defaultValue
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return defaultValue
+		return val
 	}
-
-	return val
+	return defaultValue
 }
 
 // GetStringWithDefault returns a string value by key or path with a default fallback
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetStringWithDefault(key string, defaultValue string) string {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return defaultValue
@@ -362,31 +420,30 @@ func (iv *IterableValue) GetStringWithDefault(key string, defaultValue string) s
 			return str
 		}
 		return defaultValue
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return defaultValue
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return defaultValue
-	}
+		val, exists := obj[key]
+		if !exists {
+			return defaultValue
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return defaultValue
+		if str, ok := val.(string); ok {
+			return str
+		}
 	}
-
-	if str, ok := val.(string); ok {
-		return str
-	}
-
 	return defaultValue
 }
 
 // GetIntWithDefault returns an int value by key or path with a default fallback
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetIntWithDefault(key string, defaultValue int) int {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return defaultValue
@@ -395,31 +452,30 @@ func (iv *IterableValue) GetIntWithDefault(key string, defaultValue int) int {
 			return result
 		}
 		return defaultValue
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return defaultValue
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return defaultValue
-	}
+		val, exists := obj[key]
+		if !exists {
+			return defaultValue
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return defaultValue
+		if result, ok := ConvertToInt(val); ok {
+			return result
+		}
 	}
-
-	if result, ok := ConvertToInt(val); ok {
-		return result
-	}
-
 	return defaultValue
 }
 
 // GetFloat64WithDefault returns a float64 value by key or path with a default fallback
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetFloat64WithDefault(key string, defaultValue float64) float64 {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return defaultValue
@@ -428,31 +484,30 @@ func (iv *IterableValue) GetFloat64WithDefault(key string, defaultValue float64)
 			return result
 		}
 		return defaultValue
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return defaultValue
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return defaultValue
-	}
+		val, exists := obj[key]
+		if !exists {
+			return defaultValue
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return defaultValue
+		if result, ok := ConvertToFloat64(val); ok {
+			return result
+		}
 	}
-
-	if result, ok := ConvertToFloat64(val); ok {
-		return result
-	}
-
 	return defaultValue
 }
 
 // GetBoolWithDefault returns a bool value by key or path with a default fallback
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) GetBoolWithDefault(key string, defaultValue bool) bool {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return defaultValue
@@ -461,42 +516,41 @@ func (iv *IterableValue) GetBoolWithDefault(key string, defaultValue bool) bool 
 			return result
 		}
 		return defaultValue
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return defaultValue
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return defaultValue
-	}
+		val, exists := obj[key]
+		if !exists {
+			return defaultValue
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return defaultValue
+		if result, ok := ConvertToBool(val); ok {
+			return result
+		}
 	}
-
-	if result, ok := ConvertToBool(val); ok {
-		return result
-	}
-
 	return defaultValue
 }
 
 // Exists checks if a key or path exists in the object
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) Exists(key string) bool {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		return iv.Get(key) != nil
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return false
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return false
+		_, exists := obj[key]
+		return exists
 	}
-
-	_, exists := obj[key]
-	return exists
+	return false
 }
 
 // IsNullData checks if the whole value is null (for backward compatibility)
@@ -507,24 +561,25 @@ func (iv *IterableValue) IsNullData() bool {
 // IsNull checks if a specific key's or path's value is null
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) IsNull(key string) bool {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		return val == nil
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return true
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return true
-	}
+		val, exists := obj[key]
+		if !exists {
+			return true
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return true
+		return val == nil
 	}
-
-	return val == nil
+	return true
 }
 
 // IsEmptyData checks if the whole value is empty (for backward compatibility)
@@ -548,8 +603,9 @@ func (iv *IterableValue) IsEmptyData() bool {
 // IsEmpty checks if a specific key's or path's value is empty
 // Supports path navigation with dot notation and array indices
 func (iv *IterableValue) IsEmpty(key string) bool {
-	// Check if key is a path (contains dots or brackets)
-	if strings.ContainsAny(key, ".[]") {
+	// PERFORMANCE: Use cached path type check instead of strings.ContainsAny
+	switch GetPathType(key) {
+	case PathTypeComplex:
 		val := iv.Get(key)
 		if val == nil {
 			return true
@@ -564,29 +620,29 @@ func (iv *IterableValue) IsEmpty(key string) bool {
 		default:
 			return false
 		}
-	}
+	case PathTypeSimple:
+		obj, ok := iv.data.(map[string]any)
+		if !ok {
+			return true
+		}
 
-	// Original single-key lookup logic
-	obj, ok := iv.data.(map[string]any)
-	if !ok {
-		return true
-	}
+		val, exists := obj[key]
+		if !exists {
+			return true
+		}
 
-	val, exists := obj[key]
-	if !exists {
-		return true
+		switch v := val.(type) {
+		case []any:
+			return len(v) == 0
+		case map[string]any:
+			return len(v) == 0
+		case string:
+			return v == ""
+		default:
+			return false
+		}
 	}
-
-	switch v := val.(type) {
-	case []any:
-		return len(v) == 0
-	case map[string]any:
-		return len(v) == 0
-	case string:
-		return v == ""
-	default:
-		return false
-	}
+	return true
 }
 
 // ForeachNested iterates over nested JSON structures with a path

@@ -18,11 +18,14 @@ type UnifiedResourceManager struct {
 	pathSegmentPool   *sync.Pool
 	bufferPool        *sync.Pool
 	optionsPool       *sync.Pool // Pool for ProcessorOptions to reduce allocations
+	// PERFORMANCE: Added map pool for common map operations
+	mapPool *sync.Pool
 
 	allocatedBuilders int64
 	allocatedSegments int64
 	allocatedBuffers  int64
 	allocatedOptions  int64
+	allocatedMaps     int64
 
 	lastCleanup     int64
 	cleanupInterval int64
@@ -52,6 +55,11 @@ func NewUnifiedResourceManager() *UnifiedResourceManager {
 			New: func() any {
 				opts := DefaultOptionsClone() // Use clone for pool objects
 				return opts
+			},
+		},
+		mapPool: &sync.Pool{
+			New: func() any {
+				return make(map[string]any, 8)
 			},
 		},
 		cleanupInterval: 300,
@@ -200,6 +208,34 @@ func (urm *UnifiedResourceManager) PutOptions(opts *ProcessorOptions) {
 	}
 }
 
+// GetMap gets a map from the pool
+// PERFORMANCE: Reusable maps for JSON object operations
+func (urm *UnifiedResourceManager) GetMap() map[string]any {
+	obj := urm.mapPool.Get()
+	m, ok := obj.(map[string]any)
+	if !ok {
+		slog.Debug("pool corruption detected: map type assertion failed", "type", fmt.Sprintf("%T", obj))
+		m = make(map[string]any, 8)
+	}
+	// PERFORMANCE: Use Go 1.21+ clear() for O(1) map clearing instead of O(n) loop
+	clear(m)
+	atomic.AddInt64(&urm.allocatedMaps, 1)
+	return m
+}
+
+// PutMap returns a map to the pool
+func (urm *UnifiedResourceManager) PutMap(m map[string]any) {
+	if m == nil {
+		return
+	}
+	// Only pool small to medium maps
+	const maxMapSize = 64
+	if len(m) <= maxMapSize {
+		urm.mapPool.Put(m)
+	}
+	atomic.AddInt64(&urm.allocatedMaps, -1)
+}
+
 // PerformMaintenance performs periodic cleanup
 // sync.Pool automatically handles cleanup via GC
 func (urm *UnifiedResourceManager) PerformMaintenance() {
@@ -223,6 +259,7 @@ func (urm *UnifiedResourceManager) GetStats() ResourceManagerStats {
 		AllocatedSegments: atomic.LoadInt64(&urm.allocatedSegments),
 		AllocatedBuffers:  atomic.LoadInt64(&urm.allocatedBuffers),
 		AllocatedOptions:  atomic.LoadInt64(&urm.allocatedOptions),
+		AllocatedMaps:     atomic.LoadInt64(&urm.allocatedMaps),
 		LastCleanup:       atomic.LoadInt64(&urm.lastCleanup),
 	}
 }
@@ -232,6 +269,7 @@ type ResourceManagerStats struct {
 	AllocatedSegments int64 `json:"allocated_segments"`
 	AllocatedBuffers  int64 `json:"allocated_buffers"`
 	AllocatedOptions  int64 `json:"allocated_options"`
+	AllocatedMaps     int64 `json:"allocated_maps"`
 	LastCleanup       int64 `json:"last_cleanup"`
 }
 
