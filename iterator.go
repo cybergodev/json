@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -21,18 +22,60 @@ const (
 	PathTypeComplex
 )
 
-// pathTypeCache caches path type results for frequently used paths
-// PERFORMANCE: Avoids repeated string scanning for the same keys
-var pathTypeCache = make(map[string]PathType)
+// pathTypeCacheShard represents a single shard of the path type cache
+// PERFORMANCE: Sharding reduces lock contention for concurrent access
+type pathTypeCacheShard struct {
+	mu      sync.RWMutex
+	entries map[string]PathType
+}
+
+// pathTypeCacheShards is a sharded cache for path type results
+// Using 16 shards for good distribution with minimal overhead
+var pathTypeCacheShards [16]pathTypeCacheShard
+
+// init initializes the path type cache shards
+func init() {
+	for i := range pathTypeCacheShards {
+		pathTypeCacheShards[i].entries = make(map[string]PathType, 64)
+	}
+}
+
+// getPathTypeShard returns the shard for a path using FNV-1a hash
+func getPathTypeShard(path string) *pathTypeCacheShard {
+	h := uint64(14695981039346656037)
+	for i := 0; i < len(path); i++ {
+		h ^= uint64(path[i])
+		h *= 1099511628211
+	}
+	return &pathTypeCacheShards[h&15]
+}
 
 // GetPathType determines if a path is simple or complex
 // Simple paths are single keys with no dots or brackets
 func GetPathType(path string) PathType {
 	// Check cache first (only for short paths to avoid memory bloat)
 	if len(path) <= 64 {
-		if pt, ok := pathTypeCache[path]; ok {
+		shard := getPathTypeShard(path)
+		shard.mu.RLock()
+		if pt, ok := shard.entries[path]; ok {
+			shard.mu.RUnlock()
 			return pt
 		}
+		shard.mu.RUnlock()
+
+		var pt PathType
+		if strings.ContainsAny(path, ".[]") {
+			pt = PathTypeComplex
+		} else {
+			pt = PathTypeSimple
+		}
+
+		// Cache short paths
+		shard.mu.Lock()
+		shard.entries[path] = pt
+		shard.mu.Unlock()
+
+		return pt
 	}
 
 	var pt PathType
@@ -40,11 +83,6 @@ func GetPathType(path string) PathType {
 		pt = PathTypeComplex
 	} else {
 		pt = PathTypeSimple
-	}
-
-	// Cache short paths
-	if len(path) <= 64 {
-		pathTypeCache[path] = pt
 	}
 
 	return pt
@@ -97,17 +135,31 @@ func NewIterator(processor *Processor, data any, opts *ProcessorOptions) *Iterat
 
 // initKeysOnce lazily initializes cached keys for map iteration
 // PERFORMANCE: Avoids allocating a new slice on every Next() call
+// Uses key interning to reduce memory for repeated keys
 func (it *Iterator) initKeysOnce() {
 	if it.keysInit {
 		return
 	}
 	if obj, ok := it.data.(map[string]any); ok {
-		it.keys = make([]string, 0, len(obj))
+		// Reuse existing slice if capacity is sufficient
+		if cap(it.keys) < len(obj) {
+			it.keys = make([]string, 0, len(obj))
+		} else {
+			it.keys = it.keys[:0]
+		}
 		for k := range obj {
-			it.keys = append(it.keys, k)
+			it.keys = append(it.keys, internal.InternKey(k))
 		}
 	}
 	it.keysInit = true
+}
+
+// iterableValuePool pools IterableValue objects to reduce allocations
+// PERFORMANCE: Significant reduction in allocations during nested iteration
+var iterableValuePool = sync.Pool{
+	New: func() any {
+		return &IterableValue{}
+	},
 }
 
 // HasNext checks if there are more elements
@@ -173,19 +225,39 @@ func (iv *IterableValue) Get(path string) any {
 
 	// Use enhanced path navigation for complex paths
 	if isComplexPathIterator(path) {
-		result, err := navigateToPathWithArraySupport(iv.data, path)
+		// Use compiled path cache for complex paths
+		// NOTE: Do NOT call Release() on cached paths - they are shared!
+		cp, err := internal.GetGlobalCompiledPathCache().Get(path)
+		if err != nil {
+			return nil
+		}
+		result, err := cp.Get(iv.data)
 		if err != nil {
 			return nil
 		}
 		return result
 	}
 
-	// Fall back to simple path navigation for non-complex paths
-	result, err := navigateToPathSimple(iv.data, path)
-	if err != nil {
-		return nil
+	// Fast path for simple paths - avoid strings.Split allocation
+	current := iv.data
+	start := 0
+	for i := 0; i <= len(path); i++ {
+		if i == len(path) || path[i] == '.' {
+			if i > start {
+				part := path[start:i]
+				obj, ok := current.(map[string]any)
+				if !ok {
+					return nil
+				}
+				current, ok = obj[part]
+				if !ok {
+					return nil
+				}
+			}
+			start = i + 1
+		}
 	}
-	return result
+	return current
 }
 
 // GetString returns a string value by key or path
@@ -689,17 +761,24 @@ func Foreach(jsonStr string, fn func(key any, item *IterableValue)) {
 }
 
 // foreachWithIterableValue iterates over a value and applies a function with IterableValue
+// PERFORMANCE: Uses pooled IterableValue to reduce allocations
 func foreachWithIterableValue(data any, fn func(key any, item *IterableValue)) {
 	switch v := data.(type) {
 	case []any:
 		for i, item := range v {
-			iv := &IterableValue{data: item}
+			iv := iterableValuePool.Get().(*IterableValue)
+			iv.data = item
 			fn(i, iv)
+			iv.data = nil
+			iterableValuePool.Put(iv)
 		}
 	case map[string]any:
 		for key, val := range v {
-			iv := &IterableValue{data: val}
+			iv := iterableValuePool.Get().(*IterableValue)
+			iv.data = val
 			fn(key, iv)
+			iv.data = nil
+			iterableValuePool.Put(iv)
 		}
 	}
 }
@@ -730,21 +809,30 @@ func foreachWithPathAndIterator(jsonStr, path string, fn func(key any, item *Ite
 }
 
 // foreachWithPathIterableValue iterates with IterableValue and path information
+// PERFORMANCE: Uses pooled IterableValue to reduce allocations
 func foreachWithPathIterableValue(data any, currentPath string, fn func(key any, item *IterableValue, currentPath string) IteratorControl) error {
 	switch v := data.(type) {
 	case []any:
 		for i, item := range v {
 			path := fmt.Sprintf("%s[%d]", currentPath, i)
-			iv := &IterableValue{data: item}
-			if ctrl := fn(i, iv, path); ctrl == IteratorBreak {
+			iv := iterableValuePool.Get().(*IterableValue)
+			iv.data = item
+			ctrl := fn(i, iv, path)
+			iv.data = nil
+			iterableValuePool.Put(iv)
+			if ctrl == IteratorBreak {
 				return nil
 			}
 		}
 	case map[string]any:
 		for key, val := range v {
 			path := currentPath + "." + key
-			iv := &IterableValue{data: val}
-			if ctrl := fn(key, iv, path); ctrl == IteratorBreak {
+			iv := iterableValuePool.Get().(*IterableValue)
+			iv.data = val
+			ctrl := fn(key, iv, path)
+			iv.data = nil
+			iterableValuePool.Put(iv)
+			if ctrl == IteratorBreak {
 				return nil
 			}
 		}
@@ -830,19 +918,26 @@ func ForeachNested(jsonStr string, fn func(key any, item *IterableValue)) {
 }
 
 // foreachNestedOnValue recursively iterates over nested values
+// PERFORMANCE: Uses pooled IterableValue to reduce allocations
 func foreachNestedOnValue(data any, fn func(key any, item *IterableValue)) {
 	switch v := data.(type) {
 	case []any:
 		for i, item := range v {
-			iv := &IterableValue{data: item}
+			iv := iterableValuePool.Get().(*IterableValue)
+			iv.data = item
 			fn(i, iv)
 			foreachNestedOnValue(item, fn)
+			iv.data = nil
+			iterableValuePool.Put(iv)
 		}
 	case map[string]any:
 		for key, val := range v {
-			iv := &IterableValue{data: val}
+			iv := iterableValuePool.Get().(*IterableValue)
+			iv.data = val
 			fn(key, iv)
 			foreachNestedOnValue(val, fn)
+			iv.data = nil
+			iterableValuePool.Put(iv)
 		}
 	}
 }
@@ -920,32 +1015,56 @@ func navigateToPathWithArraySupport(data any, path string) (any, error) {
 			}
 
 			// Normalize indices
-			if start == nil {
-				startVal := 0
-				start = &startVal
+			startVal := 0
+			if start != nil {
+				startVal = *start
 			}
-			if end == nil {
-				endVal := len(arr)
-				end = &endVal
+			endVal := len(arr)
+			if end != nil {
+				endVal = *end
 			}
-
-			// Handle negative indices
-			if *start < 0 {
-				*start = len(arr) + *start
-			}
-			if *end < 0 {
-				*end = len(arr) + *end
-			}
-
-			// Apply slice
-			result := make([]any, 0)
 			stepVal := 1
 			if step != nil {
 				stepVal = *step
 			}
-			for i := *start; i < *end; i += stepVal {
-				if i >= 0 && i < len(arr) {
-					result = append(result, arr[i])
+
+			// Handle negative indices
+			if startVal < 0 {
+				startVal = len(arr) + startVal
+			}
+			if endVal < 0 {
+				endVal = len(arr) + endVal
+			}
+
+			// Calculate expected size before allocation
+			expectedSize := 0
+			if stepVal > 0 && startVal < endVal {
+				for i := startVal; i < endVal && i < len(arr); i += stepVal {
+					if i >= 0 {
+						expectedSize++
+					}
+				}
+			} else if stepVal < 0 && startVal > endVal {
+				for i := startVal; i > endVal && i >= 0; i += stepVal {
+					if i < len(arr) {
+						expectedSize++
+					}
+				}
+			}
+
+			// Apply slice with pre-allocated result
+			result := make([]any, 0, expectedSize)
+			if stepVal > 0 {
+				for i := startVal; i < endVal; i += stepVal {
+					if i >= 0 && i < len(arr) {
+						result = append(result, arr[i])
+					}
+				}
+			} else if stepVal < 0 {
+				for i := startVal; i > endVal; i += stepVal {
+					if i >= 0 && i < len(arr) {
+						result = append(result, arr[i])
+					}
 				}
 			}
 			current = result
@@ -1337,4 +1456,302 @@ func (l *LazyJSONDecoder) GetPath(path string) (any, error) {
 // Raw returns the raw JSON bytes
 func (l *LazyJSONDecoder) Raw() []byte {
 	return l.raw
+}
+
+// ============================================================================
+// BATCH ITERATOR - Efficient batch processing for large arrays
+// PERFORMANCE: Processes arrays in batches to reduce per-element overhead
+// ============================================================================
+
+// BatchIterator processes arrays in batches for efficient bulk operations
+type BatchIterator struct {
+	data      []any
+	batchSize int
+	current   int
+}
+
+// NewBatchIterator creates a new batch iterator
+func NewBatchIterator(data []any, batchSize int) *BatchIterator {
+	if batchSize <= 0 {
+		batchSize = 100 // Default batch size
+	}
+	return &BatchIterator{
+		data:      data,
+		batchSize: batchSize,
+		current:   0,
+	}
+}
+
+// NextBatch returns the next batch of elements
+// Returns nil when no more batches are available
+func (it *BatchIterator) NextBatch() []any {
+	if it.current >= len(it.data) {
+		return nil
+	}
+
+	end := it.current + it.batchSize
+	if end > len(it.data) {
+		end = len(it.data)
+	}
+
+	batch := it.data[it.current:end]
+	it.current = end
+	return batch
+}
+
+// HasNext returns true if there are more batches to process
+func (it *BatchIterator) HasNext() bool {
+	return it.current < len(it.data)
+}
+
+// Reset resets the iterator to the beginning
+func (it *BatchIterator) Reset() {
+	it.current = 0
+}
+
+// TotalBatches returns the total number of batches
+func (it *BatchIterator) TotalBatches() int {
+	return (len(it.data) + it.batchSize - 1) / it.batchSize
+}
+
+// CurrentIndex returns the current position in the array
+func (it *BatchIterator) CurrentIndex() int {
+	return it.current
+}
+
+// Remaining returns the number of remaining elements
+func (it *BatchIterator) Remaining() int {
+	if it.current >= len(it.data) {
+		return 0
+	}
+	return len(it.data) - it.current
+}
+
+// ============================================================================
+// PARALLEL ITERATOR - Concurrent processing for CPU-bound operations
+// PERFORMANCE: Parallelizes processing across multiple goroutines
+// ============================================================================
+
+// ParallelIterator processes arrays in parallel using worker goroutines
+type ParallelIterator struct {
+	data    []any
+	workers int
+	sem     chan struct{}
+}
+
+// NewParallelIterator creates a new parallel iterator
+func NewParallelIterator(data []any, workers int) *ParallelIterator {
+	if workers <= 0 {
+		workers = 4 // Default worker count
+	}
+	if workers > len(data) {
+		workers = len(data)
+		if workers == 0 {
+			workers = 1
+		}
+	}
+	return &ParallelIterator{
+		data:    data,
+		workers: workers,
+		sem:     make(chan struct{}, workers),
+	}
+}
+
+// ForEach processes each element in parallel using the provided function
+// The function receives the index and value of each element
+// Returns the first error encountered, or nil if all operations succeed
+func (it *ParallelIterator) ForEach(fn func(int, any) error) error {
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+	var hasError int32
+
+	for i, item := range it.data {
+		// Check if we already have an error
+		if atomic.LoadInt32(&hasError) == 1 {
+			break
+		}
+
+		it.sem <- struct{}{} // Acquire semaphore
+		wg.Add(1)
+
+		go func(idx int, val any) {
+			defer wg.Done()
+			defer func() { <-it.sem }() // Release semaphore
+
+			if atomic.LoadInt32(&hasError) == 1 {
+				return
+			}
+
+			if err := fn(idx, val); err != nil {
+				if atomic.CompareAndSwapInt32(&hasError, 0, 1) {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+			}
+		}(i, item)
+	}
+
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
+}
+
+// ForEachBatch processes elements in batches in parallel
+// Each batch is processed by a single goroutine
+func (it *ParallelIterator) ForEachBatch(batchSize int, fn func(int, []any) error) error {
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+
+	// Create batches
+	batches := make([][]any, 0)
+	for i := 0; i < len(it.data); i += batchSize {
+		end := i + batchSize
+		if end > len(it.data) {
+			end = len(it.data)
+		}
+		batches = append(batches, it.data[i:end])
+	}
+
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+	var hasError int32
+
+	for batchIdx, batch := range batches {
+		if atomic.LoadInt32(&hasError) == 1 {
+			break
+		}
+
+		it.sem <- struct{}{}
+		wg.Add(1)
+
+		go func(idx int, b []any) {
+			defer wg.Done()
+			defer func() { <-it.sem }()
+
+			if atomic.LoadInt32(&hasError) == 1 {
+				return
+			}
+
+			if err := fn(idx, b); err != nil {
+				if atomic.CompareAndSwapInt32(&hasError, 0, 1) {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+			}
+		}(batchIdx, batch)
+	}
+
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		return err
+	default:
+		return nil
+	}
+}
+
+// Map applies a transformation function to each element in parallel
+// Returns a new slice with the transformed values
+func (it *ParallelIterator) Map(transform func(int, any) (any, error)) ([]any, error) {
+	result := make([]any, len(it.data))
+	var mu sync.Mutex
+	var hasError int32
+	var firstError error
+
+	err := it.ForEach(func(idx int, val any) error {
+		transformed, err := transform(idx, val)
+		if err != nil {
+			return err
+		}
+
+		mu.Lock()
+		result[idx] = transformed
+		mu.Unlock()
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if atomic.LoadInt32(&hasError) == 1 {
+		return nil, firstError
+	}
+
+	return result, nil
+}
+
+// Filter filters elements in parallel using a predicate function
+// Returns a new slice with elements that pass the predicate
+func (it *ParallelIterator) Filter(predicate func(int, any) bool) []any {
+	var mu sync.Mutex
+	result := make([]any, 0)
+
+	it.ForEach(func(idx int, val any) error {
+		if predicate(idx, val) {
+			mu.Lock()
+			result = append(result, val)
+			mu.Unlock()
+		}
+		return nil
+	})
+
+	return result
+}
+
+// ============================================================================
+// ITERABLE VALUE POOL - Reduces allocations for IterableValue
+// PERFORMANCE: Pooling reduces GC pressure for frequent iterations
+// NOTE: iterableValuePool is declared earlier in the file (near line 159)
+// ============================================================================
+
+// NewPooledIterableValue creates an IterableValue from the pool
+func NewPooledIterableValue(data any) *IterableValue {
+	iv := iterableValuePool.Get().(*IterableValue)
+	iv.data = data
+	return iv
+}
+
+// Release returns the IterableValue to the pool
+func (iv *IterableValue) Release() {
+	iv.data = nil
+	iterableValuePool.Put(iv)
+}
+
+// ============================================================================
+// CONFIGURABLE STREAM ITERATOR - Enhanced StreamIterator with options
+// PERFORMANCE: Configurable buffer sizes and prefetch for large data
+// ============================================================================
+
+// StreamIteratorConfig holds configuration for StreamIterator
+type StreamIteratorConfig struct {
+	BufferSize     int  // Buffer size for reading (default: 4096)
+	EnablePrefetch bool // Enable prefetching next element
+}
+
+// DefaultStreamIteratorConfig returns the default configuration
+func DefaultStreamIteratorConfig() StreamIteratorConfig {
+	return StreamIteratorConfig{
+		BufferSize:     4096,
+		EnablePrefetch: false,
+	}
+}
+
+// NewStreamIteratorWithConfig creates a stream iterator with custom configuration
+func NewStreamIteratorWithConfig(reader io.Reader, config StreamIteratorConfig) *StreamIterator {
+	// For now, this is the same as NewStreamIterator
+	// Future enhancement: implement prefetching with config.EnablePrefetch
+	return NewStreamIterator(reader)
 }

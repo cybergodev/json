@@ -253,8 +253,28 @@ func ParseComplexSegment(part string) ([]PathSegment, error) {
 }
 
 // parseDotNotation parses dot notation paths like "user.name" or "users[0].name"
+// PERFORMANCE: Pre-calculates segment count to avoid slice growth allocations
 func parseDotNotation(path string) ([]PathSegment, error) {
-	var segments []PathSegment
+	// Pre-calculate segment count for better allocation
+	// Count dots outside brackets and add 1 for the initial segment
+	dotCount := 0
+	bracketDepth := 0
+	for i := 0; i < len(path); i++ {
+		switch path[i] {
+		case '[':
+			bracketDepth++
+		case ']':
+			bracketDepth--
+		case '.':
+			if bracketDepth == 0 {
+				dotCount++
+			}
+		}
+	}
+
+	// Estimate segment count (dots + 1, with extra for array indices)
+	estimatedSegments := dotCount + 1
+	segments := make([]PathSegment, 0, estimatedSegments)
 
 	// Smart split that respects extraction and array operation boundaries
 	parts := smartSplitPath(path)

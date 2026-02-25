@@ -2,13 +2,34 @@ package internal
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"reflect"
 	"strconv"
 	"sync"
+	"time"
 	"unicode/utf8"
 	"unsafe"
 )
+
+// ============================================================================
+// LOOKUP TABLES FOR STRING ESCAPING
+// PERFORMANCE: Pre-computed lookup table avoids byte-by-byte checks
+// ============================================================================
+
+// needsEscapeTable is a pre-computed lookup table for characters that need escaping
+// Index is the byte value, value is true if escaping is needed
+var needsEscapeTable = [256]bool{
+	// Control characters (0x00-0x1F) need escaping
+	0x00: true, 0x01: true, 0x02: true, 0x03: true, 0x04: true, 0x05: true, 0x06: true, 0x07: true,
+	0x08: true, 0x09: true, 0x0A: true, 0x0B: true, 0x0C: true, 0x0D: true, 0x0E: true, 0x0F: true,
+	0x10: true, 0x11: true, 0x12: true, 0x13: true, 0x14: true, 0x15: true, 0x16: true, 0x17: true,
+	0x18: true, 0x19: true, 0x1A: true, 0x1B: true, 0x1C: true, 0x1D: true, 0x1E: true, 0x1F: true,
+	// Quote and backslash need escaping
+	'"':  true,
+	'\\': true,
+	// All other characters (0x20-0xFF except " and \) are safe
+}
 
 // Note: hexChars, StringToBytes, BufferPool are defined in encoding.go
 
@@ -93,18 +114,30 @@ func (e *FastEncoder) EncodeValue(v any) error {
 		e.EncodeFloat(val, 64)
 	case bool:
 		e.EncodeBool(val)
+	case time.Time:
+		e.EncodeTime(val)
+	case []byte:
+		e.EncodeBase64(val)
 	case map[string]any:
 		return e.EncodeMap(val)
 	case map[string]string:
 		return e.EncodeMapStringString(val)
 	case map[string]int:
 		return e.EncodeMapStringInt(val)
+	case map[string]int64:
+		return e.EncodeMapStringInt64(val)
+	case map[string]float64:
+		return e.EncodeMapStringFloat64(val)
 	case []any:
 		return e.EncodeArray(val)
 	case []string:
 		e.EncodeStringSlice(val)
 	case []int:
 		e.EncodeIntSlice(val)
+	case []int64:
+		e.EncodeInt64Slice(val)
+	case []uint64:
+		e.EncodeUint64Slice(val)
 	case []float64:
 		e.EncodeFloatSlice(val)
 	case json.Number:
@@ -147,10 +180,22 @@ func (e *FastEncoder) EncodeString(s string) {
 }
 
 // needsEscape checks if a string needs JSON escaping
+// PERFORMANCE: Uses pre-computed lookup table for O(1) per-character check
+// PERFORMANCE: Checks 8 bytes at a time using batch processing
 func needsEscape(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c < 0x20 || c == '"' || c == '\\' {
+	// Batch processing: check 8 bytes at a time
+	n := len(s)
+	for i := 0; i+7 < n; i += 8 {
+		if needsEscapeTable[s[i]] || needsEscapeTable[s[i+1]] ||
+			needsEscapeTable[s[i+2]] || needsEscapeTable[s[i+3]] ||
+			needsEscapeTable[s[i+4]] || needsEscapeTable[s[i+5]] ||
+			needsEscapeTable[s[i+6]] || needsEscapeTable[s[i+7]] {
+			return true
+		}
+	}
+	// Check remaining bytes
+	for i := n &^ 7; i < n; i++ {
+		if needsEscapeTable[s[i]] {
 			return true
 		}
 	}
@@ -413,6 +458,94 @@ func (e *FastEncoder) EncodeFloatSlice(arr []float64) {
 			e.buf = append(e.buf, ',')
 		}
 		e.EncodeFloat(v, 64)
+	}
+
+	e.buf = append(e.buf, ']')
+}
+
+// ============================================================================
+// EXTENDED TYPE ENCODERS
+// PERFORMANCE: Specialized encoders avoid reflection overhead
+// ============================================================================
+
+// EncodeTime encodes a time.Time in RFC3339 format
+func (e *FastEncoder) EncodeTime(t time.Time) {
+	e.buf = append(e.buf, '"')
+	e.buf = append(e.buf, t.Format(time.RFC3339)...)
+	e.buf = append(e.buf, '"')
+}
+
+// EncodeBase64 encodes a []byte as base64 string
+func (e *FastEncoder) EncodeBase64(b []byte) {
+	e.buf = append(e.buf, '"')
+	encoded := base64.StdEncoding.EncodeToString(b)
+	e.buf = append(e.buf, encoded...)
+	e.buf = append(e.buf, '"')
+}
+
+// EncodeMapStringInt64 encodes a map[string]int64
+func (e *FastEncoder) EncodeMapStringInt64(m map[string]int64) error {
+	e.buf = append(e.buf, '{')
+	first := true
+
+	for k, v := range m {
+		if !first {
+			e.buf = append(e.buf, ',')
+		}
+		first = false
+
+		e.EncodeString(k)
+		e.buf = append(e.buf, ':')
+		e.EncodeInt(v)
+	}
+
+	e.buf = append(e.buf, '}')
+	return nil
+}
+
+// EncodeMapStringFloat64 encodes a map[string]float64
+func (e *FastEncoder) EncodeMapStringFloat64(m map[string]float64) error {
+	e.buf = append(e.buf, '{')
+	first := true
+
+	for k, v := range m {
+		if !first {
+			e.buf = append(e.buf, ',')
+		}
+		first = false
+
+		e.EncodeString(k)
+		e.buf = append(e.buf, ':')
+		e.EncodeFloat(v, 64)
+	}
+
+	e.buf = append(e.buf, '}')
+	return nil
+}
+
+// EncodeInt64Slice encodes a []int64
+func (e *FastEncoder) EncodeInt64Slice(arr []int64) {
+	e.buf = append(e.buf, '[')
+
+	for i, v := range arr {
+		if i > 0 {
+			e.buf = append(e.buf, ',')
+		}
+		e.EncodeInt(v)
+	}
+
+	e.buf = append(e.buf, ']')
+}
+
+// EncodeUint64Slice encodes a []uint64
+func (e *FastEncoder) EncodeUint64Slice(arr []uint64) {
+	e.buf = append(e.buf, '[')
+
+	for i, v := range arr {
+		if i > 0 {
+			e.buf = append(e.buf, ',')
+		}
+		e.EncodeUint(v)
 	}
 
 	e.buf = append(e.buf, ']')

@@ -402,3 +402,334 @@ func PutEncodeBuffer(buf []byte) {
 		encodeBufferPool.Put(buf)
 	}
 }
+
+// ============================================================================
+// CHUNKED STREAMING OPERATIONS
+// PERFORMANCE: Process large JSON in configurable chunks for memory efficiency
+// ============================================================================
+
+// StreamArrayChunked streams array elements in chunks for memory-efficient processing
+// The chunkSize parameter controls how many elements are processed at once
+func (sp *StreamingProcessor) StreamArrayChunked(chunkSize int, fn func([]any) error) error {
+	if chunkSize <= 0 {
+		chunkSize = 100 // Default chunk size
+	}
+
+	// Check if the first token is an array start
+	token, err := sp.decoder.Token()
+	if err != nil {
+		return err
+	}
+
+	if token != json.Delim('[') {
+		// Not an array, try to decode as single value
+		var item any
+		if err := sp.decoder.Decode(&item); err != nil {
+			return err
+		}
+		return fn([]any{item})
+	}
+
+	chunk := make([]any, 0, chunkSize)
+	for sp.decoder.More() {
+		var item any
+		if err := sp.decoder.Decode(&item); err != nil {
+			return err
+		}
+
+		chunk = append(chunk, item)
+		sp.stats.ItemsProcessed++
+
+		// Process chunk when full
+		if len(chunk) >= chunkSize {
+			if err := fn(chunk); err != nil {
+				return err
+			}
+			chunk = chunk[:0] // Reset chunk
+		}
+	}
+
+	// Process remaining items
+	if len(chunk) > 0 {
+		if err := fn(chunk); err != nil {
+			return err
+		}
+	}
+
+	// Consume closing bracket
+	_, err = sp.decoder.Token()
+	return err
+}
+
+// StreamObjectChunked streams object key-value pairs in chunks for memory-efficient processing
+// The chunkSize parameter controls how many pairs are processed at once
+func (sp *StreamingProcessor) StreamObjectChunked(chunkSize int, fn func(map[string]any) error) error {
+	if chunkSize <= 0 {
+		chunkSize = 100 // Default chunk size
+	}
+
+	token, err := sp.decoder.Token()
+	if err != nil {
+		return err
+	}
+
+	if token != json.Delim('{') {
+		// Not an object, wrap single value
+		var value any
+		if err := sp.decoder.Decode(&value); err != nil {
+			return err
+		}
+		return fn(map[string]any{"": value})
+	}
+
+	chunk := make(map[string]any, chunkSize)
+	count := 0
+
+	for sp.decoder.More() {
+		key, err := sp.decoder.Token()
+		if err != nil {
+			return err
+		}
+
+		keyStr, ok := key.(string)
+		if !ok {
+			continue
+		}
+
+		var value any
+		if err := sp.decoder.Decode(&value); err != nil {
+			return err
+		}
+
+		chunk[keyStr] = value
+		sp.stats.ItemsProcessed++
+		count++
+
+		// Process chunk when full
+		if count >= chunkSize {
+			if err := fn(chunk); err != nil {
+				return err
+			}
+			chunk = make(map[string]any, chunkSize)
+			count = 0
+		}
+	}
+
+	// Process remaining items
+	if count > 0 {
+		if err := fn(chunk); err != nil {
+			return err
+		}
+	}
+
+	// Consume closing brace
+	_, err = sp.decoder.Token()
+	return err
+}
+
+// ============================================================================
+// STREAMING TRANSFORMATION OPERATIONS
+// PERFORMANCE: Transform large JSON without loading entire structure into memory
+// ============================================================================
+
+// StreamArrayFilter filters array elements during streaming
+// Only elements that pass the predicate are kept
+func StreamArrayFilter(reader io.Reader, predicate func(any) bool) ([]any, error) {
+	processor := NewStreamingProcessor(reader, 0)
+	result := make([]any, 0)
+
+	err := processor.StreamArray(func(index int, item any) bool {
+		if predicate(item) {
+			result = append(result, item)
+		}
+		return true
+	})
+
+	return result, err
+}
+
+// StreamArrayMap transforms array elements during streaming
+// Each element is transformed using the provided function
+func StreamArrayMap(reader io.Reader, transform func(any) any) ([]any, error) {
+	processor := NewStreamingProcessor(reader, 0)
+	result := make([]any, 0)
+
+	err := processor.StreamArray(func(index int, item any) bool {
+		result = append(result, transform(item))
+		return true
+	})
+
+	return result, err
+}
+
+// StreamArrayReduce reduces array elements to a single value during streaming
+// The reducer function receives the accumulated value and current element
+func StreamArrayReduce(reader io.Reader, initial any, reducer func(any, any) any) (any, error) {
+	processor := NewStreamingProcessor(reader, 0)
+	accumulator := initial
+
+	err := processor.StreamArray(func(index int, item any) bool {
+		accumulator = reducer(accumulator, item)
+		return true
+	})
+
+	return accumulator, err
+}
+
+// StreamArrayForEach processes each element without collecting results
+// Useful for side effects like writing to a database or file
+func StreamArrayForEach(reader io.Reader, fn func(int, any) error) error {
+	processor := NewStreamingProcessor(reader, 0)
+
+	return processor.StreamArray(func(index int, item any) bool {
+		if err := fn(index, item); err != nil {
+			return false // Stop iteration on error
+		}
+		return true
+	})
+}
+
+// StreamArrayCount counts elements without storing them
+// Memory-efficient for just getting array length
+func StreamArrayCount(reader io.Reader) (int, error) {
+	processor := NewStreamingProcessor(reader, 0)
+	count := 0
+
+	err := processor.StreamArray(func(index int, item any) bool {
+		count++
+		return true
+	})
+
+	return count, err
+}
+
+// StreamArrayFirst returns the first element that matches a predicate
+// Stops processing as soon as a match is found
+func StreamArrayFirst(reader io.Reader, predicate func(any) bool) (any, bool, error) {
+	processor := NewStreamingProcessor(reader, 0)
+	var result any
+	found := false
+
+	err := processor.StreamArray(func(index int, item any) bool {
+		if predicate(item) {
+			result = item
+			found = true
+			return false // Stop iteration
+		}
+		return true
+	})
+
+	return result, found, err
+}
+
+// StreamArrayTake returns the first n elements from a streaming array
+// Useful for pagination or sampling
+func StreamArrayTake(reader io.Reader, n int) ([]any, error) {
+	processor := NewStreamingProcessor(reader, 0)
+	result := make([]any, 0, n)
+
+	err := processor.StreamArray(func(index int, item any) bool {
+		if len(result) >= n {
+			return false // Stop iteration
+		}
+		result = append(result, item)
+		return true
+	})
+
+	return result, err
+}
+
+// StreamArraySkip skips the first n elements and returns the rest
+// Useful for pagination
+func StreamArraySkip(reader io.Reader, n int) ([]any, error) {
+	processor := NewStreamingProcessor(reader, 0)
+	result := make([]any, 0)
+
+	err := processor.StreamArray(func(index int, item any) bool {
+		if index >= n {
+			result = append(result, item)
+		}
+		return true
+	})
+
+	return result, err
+}
+
+// ============================================================================
+// LAZY JSON - Parse on first access
+// PERFORMANCE: Defer JSON parsing until data is actually needed
+// ============================================================================
+
+// LazyJSON provides lazy parsing for JSON data
+// The JSON is only parsed when a value is accessed
+type LazyJSON struct {
+	raw    []byte
+	parsed any
+	err    error
+	once   sync.Once
+}
+
+// NewLazyJSON creates a new LazyJSON from raw bytes
+func NewLazyJSON(data []byte) *LazyJSON {
+	return &LazyJSON{
+		raw: data,
+	}
+}
+
+// parse performs the actual parsing (called once)
+func (lj *LazyJSON) parse() {
+	lj.once.Do(func() {
+		lj.err = json.Unmarshal(lj.raw, &lj.parsed)
+	})
+}
+
+// Get retrieves a value at the specified path
+// Parses the JSON on first access
+func (lj *LazyJSON) Get(path string) (any, error) {
+	lj.parse()
+	if lj.err != nil {
+		return nil, lj.err
+	}
+
+	p := getDefaultProcessor()
+	return p.GetFromParsedData(lj.parsed, path)
+}
+
+// GetFromParsedData retrieves a value from already-parsed data
+// Uses the processor's path navigation without re-parsing
+func (p *Processor) GetFromParsedData(data any, path string) (any, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	// Navigate directly using the recursive processor
+	return p.recursiveProcessor.ProcessRecursively(data, path, OpGet, nil)
+}
+
+// Parse forces parsing and returns the parsed data
+func (lj *LazyJSON) Parse() (any, error) {
+	lj.parse()
+	return lj.parsed, lj.err
+}
+
+// Raw returns the raw JSON bytes
+func (lj *LazyJSON) Raw() []byte {
+	return lj.raw
+}
+
+// IsParsed returns true if the JSON has been parsed
+func (lj *LazyJSON) IsParsed() bool {
+	return lj.parsed != nil || lj.err != nil
+}
+
+// Parsed returns the parsed data without forcing parsing
+// Returns nil if not yet parsed
+func (lj *LazyJSON) Parsed() any {
+	return lj.parsed
+}
+
+// Error returns any parsing error
+func (lj *LazyJSON) Error() error {
+	lj.parse()
+	return lj.err
+}

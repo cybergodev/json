@@ -3063,3 +3063,51 @@ func isNumericIndex(s string) bool {
 
 	return true
 }
+
+// ============================================================================
+// COMPILED PATH METHODS
+// PERFORMANCE: Pre-parsed paths for repeated operations with zero-parse overhead
+// ============================================================================
+
+// CompilePath compiles a JSON path string into a CompiledPath for fast repeated operations
+// The returned CompiledPath can be reused for multiple Get/Set/Delete operations
+func (p *Processor) CompilePath(path string) (*internal.CompiledPath, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	// Use the global compiled path cache for frequently used paths
+	return internal.GetGlobalCompiledPathCache().Get(path)
+}
+
+// GetCompiled retrieves a value from JSON using a pre-compiled path
+// PERFORMANCE: Skips path parsing for faster repeated operations
+func (p *Processor) GetCompiled(jsonStr string, cp *internal.CompiledPath) (any, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	// Parse JSON once
+	var data any
+	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+		return nil, err
+	}
+
+	// Navigate using compiled path
+	return cp.Get(data)
+}
+
+// GetCompiledFromParsed retrieves a value from pre-parsed JSON data using a compiled path
+// PERFORMANCE: No JSON parsing overhead - uses already parsed data
+func (p *Processor) GetCompiledFromParsed(data any, cp *internal.CompiledPath) (any, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	return cp.Get(data)
+}
+
+// GetCompiledExists checks if a path exists in pre-parsed JSON data using a compiled path
+func (p *Processor) GetCompiledExists(data any, cp *internal.CompiledPath) bool {
+	return cp.Exists(data)
+}

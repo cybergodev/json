@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -1015,4 +1016,338 @@ func isSlicePath(path string) bool {
 
 func isExtractionPath(path string) bool {
 	return internal.IsExtractionPath(path)
+}
+
+// ============================================================================
+// HOT PATH OPTIMIZATIONS
+// PERFORMANCE: Fast paths for common operations without allocations
+// ============================================================================
+
+// FastTypeSwitch converts a value to a specific type using optimized type switches
+// PERFORMANCE: Single type switch instead of multiple type assertions
+func FastTypeSwitch[T any](value any) (T, bool) {
+	var zero T
+
+	// Fast path using type switch
+	switch v := value.(type) {
+	case T:
+		return v, true
+	case string:
+		if result, ok := any(v).(T); ok {
+			return result, true
+		}
+	case int:
+		if result, ok := any(v).(T); ok {
+			return result, true
+		}
+	case int64:
+		if result, ok := any(v).(T); ok {
+			return result, true
+		}
+	case float64:
+		if result, ok := any(v).(T); ok {
+			return result, true
+		}
+	case bool:
+		if result, ok := any(v).(T); ok {
+			return result, true
+		}
+	case nil:
+		return zero, false
+	}
+
+	return zero, false
+}
+
+// FastToString converts any value to string using optimized type switch
+// PERFORMANCE: Avoids reflection for common types
+func FastToString(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case int:
+		return strconv.Itoa(v), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case bool:
+		if v {
+			return "true", true
+		}
+		return "false", true
+	case json.Number:
+		return string(v), true
+	case nil:
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+// FastToInt converts any value to int using optimized type switch
+// PERFORMANCE: Avoids reflection for common types
+func FastToInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case json.Number:
+		if i, err := strconv.Atoi(string(v)); err == nil {
+			return i, true
+		}
+		return 0, false
+	case string:
+		if i, err := strconv.Atoi(v); err == nil {
+			return i, true
+		}
+		return 0, false
+	case nil:
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+// FastToFloat64 converts any value to float64 using optimized type switch
+// PERFORMANCE: Avoids reflection for common types
+func FastToFloat64(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		if f, err := strconv.ParseFloat(string(v), 64); err == nil {
+			return f, true
+		}
+		return 0, false
+	case string:
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f, true
+		}
+		return 0, false
+	case nil:
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
+// FastToBool converts any value to bool using optimized type switch
+// PERFORMANCE: Avoids reflection for common types
+func FastToBool(value any) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		return strings.ToLower(v) == "true", true
+	case int:
+		return v != 0, true
+	case float64:
+		return v != 0, true
+	case nil:
+		return false, false
+	default:
+		return false, false
+	}
+}
+
+// ============================================================================
+// PRE-SIZED MAP HELPERS
+// PERFORMANCE: Estimate map size from JSON content to reduce reallocations
+// ============================================================================
+
+// EstimateMapSize estimates the number of keys in a JSON object from raw bytes
+// PERFORMANCE: Pre-sizing maps reduces reallocation overhead
+func EstimateMapSize(jsonBytes []byte) int {
+	if len(jsonBytes) == 0 {
+		return 0
+	}
+
+	// Count colons as a rough estimate of key-value pairs
+	count := 0
+	depth := 0
+	inString := false
+	escape := false
+
+	for _, b := range jsonBytes {
+		if escape {
+			escape = false
+			continue
+		}
+
+		switch b {
+		case '\\':
+			if inString {
+				escape = true
+			}
+		case '"':
+			inString = !inString
+		case '{':
+			if !inString {
+				depth++
+			}
+		case '}':
+			if !inString {
+				depth--
+			}
+		case ':':
+			if !inString && depth == 1 {
+				count++
+			}
+		}
+	}
+
+	return count
+}
+
+// EstimateArraySize estimates the number of elements in a JSON array from raw bytes
+// PERFORMANCE: Pre-sizing arrays reduces reallocation overhead
+func EstimateArraySize(jsonBytes []byte) int {
+	if len(jsonBytes) == 0 {
+		return 0
+	}
+
+	// Count commas at depth 1 as a rough estimate
+	count := 1 // Start with 1 (arrays have at least 1 element if non-empty)
+	depth := 0
+	inString := false
+	escape := false
+
+	for _, b := range jsonBytes {
+		if escape {
+			escape = false
+			continue
+		}
+
+		switch b {
+		case '\\':
+			if inString {
+				escape = true
+			}
+		case '"':
+			inString = !inString
+		case '[':
+			if !inString {
+				depth++
+			}
+		case ']':
+			if !inString {
+				depth--
+			}
+		case ',':
+			if !inString && depth == 1 {
+				count++
+			}
+		}
+	}
+
+	if count < 0 {
+		return 0
+	}
+	return count
+}
+
+// NewMapWithEstimatedSize creates a new map with capacity estimated from JSON bytes
+func NewMapWithEstimatedSize(jsonBytes []byte) map[string]any {
+	size := EstimateMapSize(jsonBytes)
+	if size < 8 {
+		size = 8
+	}
+	return make(map[string]any, size)
+}
+
+// NewSliceWithEstimatedSize creates a new slice with capacity estimated from JSON bytes
+func NewSliceWithEstimatedSize(jsonBytes []byte) []any {
+	size := EstimateArraySize(jsonBytes)
+	if size < 8 {
+		size = 8
+	}
+	return make([]any, 0, size)
+}
+
+// ============================================================================
+// JSON KEY INTERNING
+// PERFORMANCE: Intern frequently used JSON keys to reduce memory allocations
+// ============================================================================
+
+var globalKeyInternMap = &keyInternMap{
+	keys: make(map[string]string, 256),
+}
+
+type keyInternMap struct {
+	keys map[string]string
+	mu   sync.RWMutex
+}
+
+// InternKey returns an interned copy of the key string
+// If the key has been seen before, returns the existing copy
+// Otherwise, stores and returns a copy of the key
+func InternKey(key string) string {
+	// Fast path: check without lock first (safe for reads)
+	globalKeyInternMap.mu.RLock()
+	if interned, ok := globalKeyInternMap.keys[key]; ok {
+		globalKeyInternMap.mu.RUnlock()
+		return interned
+	}
+	globalKeyInternMap.mu.RUnlock()
+
+	// Slow path: add new key
+	globalKeyInternMap.mu.Lock()
+	defer globalKeyInternMap.mu.Unlock()
+
+	// Double check (another goroutine may have added it)
+	if interned, ok := globalKeyInternMap.keys[key]; ok {
+		return interned
+	}
+
+	// Limit cache size to prevent unbounded growth
+	if len(globalKeyInternMap.keys) >= 10000 {
+		// Clear half the cache
+		count := 0
+		for k := range globalKeyInternMap.keys {
+			delete(globalKeyInternMap.keys, k)
+			count++
+			if count >= 5000 {
+				break
+			}
+		}
+	}
+
+	// Store a copy to prevent external modification
+	globalKeyInternMap.keys[key] = key
+	return key
+}
+
+// InternMapKeys interns all keys in a map
+// PERFORMANCE: Reduces memory usage when the same keys appear in multiple maps
+func InternMapKeys(m map[string]any) {
+	for k, v := range m {
+		interned := InternKey(k)
+		if interned != k {
+			delete(m, k)
+			m[interned] = v
+		}
+	}
+}
+
+// ClearKeyInternCache clears the key intern cache
+func ClearKeyInternCache() {
+	globalKeyInternMap.mu.Lock()
+	globalKeyInternMap.keys = make(map[string]string, 256)
+	globalKeyInternMap.mu.Unlock()
+}
+
+// KeyInternCacheSize returns the number of interned keys
+func KeyInternCacheSize() int {
+	globalKeyInternMap.mu.RLock()
+	n := len(globalKeyInternMap.keys)
+	globalKeyInternMap.mu.RUnlock()
+	return n
 }
