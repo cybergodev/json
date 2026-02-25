@@ -1,9 +1,12 @@
 package json
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -975,4 +978,363 @@ func navigateToPathSimple(data any, path string) (any, error) {
 	}
 
 	return current, nil
+}
+
+// ============================================================================
+// STREAM ITERATOR - Memory-efficient iteration over large JSON data
+// ============================================================================
+
+// StreamIterator provides memory-efficient iteration over large JSON arrays
+// It processes elements one at a time without loading the entire array into memory
+type StreamIterator struct {
+	decoder *json.Decoder
+	index   int
+	err     error
+	done    bool
+	current any
+}
+
+// NewStreamIterator creates a stream iterator from a reader
+func NewStreamIterator(reader io.Reader) *StreamIterator {
+	decoder := json.NewDecoder(reader)
+	return &StreamIterator{
+		decoder: decoder,
+		index:   -1,
+	}
+}
+
+// Next advances to the next element
+// Returns true if there is a next element, false otherwise
+func (si *StreamIterator) Next() bool {
+	if si.done || si.err != nil {
+		return false
+	}
+
+	// First call - check for array start
+	if si.index < 0 {
+		token, err := si.decoder.Token()
+		if err != nil {
+			si.err = err
+			si.done = true
+			return false
+		}
+
+		// Handle single value (not an array)
+		if token != json.Delim('[') {
+			si.current = token
+			si.index = 0
+			// Try to decode the rest if it's a complex value
+			var rest any
+			if err := si.decoder.Decode(&rest); err == nil {
+				// It was a complex object/array
+				si.current = rest
+			}
+			si.done = true
+			return true
+		}
+	}
+
+	// Check if there are more elements
+	if !si.decoder.More() {
+		// Consume closing bracket
+		si.decoder.Token()
+		si.done = true
+		return false
+	}
+
+	// Decode next element
+	var item any
+	if err := si.decoder.Decode(&item); err != nil {
+		si.err = err
+		si.done = true
+		return false
+	}
+
+	si.current = item
+	si.index++
+	return true
+}
+
+// Value returns the current element
+func (si *StreamIterator) Value() any {
+	return si.current
+}
+
+// Index returns the current index
+func (si *StreamIterator) Index() int {
+	return si.index
+}
+
+// Err returns any error encountered during iteration
+func (si *StreamIterator) Err() error {
+	return si.err
+}
+
+// ============================================================================
+// STREAM OBJECT ITERATOR - For iterating over JSON objects
+// ============================================================================
+
+// StreamObjectIterator provides memory-efficient iteration over JSON objects
+type StreamObjectIterator struct {
+	decoder *json.Decoder
+	key     string
+	value   any
+	err     error
+	done    bool
+	started bool
+}
+
+// NewStreamObjectIterator creates a stream object iterator from a reader
+func NewStreamObjectIterator(reader io.Reader) *StreamObjectIterator {
+	decoder := json.NewDecoder(reader)
+	return &StreamObjectIterator{
+		decoder: decoder,
+	}
+}
+
+// Next advances to the next key-value pair
+func (soi *StreamObjectIterator) Next() bool {
+	if soi.done || soi.err != nil {
+		return false
+	}
+
+	// First call - check for object start
+	if !soi.started {
+		token, err := soi.decoder.Token()
+		if err != nil {
+			soi.err = err
+			soi.done = true
+			return false
+		}
+
+		if token != json.Delim('{') {
+			soi.done = true
+			return false
+		}
+		soi.started = true
+	}
+
+	// Check if there are more elements
+	if !soi.decoder.More() {
+		// Consume closing brace
+		soi.decoder.Token()
+		soi.done = true
+		return false
+	}
+
+	// Read key
+	key, err := soi.decoder.Token()
+	if err != nil {
+		soi.err = err
+		soi.done = true
+		return false
+	}
+
+	keyStr, ok := key.(string)
+	if !ok {
+		soi.done = true
+		return false
+	}
+	soi.key = keyStr
+
+	// Read value
+	var value any
+	if err := soi.decoder.Decode(&value); err != nil {
+		soi.err = err
+		soi.done = true
+		return false
+	}
+	soi.value = value
+
+	return true
+}
+
+// Key returns the current key
+func (soi *StreamObjectIterator) Key() string {
+	return soi.key
+}
+
+// Value returns the current value
+func (soi *StreamObjectIterator) Value() any {
+	return soi.value
+}
+
+// Err returns any error encountered
+func (soi *StreamObjectIterator) Err() error {
+	return soi.err
+}
+
+// ============================================================================
+// POOLED SLICE ITERATOR - For in-memory iteration with reduced allocations
+// ============================================================================
+
+// PooledSliceIterator uses pooled slices for efficient array iteration
+type PooledSliceIterator struct {
+	data    []any
+	index   int
+	current any
+}
+
+var sliceIteratorPool = sync.Pool{
+	New: func() any {
+		return &PooledSliceIterator{
+			index: -1,
+		}
+	},
+}
+
+// NewPooledSliceIterator creates a pooled slice iterator
+func NewPooledSliceIterator(data []any) *PooledSliceIterator {
+	it := sliceIteratorPool.Get().(*PooledSliceIterator)
+	it.data = data
+	it.index = -1
+	it.current = nil
+	return it
+}
+
+// Next advances to the next element
+func (it *PooledSliceIterator) Next() bool {
+	it.index++
+	if it.index >= len(it.data) {
+		return false
+	}
+	it.current = it.data[it.index]
+	return true
+}
+
+// Value returns the current element
+func (it *PooledSliceIterator) Value() any {
+	return it.current
+}
+
+// Index returns the current index
+func (it *PooledSliceIterator) Index() int {
+	return it.index
+}
+
+// Release returns the iterator to the pool
+func (it *PooledSliceIterator) Release() {
+	it.data = nil
+	it.current = nil
+	it.index = -1
+	sliceIteratorPool.Put(it)
+}
+
+// ============================================================================
+// POOLED MAP ITERATOR - For efficient object iteration
+// ============================================================================
+
+// PooledMapIterator uses pooled slices for efficient map iteration
+type PooledMapIterator struct {
+	data    map[string]any
+	keys    []string
+	index   int
+	key     string
+	current any
+}
+
+var mapIteratorPool = sync.Pool{
+	New: func() any {
+		return &PooledMapIterator{
+			keys:  make([]string, 0, 16),
+			index: -1,
+		}
+	},
+}
+
+// NewPooledMapIterator creates a pooled map iterator
+func NewPooledMapIterator(m map[string]any) *PooledMapIterator {
+	it := mapIteratorPool.Get().(*PooledMapIterator)
+	it.data = m
+	it.index = -1
+	it.key = ""
+	it.current = nil
+
+	// Pre-populate keys
+	it.keys = it.keys[:0]
+	for k := range m {
+		it.keys = append(it.keys, k)
+	}
+
+	return it
+}
+
+// Next advances to the next key-value pair
+func (it *PooledMapIterator) Next() bool {
+	it.index++
+	if it.index >= len(it.keys) {
+		return false
+	}
+	it.key = it.keys[it.index]
+	it.current = it.data[it.key]
+	return true
+}
+
+// Key returns the current key
+func (it *PooledMapIterator) Key() string {
+	return it.key
+}
+
+// Value returns the current value
+func (it *PooledMapIterator) Value() any {
+	return it.current
+}
+
+// Release returns the iterator to the pool
+func (it *PooledMapIterator) Release() {
+	it.data = nil
+	it.key = ""
+	it.current = nil
+	it.index = -1
+	// Keep keys slice for reuse but reset length
+	if cap(it.keys) > 256 {
+		it.keys = make([]string, 0, 16)
+	} else {
+		it.keys = it.keys[:0]
+	}
+	mapIteratorPool.Put(it)
+}
+
+// ============================================================================
+// LAZY JSON DECODER - Parse JSON on-demand
+// ============================================================================
+
+// LazyJSONDecoder provides lazy parsing for nested structures
+type LazyJSONDecoder struct {
+	raw    []byte
+	parsed any
+	err    error
+}
+
+// NewLazyJSONDecoder creates a lazy JSON decoder
+func NewLazyJSONDecoder(data []byte) *LazyJSONDecoder {
+	return &LazyJSONDecoder{
+		raw: data,
+	}
+}
+
+// Parse parses the JSON data if not already parsed
+func (l *LazyJSONDecoder) Parse() (any, error) {
+	if l.parsed != nil || l.err != nil {
+		return l.parsed, l.err
+	}
+	l.err = json.Unmarshal(l.raw, &l.parsed)
+	return l.parsed, l.err
+}
+
+// GetPath gets a value at the specified path with lazy parsing
+func (l *LazyJSONDecoder) GetPath(path string) (any, error) {
+	_, err := l.Parse()
+	if err != nil {
+		return nil, err
+	}
+
+	// Use processor for path navigation
+	p := getDefaultProcessor()
+	return p.Get(string(l.raw), path)
+}
+
+// Raw returns the raw JSON bytes
+func (l *LazyJSONDecoder) Raw() []byte {
+	return l.raw
 }

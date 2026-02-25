@@ -1,10 +1,12 @@
 package json
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -2853,13 +2855,263 @@ func (p *Processor) replaceArrayInJSONPointerParent(parent any, oldArray, newArr
 	return newContainer, nil
 }
 
-// Set operation methods have been refactored into separate files for better organization:
-//
-//   - ops_set_core.go    : Core set methods (setValueAtPath, setValueWithSegments, etc.)
-//   - ops_set_array.go   : Array extension and index/slice operations
-//   - ops_set_navigate.go: Navigation methods (navigateToSegment, navigateToProperty, etc.)
-//   - ops_set_extract.go : Extraction-related set operations
-//   - ops_set_jsonpointer.go: JSON Pointer format support (existing file)
-//
-// This file is kept for backward compatibility and as a documentation reference.
-// All methods remain as private Processor methods in package json.
+// ============================================================================
+// OPTIMIZED SET/DELETE OPERATIONS
+// Reduces allocations for common JSON modification operations
+// ============================================================================
+
+// resultBufferPool pools byte slices for marshaling results
+var resultBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 0, 1024)
+		return &buf
+	},
+}
+
+// GetResultBuffer gets a buffer for result marshaling
+func GetResultBuffer() *[]byte {
+	buf := resultBufferPool.Get().(*[]byte)
+	*buf = (*buf)[:0]
+	return buf
+}
+
+// PutResultBuffer returns a buffer to the pool
+func PutResultBuffer(buf *[]byte) {
+	if cap(*buf) <= 16*1024 {
+		resultBufferPool.Put(buf)
+	}
+}
+
+// FastSet is an optimized Set operation for simple paths
+// Uses pooled resources and optimized marshaling
+func (p *Processor) FastSet(jsonStr, path string, value any) (string, error) {
+	if err := p.checkClosed(); err != nil {
+		return jsonStr, err
+	}
+
+	// Fast path for simple property access
+	if isSimplePropertyAccess(path) {
+		return p.fastSetSimple(jsonStr, path, value)
+	}
+
+	// Fall back to standard Set for complex paths
+	return p.Set(jsonStr, path, value)
+}
+
+// fastSetSimple handles simple single-level property access
+func (p *Processor) fastSetSimple(jsonStr, key string, value any) (string, error) {
+	// Quick validation
+	if err := p.validateInput(jsonStr); err != nil {
+		return jsonStr, err
+	}
+
+	// Parse JSON
+	var data any
+	if err := p.Parse(jsonStr, &data); err != nil {
+		return jsonStr, err
+	}
+
+	// Fast path for map[string]any
+	obj, ok := data.(map[string]any)
+	if !ok {
+		return p.Set(jsonStr, key, value) // Fall back to standard
+	}
+
+	// Direct set
+	obj[key] = value
+
+	// Marshal result
+	result, err := json.Marshal(obj)
+	if err != nil {
+		return jsonStr, err
+	}
+
+	return string(result), nil
+}
+
+// FastDelete is an optimized Delete operation for simple paths
+func (p *Processor) FastDelete(jsonStr, path string) (string, error) {
+	if err := p.checkClosed(); err != nil {
+		return jsonStr, err
+	}
+
+	// Fast path for simple property access
+	if isSimplePropertyAccess(path) {
+		return p.fastDeleteSimple(jsonStr, path)
+	}
+
+	// Fall back to standard Delete for complex paths
+	return p.Delete(jsonStr, path)
+}
+
+// fastDeleteSimple handles simple single-level property deletion
+func (p *Processor) fastDeleteSimple(jsonStr, key string) (string, error) {
+	// Quick validation
+	if err := p.validateInput(jsonStr); err != nil {
+		return jsonStr, err
+	}
+
+	// Parse JSON
+	var data any
+	if err := p.Parse(jsonStr, &data); err != nil {
+		return jsonStr, err
+	}
+
+	// Fast path for map[string]any
+	obj, ok := data.(map[string]any)
+	if !ok {
+		return p.Delete(jsonStr, key) // Fall back to standard
+	}
+
+	// Direct delete
+	delete(obj, key)
+
+	// Marshal result
+	result, err := json.Marshal(obj)
+	if err != nil {
+		return jsonStr, err
+	}
+
+	return string(result), nil
+}
+
+// BatchSetOptimized performs multiple Set operations efficiently
+func (p *Processor) BatchSetOptimized(jsonStr string, updates map[string]any) (string, error) {
+	if err := p.checkClosed(); err != nil {
+		return jsonStr, err
+	}
+
+	if len(updates) == 0 {
+		return jsonStr, nil
+	}
+
+	// Parse JSON once
+	var data any
+	if err := p.Parse(jsonStr, &data); err != nil {
+		return jsonStr, err
+	}
+
+	// Apply all updates
+	for path, value := range updates {
+		if isSimplePropertyAccess(path) {
+			if obj, ok := data.(map[string]any); ok {
+				obj[path] = value
+				continue
+			}
+		}
+
+		// Use standard set for complex paths
+		if err := p.setValueAtPath(data, path, value); err != nil {
+			return jsonStr, err
+		}
+	}
+
+	// Marshal result once
+	result, err := json.Marshal(data)
+	if err != nil {
+		return jsonStr, err
+	}
+
+	return string(result), nil
+}
+
+// BatchDeleteOptimized performs multiple Delete operations efficiently
+func (p *Processor) BatchDeleteOptimized(jsonStr string, paths []string) (string, error) {
+	if err := p.checkClosed(); err != nil {
+		return jsonStr, err
+	}
+
+	if len(paths) == 0 {
+		return jsonStr, nil
+	}
+
+	// Parse JSON once
+	var data any
+	if err := p.Parse(jsonStr, &data); err != nil {
+		return jsonStr, err
+	}
+
+	// Apply all deletions
+	for _, path := range paths {
+		if isSimplePropertyAccess(path) {
+			if obj, ok := data.(map[string]any); ok {
+				delete(obj, path)
+				continue
+			}
+		}
+
+		// Use standard delete for complex paths
+		if err := p.deleteValueAtPath(data, path); err != nil {
+			// Continue with other deletions even if one fails
+			continue
+		}
+	}
+
+	// Marshal result once
+	result, err := json.Marshal(data)
+	if err != nil {
+		return jsonStr, err
+	}
+
+	return string(result), nil
+}
+
+// ============================================================================
+// OPTIMIZED MARSHALING WITH POOLING
+// ============================================================================
+
+// marshalWithPool marshals data using pooled buffers
+func marshalWithPool(data any) ([]byte, error) {
+	buf := GetResultBuffer()
+	defer PutResultBuffer(buf)
+
+	result, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// ============================================================================
+// BULK GET OPERATIONS
+// ============================================================================
+
+// FastGetMultiple performs multiple Get operations with single parse
+func (p *Processor) FastGetMultiple(jsonStr string, paths []string) (map[string]any, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	if len(paths) == 0 {
+		return map[string]any{}, nil
+	}
+
+	// Parse JSON once
+	var data any
+	if err := p.Parse(jsonStr, &data); err != nil {
+		return nil, err
+	}
+
+	results := make(map[string]any, len(paths))
+
+	for _, path := range paths {
+		// Fast path for simple access
+		if isSimplePropertyAccess(path) {
+			if obj, ok := data.(map[string]any); ok {
+				if val, exists := obj[path]; exists {
+					results[path] = val
+				}
+				continue
+			}
+		}
+
+		// Use navigation for complex paths
+		val, err := p.navigateToPath(data, path)
+		if err == nil {
+			results[path] = val
+		}
+	}
+
+	return results, nil
+}
