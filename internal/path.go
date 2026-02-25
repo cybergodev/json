@@ -2,47 +2,130 @@ package internal
 
 import (
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // EscapeJSONPointer escapes special characters for JSON Pointer
+// Uses single-pass algorithm to avoid multiple allocations
 func EscapeJSONPointer(s string) string {
-	s = strings.ReplaceAll(s, "~", "~0")
-	s = strings.ReplaceAll(s, "/", "~1")
-	return s
+	// Fast path: check if escaping is needed
+	hasTilde := false
+	hasSlash := false
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '~':
+			hasTilde = true
+		case '/':
+			hasSlash = true
+		}
+	}
+	if !hasTilde && !hasSlash {
+		return s // No allocation for simple strings
+	}
+
+	// Single-pass escaping with strings.Builder
+	var sb strings.Builder
+	sb.Grow(len(s) + 4) // Pre-allocate with some extra space for escapes
+
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '~':
+			sb.WriteString("~0")
+		case '/':
+			sb.WriteString("~1")
+		default:
+			sb.WriteByte(s[i])
+		}
+	}
+	return sb.String()
 }
 
 // UnescapeJSONPointer unescapes JSON Pointer special characters
+// Uses single-pass algorithm to avoid multiple allocations
 func UnescapeJSONPointer(s string) string {
-	s = strings.ReplaceAll(s, "~1", "/")
-	s = strings.ReplaceAll(s, "~0", "~")
-	return s
+	// Fast path: check if unescaping is needed
+	hasEscape := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '~' && i+1 < len(s) && (s[i+1] == '0' || s[i+1] == '1') {
+			hasEscape = true
+			break
+		}
+	}
+	if !hasEscape {
+		return s // No allocation for simple strings
+	}
+
+	// Single-pass unescaping with strings.Builder
+	var sb strings.Builder
+	sb.Grow(len(s))
+
+	for i := 0; i < len(s); i++ {
+		if s[i] == '~' && i+1 < len(s) {
+			switch s[i+1] {
+			case '0':
+				sb.WriteByte('~')
+				i++
+			case '1':
+				sb.WriteByte('/')
+				i++
+			default:
+				sb.WriteByte(s[i])
+			}
+		} else {
+			sb.WriteByte(s[i])
+		}
+	}
+	return sb.String()
 }
 
-var (
-	arrayPattern     *regexp.Regexp
-	arrayPatternOnce sync.Once
+// Bit flags for PathSegment fields to avoid pointer allocations
+const (
+	FlagIsNegative uint8 = 1 << iota
+	FlagIsWildcard
+	FlagIsFlat
+	FlagHasStart
+	FlagHasEnd
+	FlagHasStep
 )
 
-func initArrayPattern() {
-	arrayPattern = regexp.MustCompile(`\[(-?\d+)`)
+// PathSegment represents a single segment in a JSON path
+// Optimized to avoid pointer allocations by using direct values and bit flags
+type PathSegment struct {
+	Type  PathSegmentType
+	Key   string // Used for PropertySegment and ExtractSegment
+	Index int    // Used for ArrayIndexSegment and slice start
+	End   int    // Direct value (was *int) for ArraySliceSegment
+	Step  int    // Direct value (was *int) for ArraySliceSegment
+	Flags uint8  // Bit-packed flags
 }
 
-// PathSegment represents a single segment in a JSON path
-type PathSegment struct {
-	Type       PathSegmentType
-	Key        string // Used for PropertySegment and ExtractSegment
-	Index      int    // Used for ArrayIndexSegment
-	Start      *int   // Used for ArraySliceSegment
-	End        *int   // Used for ArraySliceSegment
-	Step       *int   // Used for ArraySliceSegment
-	IsNegative bool   // True if Index is negative
-	IsWildcard bool   // True for WildcardSegment
-	IsFlat     bool   // True for flat extraction
-}
+// HasStart returns true if slice has a start value
+func (ps *PathSegment) HasStart() bool { return ps.Flags&FlagHasStart != 0 }
+
+// HasEnd returns true if slice has an end value
+func (ps *PathSegment) HasEnd() bool { return ps.Flags&FlagHasEnd != 0 }
+
+// HasStep returns true if slice has a step value
+func (ps *PathSegment) HasStep() bool { return ps.Flags&FlagHasStep != 0 }
+
+// IsNegativeIndex returns true if Index is negative
+func (ps *PathSegment) IsNegativeIndex() bool { return ps.Flags&FlagIsNegative != 0 }
+
+// IsWildcardSegment returns true for WildcardSegment
+func (ps *PathSegment) IsWildcardSegment() bool { return ps.Flags&FlagIsWildcard != 0 }
+
+// IsFlatExtract returns true for flat extraction
+func (ps *PathSegment) IsFlatExtract() bool { return ps.Flags&FlagIsFlat != 0 }
+
+// GetStart returns the start value and whether it was set
+func (ps *PathSegment) GetStart() (int, bool) { return ps.Index, ps.HasStart() }
+
+// GetEnd returns the end value and whether it was set
+func (ps *PathSegment) GetEnd() (int, bool) { return ps.End, ps.HasEnd() }
+
+// GetStep returns the step value and whether it was set
+func (ps *PathSegment) GetStep() (int, bool) { return ps.Step, ps.HasStep() }
 
 // PathSegmentType represents the type of path segment
 type PathSegmentType int
@@ -97,20 +180,36 @@ func NewPropertySegment(key string) PathSegment {
 
 // NewArrayIndexSegment creates an array index access segment
 func NewArrayIndexSegment(index int) PathSegment {
+	var flags uint8
+	if index < 0 {
+		flags |= FlagIsNegative
+	}
 	return PathSegment{
-		Type:       ArrayIndexSegment,
-		Index:      index,
-		IsNegative: index < 0,
+		Type:  ArrayIndexSegment,
+		Index: index,
+		Flags: flags,
 	}
 }
 
 // NewArraySliceSegment creates an array slice access segment
-func NewArraySliceSegment(start, end, step *int) PathSegment {
+// Now accepts direct values instead of pointers to avoid heap allocations
+func NewArraySliceSegment(start, end, step int, hasStart, hasEnd, hasStep bool) PathSegment {
+	var flags uint8
+	if hasStart {
+		flags |= FlagHasStart
+	}
+	if hasEnd {
+		flags |= FlagHasEnd
+	}
+	if hasStep {
+		flags |= FlagHasStep
+	}
 	return PathSegment{
 		Type:  ArraySliceSegment,
-		Start: start,
+		Index: start, // Use Index field for start value
 		End:   end,
 		Step:  step,
+		Flags: flags,
 	}
 }
 
@@ -123,14 +222,16 @@ func NewExtractSegment(extract string) PathSegment {
 		actualExtract = strings.TrimPrefix(extract, "flat:")
 	}
 
+	var flags uint8
+	if isFlat {
+		flags |= FlagIsFlat
+	}
 	return PathSegment{
-		Type:   ExtractSegment,
-		Key:    actualExtract,
-		IsFlat: isFlat,
+		Type:  ExtractSegment,
+		Key:   actualExtract,
+		Flags: flags,
 	}
 }
-
-
 
 // ParsePath parses a JSON path string into segments
 func ParsePath(path string) ([]PathSegment, error) {
@@ -152,8 +253,28 @@ func ParseComplexSegment(part string) ([]PathSegment, error) {
 }
 
 // parseDotNotation parses dot notation paths like "user.name" or "users[0].name"
+// PERFORMANCE: Pre-calculates segment count to avoid slice growth allocations
 func parseDotNotation(path string) ([]PathSegment, error) {
-	var segments []PathSegment
+	// Pre-calculate segment count for better allocation
+	// Count dots outside brackets and add 1 for the initial segment
+	dotCount := 0
+	bracketDepth := 0
+	for i := 0; i < len(path); i++ {
+		switch path[i] {
+		case '[':
+			bracketDepth++
+		case ']':
+			bracketDepth--
+		case '.':
+			if bracketDepth == 0 {
+				dotCount++
+			}
+		}
+	}
+
+	// Estimate segment count (dots + 1, with extra for array indices)
+	estimatedSegments := dotCount + 1
+	segments := make([]PathSegment, 0, estimatedSegments)
 
 	// Smart split that respects extraction and array operation boundaries
 	parts := smartSplitPath(path)
@@ -187,10 +308,14 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 			segments = append(segments, propSegments...)
 		} else {
 			if index, err := strconv.Atoi(part); err == nil {
+				var flags uint8
+				if index < 0 {
+					flags |= FlagIsNegative
+				}
 				segments = append(segments, PathSegment{
-					Type:       ArrayIndexSegment,
-					Index:      index,
-					IsNegative: index < 0,
+					Type:  ArrayIndexSegment,
+					Index: index,
+					Flags: flags,
 				})
 			} else {
 				segments = append(segments, PathSegment{
@@ -205,44 +330,67 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 }
 
 // smartSplitPath splits path by dots while respecting extraction and array operation boundaries
+// Optimized version: uses byte index tracking instead of strings.Builder to reduce allocations
 func smartSplitPath(path string) []string {
-	var parts []string
-	var current strings.Builder
-	var braceDepth int
-	var bracketDepth int
-
-	for _, char := range path {
-		switch char {
+	// Pre-estimate capacity: count dots outside brackets
+	dotCount := 0
+	braceDepth := 0
+	bracketDepth := 0
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		switch c {
 		case '{':
 			braceDepth++
-			current.WriteRune(char)
 		case '}':
 			braceDepth--
-			current.WriteRune(char)
 		case '[':
 			bracketDepth++
-			current.WriteRune(char)
 		case ']':
 			bracketDepth--
-			current.WriteRune(char)
+		case '.':
+			if braceDepth == 0 && bracketDepth == 0 {
+				dotCount++
+			}
+		}
+	}
+
+	// Fast path for simple paths (no brackets or braces)
+	if braceDepth == 0 && bracketDepth == 0 && dotCount > 0 {
+		// Use strings.Split for simple paths - it's well optimized
+		return strings.Split(path, ".")
+	}
+
+	// Estimate capacity from dot count
+	parts := make([]string, 0, dotCount+1)
+	start := 0
+	braceDepth = 0
+	bracketDepth = 0
+
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		switch c {
+		case '{':
+			braceDepth++
+		case '}':
+			braceDepth--
+		case '[':
+			bracketDepth++
+		case ']':
+			bracketDepth--
 		case '.':
 			// Only split on dots when we're not inside braces or brackets
 			if braceDepth == 0 && bracketDepth == 0 {
-				if current.Len() > 0 {
-					parts = append(parts, current.String())
-					current.Reset()
+				if i > start {
+					parts = append(parts, path[start:i])
 				}
-			} else {
-				current.WriteRune(char)
+				start = i + 1
 			}
-		default:
-			current.WriteRune(char)
 		}
 	}
 
 	// Add the last part
-	if current.Len() > 0 {
-		parts = append(parts, current.String())
+	if start < len(path) {
+		parts = append(parts, path[start:])
 	}
 
 	return parts
@@ -313,10 +461,14 @@ func parseComplexSegment(part string) ([]PathSegment, error) {
 				return nil, fmt.Errorf("empty extraction field in '%s'", remaining[:braceEnd+1])
 			}
 
+			var flags uint8
+			if isFlat {
+				flags |= FlagIsFlat
+			}
 			segments = append(segments, PathSegment{
-				Type:   ExtractSegment,
-				Key:    actualExtract,
-				IsFlat: isFlat,
+				Type:  ExtractSegment,
+				Key:   actualExtract,
+				Flags: flags,
 			})
 
 			remaining = remaining[braceEnd+1:]
@@ -381,16 +533,42 @@ func parseComplexSegment(part string) ([]PathSegment, error) {
 
 // parseArrayAccess parses array access patterns like "0", "-1", "1:3", "::2"
 func parseArrayAccess(arrayPart string) (PathSegment, error) {
-	// Check for slice notation
-	if strings.Contains(arrayPart, ":") {
+	// Check for slice notation using direct byte scan (no allocation)
+	hasColon := false
+	for i := 0; i < len(arrayPart); i++ {
+		if arrayPart[i] == ':' {
+			hasColon = true
+			break
+		}
+	}
+	if hasColon {
 		return parseSliceAccess(arrayPart)
 	}
 
 	// Check for wildcard
 	if arrayPart == "*" {
 		return PathSegment{
-			Type:       WildcardSegment,
-			IsWildcard: true,
+			Type:  WildcardSegment,
+			Flags: FlagIsWildcard,
+		}, nil
+	}
+
+	// Fast path for single digit indices (0-9)
+	if len(arrayPart) == 1 && arrayPart[0] >= '0' && arrayPart[0] <= '9' {
+		index := int(arrayPart[0] - '0')
+		return PathSegment{
+			Type:  ArrayIndexSegment,
+			Index: index,
+		}, nil
+	}
+
+	// Fast path for negative single digit (-9 to -0)
+	if len(arrayPart) == 2 && arrayPart[0] == '-' && arrayPart[1] >= '0' && arrayPart[1] <= '9' {
+		index := -int(arrayPart[1] - '0')
+		return PathSegment{
+			Type:  ArrayIndexSegment,
+			Index: index,
+			Flags: FlagIsNegative,
 		}, nil
 	}
 
@@ -400,55 +578,94 @@ func parseArrayAccess(arrayPart string) (PathSegment, error) {
 		return PathSegment{}, fmt.Errorf("invalid array index '%s': %w", arrayPart, err)
 	}
 
+	var flags uint8
+	if index < 0 {
+		flags |= FlagIsNegative
+	}
 	return PathSegment{
-		Type:       ArrayIndexSegment,
-		Index:      index,
-		IsNegative: index < 0,
+		Type:  ArrayIndexSegment,
+		Index: index,
+		Flags: flags,
 	}, nil
 }
 
 // parseSliceAccess parses slice notation like "1:3", "::2", "::-1"
+// Optimized to avoid strings.Split allocation
 func parseSliceAccess(slicePart string) (PathSegment, error) {
-	parts := strings.Split(slicePart, ":")
-	if len(parts) < 2 || len(parts) > 3 {
-		return PathSegment{}, fmt.Errorf("invalid slice syntax '%s'", slicePart)
+	// Find colon positions without allocation
+	colon1 := -1
+	colon2 := -1
+	for i := 0; i < len(slicePart); i++ {
+		if slicePart[i] == ':' {
+			if colon1 == -1 {
+				colon1 = i
+			} else {
+				colon2 = i
+				break
+			}
+		}
 	}
 
-	segment := PathSegment{
-		Type: ArraySliceSegment,
+	// Validate colon positions
+	if colon1 == -1 {
+		return PathSegment{}, fmt.Errorf("invalid slice syntax '%s': no colon found", slicePart)
+	}
+	if colon2 == -1 {
+		// Two-part slice (start:end)
+		colon2 = len(slicePart) // Mark as no second colon
+	} else if colon2-colon1 == 1 {
+		// Could be ::step or :: (check if there's more after second colon)
 	}
 
-	// Parse start
-	if parts[0] != "" {
-		start, err := strconv.Atoi(parts[0])
+	var start, end, step int
+	var flags uint8
+
+	// Parse start (before first colon)
+	if colon1 > 0 {
+		startVal, err := strconv.Atoi(slicePart[:colon1])
 		if err != nil {
-			return PathSegment{}, fmt.Errorf("invalid slice start '%s': %w", parts[0], err)
+			return PathSegment{}, fmt.Errorf("invalid slice start '%s': %w", slicePart[:colon1], err)
 		}
-		segment.Start = &start
+		start = startVal
+		flags |= FlagHasStart
 	}
 
-	// Parse end
-	if parts[1] != "" {
-		end, err := strconv.Atoi(parts[1])
+	// Parse end (between colons)
+	if colon2 > colon1+1 {
+		// There's content between colons
+		endStr := slicePart[colon1+1 : colon2]
+		endVal, err := strconv.Atoi(endStr)
 		if err != nil {
-			return PathSegment{}, fmt.Errorf("invalid slice end '%s': %w", parts[1], err)
+			return PathSegment{}, fmt.Errorf("invalid slice end '%s': %w", endStr, err)
 		}
-		segment.End = &end
+		end = endVal
+		flags |= FlagHasEnd
 	}
 
-	// Parse step (if provided)
-	if len(parts) == 3 && parts[2] != "" {
-		step, err := strconv.Atoi(parts[2])
-		if err != nil {
-			return PathSegment{}, fmt.Errorf("invalid slice step '%s': %w", parts[2], err)
+	// Parse step (after second colon, if exists)
+	if colon2 < len(slicePart) && colon2 > colon1 {
+		// We have a second colon, check for step
+		stepStr := slicePart[colon2+1:]
+		if stepStr != "" {
+			stepVal, err := strconv.Atoi(stepStr)
+			if err != nil {
+				return PathSegment{}, fmt.Errorf("invalid slice step '%s': %w", stepStr, err)
+			}
+			if stepVal == 0 {
+				return PathSegment{}, fmt.Errorf("slice step cannot be zero")
+			}
+			step = stepVal
+			flags |= FlagHasStep
 		}
-		if step == 0 {
-			return PathSegment{}, fmt.Errorf("slice step cannot be zero")
-		}
-		segment.Step = &step
 	}
 
-	return segment, nil
+	return PathSegment{
+		Type:  ArraySliceSegment,
+		Index: start, // Use Index field for start value
+		End:   end,
+		Step:  step,
+		Flags: flags,
+	}, nil
 }
 
 // parseJSONPointer parses JSON Pointer format paths like "/users/0/name"
@@ -467,10 +684,14 @@ func parseJSONPointer(path string) ([]PathSegment, error) {
 
 		// Try to parse as numeric index
 		if index, err := strconv.Atoi(part); err == nil {
+			var flags uint8
+			if index < 0 {
+				flags |= FlagIsNegative
+			}
 			segments = append(segments, PathSegment{
-				Type:       ArrayIndexSegment,
-				Index:      index,
-				IsNegative: index < 0,
+				Type:  ArrayIndexSegment,
+				Index: index,
+				Flags: flags,
 			})
 			continue
 		}
@@ -486,6 +707,8 @@ func parseJSONPointer(path string) ([]PathSegment, error) {
 }
 
 // ValidatePath validates a path string for security and correctness
+// Uses single-pass validation for optimal performance (no regex)
+// PERFORMANCE: Added fast path for simple property paths
 func ValidatePath(path string) error {
 	const (
 		maxPathLength = 1000
@@ -502,30 +725,38 @@ func ValidatePath(path string) error {
 		return nil
 	}
 
-	// Check path depth (prevent deeply nested paths)
-	segmentCount := strings.Count(path, ".") + strings.Count(path, "[")
-	if segmentCount > maxPathDepth {
-		return fmt.Errorf("path too deep: %d segments (max %d)", segmentCount, maxPathDepth)
-	}
-
-	// Validate array indices are within reasonable range
-	arrayPatternOnce.Do(initArrayPattern)
-	matches := arrayPattern.FindAllStringSubmatch(path, -1)
-	for _, match := range matches {
-		if len(match) > 1 {
-			index, err := strconv.Atoi(match[1])
-			if err != nil {
-				return fmt.Errorf("invalid array index: %s", match[1])
-			}
-			if index < -maxArrayIndex || index > maxArrayIndex {
-				return fmt.Errorf("array index out of reasonable range: %d (range: %d to %d)",
-					index, -maxArrayIndex, maxArrayIndex)
-			}
+	// FAST PATH: Simple property path (alphanumeric + dots + underscores only)
+	// This handles the vast majority of cases without complex validation
+	isSimple := true
+	depth := 1 // Start with 1 for the first segment
+	for i := 0; i < pathLen; i++ {
+		c := path[i]
+		// Check for simple characters only
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '.') {
+			isSimple = false
+			break
+		}
+		if c == '.' {
+			depth++
 		}
 	}
 
-	// Single-pass validation for control characters and dangerous patterns
+	if isSimple {
+		// Simple validation passed - just check depth
+		if depth > maxPathDepth {
+			return fmt.Errorf("path too deep: %d segments (max %d)", depth, maxPathDepth)
+		}
+		return nil
+	}
+
+	// SLOW PATH: Complex path with brackets, braces, etc.
+	// Single-pass validation for all checks
 	var prevChar byte
+	depth = 0
+	inBracket := false
+	bracketStart := 0
+
 	for i := 0; i < pathLen; i++ {
 		c := path[i]
 
@@ -534,7 +765,30 @@ func ValidatePath(path string) error {
 			return fmt.Errorf("path contains invalid control characters at position %d", i)
 		}
 
-		// Check for path traversal patterns (optimized)
+		// Track depth and validate brackets/array indices
+		switch c {
+		case '.':
+			if !inBracket {
+				depth++
+			}
+		case '[':
+			if !inBracket {
+				inBracket = true
+				bracketStart = i
+				depth++
+			}
+		case ']':
+			if inBracket {
+				// Validate array index/slice content inside brackets
+				content := path[bracketStart+1 : i]
+				if err := validateArrayIndexContent(content, maxArrayIndex); err != nil {
+					return err
+				}
+				inBracket = false
+			}
+		}
+
+		// Check for path traversal patterns
 		if c == '.' && i+1 < pathLen && path[i+1] == '.' {
 			if i+2 < pathLen && path[i+2] == '/' {
 				return fmt.Errorf("path contains traversal patterns at position %d", i)
@@ -564,6 +818,106 @@ func ValidatePath(path string) error {
 		prevChar = c
 	}
 
+	if depth > maxPathDepth {
+		return fmt.Errorf("path too deep: %d segments (max %d)", depth, maxPathDepth)
+	}
+
+	return nil
+}
+
+// validateArrayIndexContent validates array index or slice content
+// PERFORMANCE: Optimized to avoid strings.Contains and strings.Split allocations
+func validateArrayIndexContent(content string, maxIndex int) error {
+	if content == "" {
+		return fmt.Errorf("empty array index")
+	}
+
+	// Handle wildcard - single character check
+	if content == "*" {
+		return nil
+	}
+
+	// Fast path: scan for colon without allocation
+	hasColon := false
+	for i := 0; i < len(content); i++ {
+		if content[i] == ':' {
+			hasColon = true
+			break
+		}
+	}
+
+	if hasColon {
+		// Parse slice notation without strings.Split allocation
+		start := 0
+		for i := 0; i <= len(content); i++ {
+			if i == len(content) || content[i] == ':' {
+				if i > start {
+					part := content[start:i]
+					if err := validateNumericIndex(part, maxIndex); err != nil {
+						return err
+					}
+				}
+				start = i + 1
+			}
+		}
+		return nil
+	}
+
+	// Simple index
+	return validateNumericIndex(content, maxIndex)
+}
+
+// validateNumericIndex validates a single numeric index
+// PERFORMANCE: Manual parsing avoids strconv.Atoi allocation
+func validateNumericIndex(s string, maxIndex int) error {
+	// Allow negative sign
+	sLen := len(s)
+	if sLen == 0 {
+		return fmt.Errorf("empty index")
+	}
+
+	negative := false
+	start := 0
+	if s[0] == '-' {
+		negative = true
+		start = 1
+		if sLen == 1 {
+			return fmt.Errorf("invalid index: %s", s)
+		}
+	}
+
+	// Fast path for single digit
+	if sLen-start == 1 {
+		c := s[start]
+		if c < '0' || c > '9' {
+			return fmt.Errorf("invalid array index: %s", s)
+		}
+		return nil
+	}
+
+	// Check all characters are digits and parse value
+	index := 0
+	for i := start; i < sLen; i++ {
+		c := s[i]
+		if c < '0' || c > '9' {
+			return fmt.Errorf("invalid array index: %s", s)
+		}
+		// Check for overflow before multiplying
+		if index > (maxIndex / 10) {
+			return fmt.Errorf("array index out of reasonable range")
+		}
+		index = index*10 + int(c-'0')
+	}
+
+	if negative {
+		index = -index
+	}
+
+	if index < -maxIndex || index > maxIndex {
+		return fmt.Errorf("array index out of reasonable range: %d (range: %d to %d)",
+			index, -maxIndex, maxIndex)
+	}
+
 	return nil
 }
 
@@ -579,21 +933,21 @@ func (ps PathSegment) String() string {
 		end := ""
 		step := ""
 
-		if ps.Start != nil {
-			start = strconv.Itoa(*ps.Start)
+		if ps.HasStart() {
+			start = strconv.Itoa(ps.Index) // Index stores start value for slices
 		}
-		if ps.End != nil {
-			end = strconv.Itoa(*ps.End)
+		if ps.HasEnd() {
+			end = strconv.Itoa(ps.End)
 		}
-		if ps.Step != nil {
-			step = ":" + strconv.Itoa(*ps.Step)
+		if ps.HasStep() {
+			step = ":" + strconv.Itoa(ps.Step)
 		}
 
 		return fmt.Sprintf("[%s:%s%s]", start, end, step)
 	case WildcardSegment:
 		return "[*]"
 	case ExtractSegment:
-		if ps.IsFlat {
+		if ps.IsFlatExtract() {
 			return fmt.Sprintf("{flat:%s}", ps.Key)
 		}
 		return fmt.Sprintf("{%s}", ps.Key)
@@ -601,8 +955,6 @@ func (ps PathSegment) String() string {
 		return fmt.Sprintf("[unknown:%v]", ps.Type)
 	}
 }
-
-
 
 // IsArrayAccess returns true if this segment accesses an array
 func (ps PathSegment) IsArrayAccess() bool {
@@ -647,4 +999,3 @@ func ParseAndValidateArrayIndex(s string, arrayLength int) (int, bool) {
 
 	return index, true
 }
-

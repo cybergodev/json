@@ -218,5 +218,3 @@ func BenchmarkConcurrentMetrics(b *testing.B) {
 		}
 	})
 }
-
-

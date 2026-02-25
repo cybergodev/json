@@ -1082,6 +1082,622 @@ If you discover a security vulnerability in this library, please report it respo
 
 ---
 
+## 🔬 Technical Security Implementation
+
+This section provides detailed technical documentation of the security mechanisms implemented in the library.
+
+### Security Validation Architecture
+
+The library implements a multi-layered security validation system:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    INPUT VALIDATION LAYER                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │ Size Check  │→ │ UTF-8 Valid │→ │ BOM Check   │             │
+│  └─────────────┘  └─────────────┘  └─────────────┘             │
+│         ↓                                                       │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │              SECURITY PATTERN SCANNER                    │   │
+│  │  • 55+ Dangerous Patterns (XSS, Injection, etc.)        │   │
+│  │  • Optimized for Large JSON (>4KB)                      │   │
+│  │  • Rolling Window with Overlap (No Gaps)                │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│         ↓                                                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
+│  │ Structure   │→ │ Depth Check │→ │ Cache Result│             │
+│  │ Validation  │  │ (Max: 200)  │  │ (SHA-256)   │             │
+│  └─────────────┘  └─────────────┘  └─────────────┘             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Dangerous Pattern Detection
+
+The library detects **55+ dangerous patterns** across multiple categories:
+
+#### Prototype Pollution Patterns
+```go
+// Detected patterns:
+"__proto__"           // Prototype pollution
+"constructor["        // Constructor access
+"prototype."          // Prototype manipulation
+"__defineGetter__"    // Getter definition
+"__defineSetter__"    // Setter definition
+"Object.assign"       // Object assignment
+"Reflect."            // Reflection API
+"Proxy("              // Proxy creation
+"Symbol("             // Symbol creation
+```
+
+#### XSS (Cross-Site Scripting) Patterns
+```go
+// HTML Injection:
+"<script"             // Script tag injection
+"<iframe"             // Iframe injection
+"<object"             // Object injection
+"<embed"              // Embed injection
+"<svg"                // SVG injection
+
+// Protocol Injection:
+"javascript:"         // JavaScript protocol
+"vbscript:"           // VBScript protocol
+"data:"               // Data protocol
+
+// JavaScript Execution:
+"eval("               // Dynamic code execution
+"function("           // Function expression
+"setTimeout("         // Timer manipulation
+"setInterval("        // Interval manipulation
+"require("            // Code injection
+"new function("       // Dynamic function creation
+"import("             // Dynamic import
+```
+
+#### Event Handler Patterns (26 patterns)
+```go
+// Detected event handlers:
+"onerror", "onload", "onclick", "onmouseover", "onfocus", "onblur",
+"onkeyup", "onchange", "onsubmit", "ondblclick", "onmousedown",
+"onmouseup", "onmousemove", "onkeydown", "onkeypress", "onreset",
+"onselect", "onunload", "onabort", "ondrag", "ondragend",
+"ondragenter", "ondragleave", "ondragover", "ondragstart",
+"ondrop", "onscroll", "onwheel", "oncopy", "oncut", "onpaste"
+```
+
+#### Sensitive Data Patterns (55+ patterns)
+```go
+// Authentication:
+"password", "passwd", "pwd", "token", "bearer", "jwt",
+"access_token", "refresh_token", "auth_token", "secret",
+"secret_key", "client_secret", "apikey", "api_key", "api-key"
+
+// PII (Personally Identifiable Information):
+"ssn", "social_security", "credit_card", "creditcard",
+"card_number", "cvv", "cvc", "passport", "passport_number"
+
+// Cryptographic:
+"private_key", "public_key", "encryption_key", "signing_key",
+"certificate", "private_certificate"
+
+// Session:
+"session", "session_id", "session_key", "cookie", "csrf", "xsrf"
+```
+
+### Optimized Security Scanning for Large JSON
+
+For JSON larger than 4KB, the library uses an optimized scanning approach:
+
+#### Rolling Window Algorithm
+```
+JSON Content: [====32KB Window====][overlap][====32KB Window====]...
+                     ↓                          ↓
+              Pattern Scan               Pattern Scan
+
+Overlap Size = maxPatternLength + 8 bytes
+             = ~30 bytes (ensures no pattern can span windows)
+```
+
+#### Multi-Region Sampling
+```
+┌────────────────────────────────────────────────────────────┐
+│  [Sample 4KB]          [Sample 4KB]         [Sample 4KB]  │
+│   Beginning    →       Middle Region  →        End        │
+│       ↓                     ↓                      ↓       │
+│  Density Check      Density Check         Density Check   │
+└────────────────────────────────────────────────────────────┘
+```
+
+#### Suspicious Character Density Check
+```go
+// Characters monitored for density attacks:
+'<', '>', '(', ')', ';', '=', '&'
+
+// Thresholds:
+// - Per-region density: > 0.5% triggers full scan
+// - Overall density: > 0.3% triggers full scan
+```
+
+### Validation Cache Security
+
+The validation cache uses secure key generation to prevent collision attacks:
+
+```go
+// For small JSON (< 4KB): FNV-1a with length prefix
+key := fmt.Sprintf("%d:%016x", len(json), fnv1aHash(json))
+
+// For large JSON (≥ 4KB): SHA-256 truncated
+hash := sha256.Sum256([]byte(json))
+key := fmt.Sprintf("%d:%x", len(json), hash[:16])
+
+// Cache management:
+// - Maximum entries: 10,000
+// - LRU eviction at 80% capacity (8,000 entries)
+// - Entry includes last access timestamp
+```
+
+### Path Traversal Protection
+
+The library implements comprehensive path traversal protection:
+
+#### Multi-Layer Encoding Detection
+```
+Input Path
+    ↓
+┌─────────────────────────────────────┐
+│  Layer 1: Unicode NFC Normalization │  ← Detects homograph attacks
+└─────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────┐
+│  Layer 2: Recursive URL Decoding    │  ← Up to 3 levels
+│  %252e%252e → %2e%2e → ..           │
+└─────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────┐
+│  Layer 3: Pattern Detection         │  ← 30+ traversal patterns
+└─────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────┐
+│  Layer 4: Unicode Lookalike Check   │  ← Fullwidth chars, etc.
+└─────────────────────────────────────┘
+```
+
+#### Detected Traversal Patterns
+```go
+// Standard patterns:
+"../", "..\\", ".."
+
+// URL encoded:
+"%2e%2e", "%252e%252e", "%25252e%25252e"
+
+// Mixed encoding:
+"..%2f", "..%5c", "..%c0%af", "..%c1%9c"
+
+// Partial encoding:
+".%2e", "%2e.", "%2e%2e%2f", "%2e%2e%5c"
+
+// Control character injection:
+"..%00", "..%0a", "..%0d", "..%09", "..%20"
+
+// Double patterns:
+"....//", "....\\\\", ".....", "......"
+```
+
+#### Unicode Lookalike Character Detection
+```go
+// Fullwidth characters that look like path separators:
+'\uFF0E'  // Fullwidth full stop (looks like .)
+'\u2024'  // One dot leader
+'\u2025'  // Two dot leader
+'\u2026'  // Horizontal ellipsis
+'\uFF0F'  // Fullwidth solidus (looks like /)
+'\uFF3C'  // Fullwidth reverse solidus (looks like \)
+
+// Invisible characters that could bypass checks:
+'\u200B'  // Zero-width space
+'\u200C'  // Zero-width non-joiner
+'\u200D'  // Zero-width joiner
+'\uFEFF'  // Byte order mark
+'\u2060'  // Word joiner
+'\u00AD'  // Soft hyphen
+'\u034F'  // Combining grapheme joiner
+```
+
+### Zero-Width Character Detection
+
+The library detects all zero-width and invisible Unicode characters:
+
+```go
+// Complete list of detected invisible characters:
+'\u200B', '\u200C', '\u200D', // Zero-width characters
+'\u200E', '\u200F',           // Directional marks
+'\uFEFF',                     // BOM
+'\u2060' - '\u2064',          // Format characters
+'\u206A' - '\u206F',          // Deprecated format chars
+'\u00AD', '\u034F', '\u061C', // Other invisible
+'\u115F', '\u1160', '\u180E', // Jamo fillers
+'\u2066' - '\u2069',          // Isolate controls
+'\uFFFD'                      // Replacement character
+```
+
+### Platform-Specific Security
+
+#### Windows Protection
+```go
+// Reserved device names blocked:
+"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"
+"COM0"-"COM9", "LPT0"-"LPT9"
+
+// UNC paths blocked:
+"\\server\share", "//server/share"
+
+// Alternate Data Streams blocked:
+"file.txt:stream"  // ADS not allowed
+
+// Invalid characters:
+"<", ">", ":", "\"", "|", "?", "*"
+```
+
+#### Unix/Linux Protection
+```go
+// Protected system directories:
+"/dev/", "/proc/", "/sys/", "/etc/",
+"/root/", "/boot/", "/var/log/",
+"/usr/bin/", "/usr/sbin/", "/sbin/", "/bin/"
+
+// Protected system files:
+"/etc/passwd", "/etc/shadow", "/etc/sudoers",
+"/etc/hosts", "/etc/fstab", "/etc/crontab"
+```
+
+### Memory Safety Mechanisms
+
+#### DeepCopy Protection
+```go
+const deepCopyMaxDepth = 200  // Maximum recursion depth
+
+func deepCopyValueWithDepth(data any, depth int) (any, error) {
+    if depth > deepCopyMaxDepth {
+        return nil, fmt.Errorf("deep copy depth limit exceeded")
+    }
+    // ... recursive copy with depth tracking
+}
+```
+
+#### Cache Memory Protection
+```go
+// Cache configuration:
+maxCacheKeyLength: 1024        // Maximum key length
+cacheHighWatermark: 8000       // 80% of 10000 entries
+evictionStrategy: LRU          // Least Recently Used
+
+// Key truncation for long keys:
+func truncateCacheKey(key string) string {
+    // Uses SHA-256 hash suffix to prevent collisions
+    prefix := key[:maxLen-19]
+    hash := sha256.Sum256([]byte(key))
+    return prefix + "..." + hex.EncodeToString(hash[:8])
+}
+```
+
+#### String Interning Limits
+```go
+// General string interning:
+maxSize: 10MB                  // Maximum total memory
+evictionAt: 80%                // Proactive eviction
+maxStringLength: 256           // Don't intern very long strings
+
+// Key interning:
+maxStringLength: 128           // Stricter for keys
+shards: 64                     // Concurrency optimization
+hotKeyCache: sync.Map          // Lock-free hot keys
+```
+
+### Integer Overflow Protection
+
+All type conversions include overflow checking:
+
+```go
+func (r TypeSafeAccessResult) AsInt() (int, error) {
+    case int64:
+        // Check for overflow when converting int64 to int
+        if v > int64(1<<(strconv.IntSize-1)-1) ||
+           v < int64(-1<<(strconv.IntSize-1)) {
+            return 0, fmt.Errorf("value %d overflows int", v)
+        }
+    case uint64:
+        // Check for overflow when converting uint64 to int
+        if v > uint64(math.MaxInt64) {
+            return 0, fmt.Errorf("value %d overflows int", v)
+        }
+    case float64:
+        // Check for precision loss
+        if v != float64(int64(v)) {
+            return 0, fmt.Errorf("value %v is not an integer", v)
+        }
+}
+```
+
+### Concurrency Safety
+
+#### Worker Pool Protection
+```go
+// Parallel processing limits:
+maxWorkers: 16                 // Cap at 16 workers
+semaphorePool: chan struct{}   // Limit concurrent goroutines
+taskTracking: atomic.Int32     // Track pending tasks
+conditionVariable: sync.Cond   // Efficient waiting
+
+// Error handling:
+atomic.CompareAndSwapInt32()   // First error wins
+```
+
+#### Cache Sharding
+```go
+// Sharded cache for reduced lock contention:
+shardCount: 32 (or CPU*4)      // Based on cache size
+shardMask: shardCount - 1      // Fast modulo via AND
+perShardMutex: sync.RWMutex    // Fine-grained locking
+```
+
+### Security Configuration Options
+
+```go
+type Config struct {
+    // Size Limits
+    MaxJSONSize              int64  // Default: 100MB
+    MaxSecurityValidationSize int64  // Default: 100MB
+
+    // Depth Limits
+    MaxNestingDepthSecurity  int    // Default: 200
+    MaxPathDepth             int    // Default: 50
+
+    // Object Limits
+    MaxObjectKeys            int    // Default: 100,000
+    MaxArrayElements         int    // Default: 100,000
+
+    // Validation Modes
+    EnableValidation         bool   // Default: true
+    StrictMode               bool   // Default: false
+    FullSecurityScan         bool   // Default: false
+
+    // Concurrency
+    MaxConcurrency           int    // Default: CPU count
+    MaxBatchSize             int    // Default: 1000
+}
+```
+
+### FullSecurityScan Mode
+
+When processing untrusted input, enable `FullSecurityScan`:
+
+```go
+// Recommended for:
+// - External API input
+// - User-submitted data
+// - Financial/healthcare data
+// - Public-facing services
+
+config := &json.Config{
+    FullSecurityScan: true,  // Full scan instead of sampling
+}
+
+// Performance impact:
+// - Small JSON (<4KB): No impact (always fully scanned)
+// - Large JSON (>100KB): ~10-30% overhead
+// - Very large JSON (>1MB): ~20-40% overhead
+```
+
+### Security Validation Cache
+
+The library caches validation results to avoid redundant security scans:
+
+#### Cache Key Generation
+```go
+// Small JSON strings (<4KB): FNV-1a hash with length prefix
+// - Fast computation
+// - Low collision probability for short strings
+
+// Large JSON strings (>=4KB): SHA-256 (first 16 bytes)
+// - Strong collision resistance
+// - Prevents cache poisoning attacks
+
+func getValidationCacheKey(jsonStr string) string {
+    if len(jsonStr) <= 4096 {
+        // FNV-1a for small strings
+        h := fnv1aHash(jsonStr)
+        return fmt.Sprintf("%d:%016x", len(jsonStr), h)
+    }
+    // SHA-256 for large strings (security)
+    hash := sha256.Sum256([]byte(jsonStr))
+    return fmt.Sprintf("%d:%x", len(jsonStr), hash[:16])
+}
+```
+
+#### Cache Eviction Strategy
+```go
+// LRU (Least Recently Used) eviction:
+// - Triggers at 80% capacity (proactive)
+// - Removes oldest 25% of entries
+// - Prevents memory spikes
+
+const cacheHighWatermark = 8000  // 80% of 10,000 max entries
+
+func evictLRUEntries() {
+    // Sort by lastAccess time
+    // Remove oldest 25%
+    // Prevents cache thrashing
+}
+```
+
+#### Cache Security Guarantees
+1. **Collision Resistance**: SHA-256 for large strings prevents key collisions
+2. **Memory Protection**: Proactive eviction at 80% prevents OOM
+3. **Timing Safety**: LRU updates are batched to reduce lock contention
+
+### Optimized Security Scanning
+
+For large JSON (>4KB), the library uses optimized scanning:
+
+#### Rolling Window Algorithm
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    32KB Window                                  │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                    Scan Window                            │  │
+│  │  [byte 0 ............... byte 32768]                     │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                         ↓                                       │
+│              Skip: WindowSize - OverlapSize                     │
+│              (32768 - 48 = 32720 bytes)                         │
+│                         ↓                                       │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              Overlapping Next Window                      │  │
+│  │         [byte 32720 ............... byte 65488]          │  │
+│  │    ↑ overlap ↑                                           │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
+
+// Overlap = maxPatternLength + 8
+// Guarantees no pattern can be hidden at window boundaries
+```
+
+#### Multi-Region Density Check
+```go
+// Checks suspicious character density in 3 regions:
+// 1. Beginning (0 to 4KB)
+// 2. Middle ((len/2) - 2KB to (len/2) + 2KB)
+// 3. End (len - 4KB to len)
+
+// Suspicious characters: < > ( ) ; = &
+// Threshold: 0.5% density triggers full scan
+
+func hasSuspiciousCharacterDensity(jsonStr string) bool {
+    // Sample from beginning, middle, and end
+    // Detects attacks hidden anywhere in payload
+}
+```
+
+#### Fast Path Optimizations
+```go
+// Skip expensive checks if:
+// 1. No letters (only numbers/symbols) - safe
+// 2. No '<' or '(' characters - most XSS patterns impossible
+// 3. Low suspicious character density
+
+// Critical patterns ALWAYS fully scanned:
+// - __proto__, constructor[, prototype.
+// - These are too dangerous to miss
+```
+
+### Path Validation Details
+
+#### Path Length and Depth Limits
+```go
+const (
+    maxPathLength  = 1000   // Maximum path characters
+    maxPathDepth   = 100    // Maximum path segments
+    maxArrayIndex  = 10000  // Maximum array index value
+)
+```
+
+#### Path Security Checks
+```go
+// 1. Fast Path: Simple alphanumeric paths
+//    - Only checks: a-z, A-Z, 0-9, _, .
+//    - Skips complex validation
+
+// 2. Slow Path: Complex paths with brackets/braces
+//    - Null byte detection
+//    - Control character detection
+//    - Path traversal detection (../)
+//    - Template injection detection (${}, ${{
+//    - Array index validation
+```
+
+### Zero-Width Character Detection
+
+The library detects invisible Unicode characters that could bypass pattern matching:
+
+```go
+// Detected zero-width and invisible characters:
+'\u200B'  // Zero-width space
+'\u200C'  // Zero-width non-joiner
+'\u200D'  // Zero-width joiner
+'\u200E'  // Left-to-right mark
+'\u200F'  // Right-to-left mark
+'\uFEFF'  // Byte order mark (zero-width no-break space)
+'\u2060'  // Word joiner
+'\u2061'  // Function application
+'\u2062'  // Invisible times
+'\u2063'  // Invisible separator
+'\u2064'  // Invisible plus
+'\u00AD'  // Soft hyphen
+'\u034F'  // Combining grapheme joiner
+'\u061C'  // Arabic letter mark
+'\u180E'  // Mongolian vowel separator
+'\uFFFD'  // Replacement character
+```
+
+### System Directory Protection
+
+#### Unix/Linux Protected Paths
+```go
+blockedPaths := []string{
+    "/dev/",       // Device files
+    "/proc/",      // Process information
+    "/sys/",       // System information
+    "/etc/passwd", // User database
+    "/etc/shadow", // Password database
+    "/etc/sudoers", // Sudo configuration
+    "/etc/hosts",  // Hostname mapping
+    "/etc/fstab",  // Filesystem table
+    "/etc/crontab", // Cron jobs
+    "/root/",      // Root home
+    "/boot/",      // Boot files
+    "/var/log/",   // Log files
+    "/usr/bin/",   // System binaries
+    "/usr/sbin/",  // System binaries
+    "/sbin/",      // System binaries
+    "/bin/",       // System binaries
+}
+```
+
+#### Windows Protected Items
+```go
+// Reserved device names:
+reservedDevices := []string{
+    "CON", "PRN", "AUX", "NUL",
+    "COM0", "COM1"-"COM9",
+    "LPT0", "LPT1"-"LPT9",
+    "CONIN$", "CONOUT$",
+}
+
+// Blocked patterns:
+// - UNC paths (\\server\share)
+// - Alternate Data Streams (file.txt:stream)
+// - Invalid characters: < > : " | ? *
+```
+
+### Security Error Types
+
+```go
+var (
+    ErrSecurityViolation  // General security error
+    ErrSizeLimit          // Size limit exceeded
+    ErrDepthLimit         // Nesting depth exceeded
+    ErrInvalidPath        // Path validation failed
+    ErrInvalidJSON        // JSON validation failed
+    ErrConcurrencyLimit   // Too many concurrent operations
+)
+
+// Error checking:
+if errors.Is(err, json.ErrSecurityViolation) {
+    // Handle security violation
+}
+```
+
+---
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.

@@ -6,9 +6,8 @@ import (
 	"time"
 )
 
-// Core error definitions - simplified and optimized for performance
+// Primary errors for common cases.
 var (
-	// Primary errors for common cases
 	ErrInvalidJSON     = errors.New("invalid JSON format")
 	ErrPathNotFound    = errors.New("path not found")
 	ErrTypeMismatch    = errors.New("type mismatch")
@@ -16,22 +15,22 @@ var (
 	ErrInvalidPath     = errors.New("invalid path format")
 	ErrProcessorClosed = errors.New("processor is closed")
 
-	// Limit-related errors
+	// Limit-related errors.
 	ErrSizeLimit        = errors.New("size limit exceeded")
 	ErrDepthLimit       = errors.New("depth limit exceeded")
 	ErrConcurrencyLimit = errors.New("concurrency limit exceeded")
 
-	// Security and validation errors
+	// Security and validation errors.
 	ErrSecurityViolation = errors.New("security violation detected")
 	ErrUnsupportedPath   = errors.New("unsupported path operation")
 
-	// Resource and performance errors
+	// Resource and performance errors.
 	ErrCacheFull         = errors.New("cache is full")
 	ErrCacheDisabled     = errors.New("cache is disabled")
 	ErrOperationTimeout  = errors.New("operation timeout")
 	ErrResourceExhausted = errors.New("system resources exhausted")
 
-	// Control flow errors (internal use)
+	// Control flow errors (internal use).
 	ErrIteratorControl = errors.New("iterator control signal")
 )
 
@@ -44,10 +43,18 @@ type JsonsError struct {
 }
 
 func (e *JsonsError) Error() string {
+	var baseMsg string
 	if e.Path != "" {
-		return fmt.Sprintf("JSON %s failed at path '%s': %s", e.Op, e.Path, e.Message)
+		baseMsg = fmt.Sprintf("JSON %s failed at path '%s': %s", e.Op, e.Path, e.Message)
+	} else {
+		baseMsg = fmt.Sprintf("JSON %s failed: %s", e.Op, e.Message)
 	}
-	return fmt.Sprintf("JSON %s failed: %s", e.Op, e.Message)
+
+	// Include underlying error for complete error chain information
+	if e.Err != nil {
+		return fmt.Sprintf("%s (caused by: %v)", baseMsg, e.Err)
+	}
+	return baseMsg
 }
 
 // Unwrap returns the underlying error for error chain support
@@ -71,9 +78,7 @@ func (e *JsonsError) Is(target error) bool {
 	return errors.Is(e.Err, target)
 }
 
-// Error helper functions for creating consistent error messages
-
-// newOperationError creates a JsonsError for operation failures
+// newOperationError creates a JsonsError for operation failures.
 func newOperationError(operation, message string, err error) error {
 	return &JsonsError{Op: operation, Message: message, Err: err}
 }

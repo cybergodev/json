@@ -294,3 +294,302 @@ func BenchmarkCacheConcurrent(b *testing.B) {
 		}
 	})
 }
+
+// ============================================================================
+// ADDITIONAL CACHE TESTS FOR COVERAGE
+// ============================================================================
+
+func TestCacheManager_Delete(t *testing.T) {
+	t.Run("delete existing key", func(t *testing.T) {
+		config := &mockConfig{cacheEnabled: true, maxCacheSize: 100}
+		cm := NewCacheManager(config)
+
+		cm.Set("key", "value")
+		_, found := cm.Get("key")
+		if !found {
+			t.Fatal("Value should be found before delete")
+		}
+
+		cm.Delete("key")
+		_, found = cm.Get("key")
+		if found {
+			t.Error("Value should not be found after delete")
+		}
+	})
+
+	t.Run("delete non-existent key", func(t *testing.T) {
+		config := &mockConfig{cacheEnabled: true, maxCacheSize: 100}
+		cm := NewCacheManager(config)
+
+		// Should not panic
+		cm.Delete("nonexistent_key")
+	})
+}
+
+func TestCacheManager_Clear(t *testing.T) {
+	config := &mockConfig{cacheEnabled: true, maxCacheSize: 100}
+	cm := NewCacheManager(config)
+
+	// Add multiple entries
+	cm.Set("key1", "value1")
+	cm.Set("key2", "value2")
+	cm.Set("key3", "value3")
+
+	// Clear the cache
+	cm.Clear()
+
+	// Verify all entries are gone
+	_, found1 := cm.Get("key1")
+	_, found2 := cm.Get("key2")
+	_, found3 := cm.Get("key3")
+
+	if found1 || found2 || found3 {
+		t.Error("All entries should be cleared")
+	}
+
+	// Verify entries are reset
+	stats := cm.GetStats()
+	if stats.Entries != 0 {
+		t.Error("Entries should be 0 after clear")
+	}
+}
+
+func TestCacheManager_CleanExpiredCache(t *testing.T) {
+	config := &mockConfig{
+		cacheEnabled: true,
+		maxCacheSize: 100,
+		cacheTTL:     50 * time.Millisecond,
+	}
+	cm := NewCacheManager(config)
+
+	cm.Set("key1", "value1")
+	cm.Set("key2", "value2")
+
+	// Wait for TTL to expire
+	time.Sleep(100 * time.Millisecond)
+
+	// Clean expired entries
+	cm.CleanExpiredCache()
+
+	// Give some time for goroutines to complete
+	time.Sleep(50 * time.Millisecond)
+
+	// Entries should be expired
+	_, found := cm.Get("key1")
+	if found {
+		t.Error("Entry should be expired after CleanExpiredCache")
+	}
+}
+
+func TestCacheManager_GetStats(t *testing.T) {
+	config := &mockConfig{cacheEnabled: true, maxCacheSize: 100}
+	cm := NewCacheManager(config)
+
+	// Add entries and access them
+	cm.Set("key1", "value1")
+	cm.Set("key2", "value2")
+	cm.Get("key1")        // hit
+	cm.Get("key1")        // hit
+	cm.Get("nonexistent") // miss
+
+	stats := cm.GetStats()
+
+	if stats.HitCount != 2 {
+		t.Errorf("HitCount = %d, want 2", stats.HitCount)
+	}
+	if stats.MissCount < 1 {
+		t.Errorf("MissCount = %d, want at least 1", stats.MissCount)
+	}
+	if stats.ShardCount == 0 {
+		t.Error("ShardCount should be positive")
+	}
+	if stats.Entries == 0 {
+		t.Error("Entries should be positive")
+	}
+}
+
+func TestCacheManager_Eviction(t *testing.T) {
+	config := &mockConfig{cacheEnabled: true, maxCacheSize: 5}
+	cm := NewCacheManager(config)
+
+	// Add more entries than max size to trigger eviction
+	for i := 0; i < 10; i++ {
+		cm.Set(string(rune('a'+i)), i)
+	}
+
+	// Some entries should have been evicted
+	stats := cm.GetStats()
+	if stats.Entries > 5 {
+		t.Errorf("Entries = %d, should be <= 5 due to eviction", stats.Entries)
+	}
+}
+
+func TestCacheManager_LargeKey(t *testing.T) {
+	config := &mockConfig{cacheEnabled: true, maxCacheSize: 100}
+	cm := NewCacheManager(config)
+
+	// Create a key longer than maxCacheKeyLength
+	largeKey := ""
+	for i := 0; i < 1500; i++ {
+		largeKey += "a"
+	}
+
+	// Should not panic with large key - the key is truncated internally
+	cm.Set(largeKey, "value")
+
+	// Note: Due to key truncation, the original large key won't match
+	// We're just testing that it doesn't panic and can handle large keys
+}
+
+func TestCacheManager_VariousTypes(t *testing.T) {
+	config := &mockConfig{cacheEnabled: true, maxCacheSize: 100}
+	cm := NewCacheManager(config)
+
+	// Test simple comparable types
+	t.Run("simple types", func(t *testing.T) {
+		tests := []struct {
+			name  string
+			key   string
+			value any
+		}{
+			{"string", "str_key", "test_string"},
+			{"int", "int_key", 42},
+			{"float", "float_key", 3.14159},
+			{"bool", "bool_key", true},
+			{"nil", "nil_key", nil},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				cm.Set(tt.key, tt.value)
+				retrieved, found := cm.Get(tt.key)
+				if !found {
+					t.Errorf("Key %s should be found", tt.key)
+				}
+				if tt.value != nil && retrieved != tt.value {
+					t.Errorf("Value mismatch for %s", tt.key)
+				}
+			})
+		}
+	})
+
+	// Test complex types (just verify they can be stored and retrieved)
+	t.Run("complex types", func(t *testing.T) {
+		// Slice
+		cm.Set("slice_key", []any{1, 2, 3})
+		retrieved, found := cm.Get("slice_key")
+		if !found {
+			t.Error("slice_key should be found")
+		}
+		if slice, ok := retrieved.([]any); !ok || len(slice) != 3 {
+			t.Error("slice value type or length mismatch")
+		}
+
+		// Map
+		cm.Set("map_key", map[string]any{"a": 1})
+		retrieved, found = cm.Get("map_key")
+		if !found {
+			t.Error("map_key should be found")
+		}
+		if m, ok := retrieved.(map[string]any); !ok || m["a"] != 1 {
+			t.Error("map value type or content mismatch")
+		}
+
+		// Bytes
+		cm.Set("bytes_key", []byte("test"))
+		retrieved, found = cm.Get("bytes_key")
+		if !found {
+			t.Error("bytes_key should be found")
+		}
+		if b, ok := retrieved.([]byte); !ok || string(b) != "test" {
+			t.Error("bytes value type or content mismatch")
+		}
+
+		// PathSegments
+		cm.Set("path_key", []PathSegment{NewPropertySegment("test")})
+		retrieved, found = cm.Get("path_key")
+		if !found {
+			t.Error("path_key should be found")
+		}
+		if segs, ok := retrieved.([]PathSegment); !ok || len(segs) != 1 {
+			t.Error("path segments value type or length mismatch")
+		}
+	})
+}
+
+func TestCalculateOptimalShardCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		maxSize  int
+		minCount int
+	}{
+		{"very small", 50, 4},
+		{"small", 500, 8},
+		{"medium", 5000, 16},
+		{"large", 50000, 32},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := calculateOptimalShardCount(tt.maxSize)
+			if result < tt.minCount {
+				t.Errorf("Shard count %d < minimum %d", result, tt.minCount)
+			}
+		})
+	}
+}
+
+func TestNextPowerOf2(t *testing.T) {
+	tests := []struct {
+		input    int
+		expected int
+	}{
+		{0, 1},
+		{1, 1},
+		{2, 2},
+		{3, 4},
+		{5, 8},
+		{15, 16},
+		{16, 16},
+		{17, 32},
+	}
+
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			result := nextPowerOf2(tt.input)
+			if result != tt.expected {
+				t.Errorf("nextPowerOf2(%d) = %d, want %d", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTruncateCacheKey(t *testing.T) {
+	t.Run("short key unchanged", func(t *testing.T) {
+		key := "short_key"
+		result := truncateCacheKey(key)
+		if result != key {
+			t.Errorf("Short key should not be truncated")
+		}
+	})
+
+	t.Run("long key truncated", func(t *testing.T) {
+		// Create a key longer than maxCacheKeyLength
+		longKey := ""
+		for i := 0; i < 1500; i++ {
+			longKey += "a"
+		}
+
+		result := truncateCacheKey(longKey)
+		if len(result) > maxCacheKeyLength {
+			t.Errorf("Truncated key length %d > max %d", len(result), maxCacheKeyLength)
+		}
+		// Should contain "..." separator
+		if len(result) > 0 && len(longKey) > maxCacheKeyLength {
+			// Verify the key was modified
+			if result == longKey {
+				t.Error("Long key should be truncated")
+			}
+		}
+	})
+}

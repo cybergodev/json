@@ -11,153 +11,44 @@ import (
 // Helper Functions Example
 //
 // This example demonstrates useful helper functions in the cybergodev/json library
-// for validation, comparison, merging, and data manipulation.
+// for comparison, merging, and data manipulation.
 //
 // Topics covered:
-// - IsValidJSON and IsValidPath
-// - DeepCopy for cloning JSON data
 // - CompareJson for JSON comparison
 // - MergeJson for combining JSON objects
-// - FormatPretty and FormatCompact
+// - FormatPretty and FormatCompact for formatting
+// - Print and PrintPretty for quick output
+//
+// For JSON validation, see: 6_validation.go
+// For DeepCopy, see: 7_type_conversion.go
 //
 // Run: go run examples/8_helper_functions.go
 
 func main() {
-	fmt.Println("🛠️  JSON Library - Helper Functions")
-	fmt.Println("===================================\n ")
+	fmt.Println("Helper Functions - JSON Library")
+	fmt.Println("================================\n ")
 
-	// 1. JSON VALIDATION
-	fmt.Println("1️⃣  JSON Validation")
-	fmt.Println("───────────────────")
-	demonstrateValidation()
-
-	// 2. PATH VALIDATION
-	fmt.Println("\n2️⃣  Path Validation")
-	fmt.Println("───────────────────")
-	demonstratePathValidation()
-
-	// 3. DEEP COPY
-	fmt.Println("\n3️⃣  Deep Copy")
-	fmt.Println("─────────────")
-	demonstrateDeepCopyData()
-
-	// 4. JSON COMPARISON
-	fmt.Println("\n4️⃣  JSON Comparison")
-	fmt.Println("───────────────────")
+	// 1. JSON COMPARISON
+	fmt.Println("1. JSON Comparison (CompareJson)")
+	fmt.Println("--------------------------------")
 	demonstrateComparison()
 
-	// 5. JSON MERGE
-	fmt.Println("\n5️⃣  JSON Merge")
-	fmt.Println("───────────────")
+	// 2. JSON MERGE
+	fmt.Println("\n2. JSON Merge (MergeJson)")
+	fmt.Println("--------------------------")
 	demonstrateMerge()
 
-	// 6. FORMATTING
-	fmt.Println("\n6️⃣  Formatting")
-	fmt.Println("─────────────")
+	// 3. FORMATTING
+	fmt.Println("\n3. Formatting (FormatPretty/FormatCompact)")
+	fmt.Println("-------------------------------------------")
 	demonstrateFormatting()
 
-	fmt.Println("\n✅ Helper functions examples complete!")
-}
+	// 4. QUICK PRINT
+	fmt.Println("\n4. Quick Print Functions")
+	fmt.Println("------------------------")
+	demonstratePrint()
 
-func demonstrateValidation() {
-	testCases := []struct {
-		name string
-		data string
-	}{
-		{"Valid object", `{"name": "John", "age": 30}`},
-		{"Valid array", `[1, 2, 3, 4]`},
-		{"Valid string", `"hello world"`},
-		{"Valid number", `42.5`},
-		{"Valid boolean", `true`},
-		{"Invalid - missing brace", `{"name": "John"`},
-		{"Invalid - trailing comma", `{"name": "John",}`},
-		{"Invalid - unquoted key", `{name: "John"}`},
-		{"Empty string", ``},
-	}
-
-	fmt.Println("   IsValidJSON results:")
-	for _, tc := range testCases {
-		valid := json.IsValidJSON(tc.data)
-		status := "✓"
-		if !valid {
-			status = "✗"
-		}
-		fmt.Printf("   %s [%s]\n", status, tc.name)
-	}
-}
-
-func demonstratePathValidation() {
-	testPaths := []struct {
-		name string
-		path string
-	}{
-		{"Root", "."},
-		{"Simple property", "user.name"},
-		{"Nested property", "data.settings.theme"},
-		{"Array index", "users[0]"},
-		{"Nested array", "data[0].items[1].name"},
-		{"Extraction", "users{name}"},
-		{"Slice", "items[0:5]"},
-		{"Empty", ""},
-		{"Path traversal", "../secret"},
-		{"Invalid brackets", "data[0"},
-		{"Double dots", "data..field"},
-	}
-
-	fmt.Println("   IsValidPath results:")
-	for _, tc := range testPaths {
-		valid := json.IsValidPath(tc.path)
-		status := "✓"
-		if !valid {
-			status = "✗"
-		}
-		fmt.Printf("   %s [%s] '%s'\n", status, tc.name, tc.path)
-	}
-}
-
-func demonstrateDeepCopyData() {
-	// Original complex data
-	original := map[string]interface{}{
-		"user": "Alice",
-		"age":  30,
-		"address": map[string]interface{}{
-			"street":  "123 Main St",
-			"city":    "Springfield",
-			"country": "USA",
-		},
-		"hobbies": []interface{}{"reading", "coding", "gaming"},
-	}
-
-	fmt.Println("   Creating deep copy:")
-
-	// Create deep copy
-	copied, err := json.DeepCopy(original)
-	if err != nil {
-		fmt.Printf("   Error creating copy: %v\n", err)
-		return
-	}
-
-	fmt.Println("   ✓ Deep copy created successfully")
-
-	// Modify the copy
-	if copiedMap, ok := copied.(map[string]interface{}); ok {
-		// Change nested value
-		if addr, ok := copiedMap["address"].(map[string]interface{}); ok {
-			addr["city"] = "New York"
-		}
-		// Change array value
-		if hobbies, ok := copiedMap["hobbies"].([]interface{}); ok {
-			hobbies[0] = "writing"
-		}
-	}
-
-	// Verify original is unchanged
-	originalCity := original["address"].(map[string]interface{})["city"]
-	copiedCity := copied.(map[string]interface{})["address"].(map[string]interface{})["city"]
-
-	fmt.Printf("\n   Original city: %s\n", originalCity)
-	fmt.Printf("   Copy city:     %s\n", copiedCity)
-	fmt.Println("\n   ✓ Original data unchanged (deep copy works!)")
+	fmt.Println("\nHelper functions examples complete!")
 }
 
 func demonstrateComparison() {
@@ -209,13 +100,13 @@ func demonstrateComparison() {
 	for _, tc := range testCases {
 		equal, err := json.CompareJson(tc.json1, tc.json2)
 		if err != nil {
-			fmt.Printf("   ✗ [%s] Error: %v\n", tc.name, err)
+			fmt.Printf("   [ERROR] %s: %v\n", tc.name, err)
 			continue
 		}
 
-		status := "✓"
+		status := "[PASS]"
 		if equal != tc.equal {
-			status = "✗"
+			status = "[FAIL]"
 		}
 		fmt.Printf("   %s [%s] equal=%v\n", status, tc.name, equal)
 	}
@@ -305,5 +196,26 @@ func demonstrateFormatting() {
 	fmt.Println("\n   FormatCompact result:")
 	fmt.Println(compact)
 
-	fmt.Println("\n   ✓ Formatting reversible!")
+	fmt.Println("\n   Formatting is reversible!")
+}
+
+func demonstratePrint() {
+	data := map[string]any{
+		"user":    "Alice",
+		"age":     30,
+		"active":  true,
+		"tags":    []string{"go", "json"},
+		"balance": 1250.75,
+	}
+
+	fmt.Println("   Print (compact, single line):")
+	json.Print(data)
+
+	fmt.Println("\n   PrintPretty (formatted for readability):")
+	json.PrintPretty(data)
+
+	fmt.Println("\n   PrintE and PrintPrettyE return errors for programmatic use:")
+	if err := json.PrintE(data); err != nil {
+		fmt.Printf("   PrintE error: %v\n", err)
+	}
 }

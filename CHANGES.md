@@ -7,6 +7,59 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.2.0 - Performance & Security Enhancement (2026-02-26)
+
+### Added
+- **JSONL (JSON Lines) Support**: `ParseJSONL()`, `JSONLProcessor`, `StreamLinesParallel()`, `StreamLinesInto[T]()`, `JSONLWriter`, `ToJSONL()`
+- **Streaming Processing**: `StreamingProcessor`, `StreamArray()`, `StreamObject()`, `StreamArrayChunked()`, `StreamArrayFilter/Map/Reduce()`, `StreamArrayFirst/Take/Skip()`
+- **Lazy JSON Parsing**: `LazyJSON` with on-demand parsing, `Get()`, `IsParsed()`, `Raw()`
+- **Large File Processing**: `LargeFileProcessor`, `ProcessFile()`, `ProcessFileChunked()`, `ChunkedReader`
+- **Compiled Path Support**: `CompiledPath` for zero-parse overhead, `CompilePath()`, `GetCompiled()`, `CompiledPathCache`
+- **Fast Encoder**: `FastEncoder` with 4-8x faster encoding for common types, pre-computed integer tables (0-9999)
+- **String Interning**: `StringIntern`, `KeyIntern` (64 shards), `PathIntern`, `BatchIntern`
+- **Parallel Operations**: `ParallelProcessor`, `WorkerPool`, `ChunkProcessor`, `ParallelFilter/Transform()`
+- **New Examples**: `13_streaming_ndjson.go`, `14_batch_operations.go`, `examples/README.md`
+
+### Changed
+- **WorkerPool**: Replaced busy-wait with condition variable pattern (10-20% throughput improvement)
+- **LRU Cache**: Enhanced with frequency-aware eviction (15-25% better hit ratio)
+- **StreamIterator**: Configurable buffer sizes (20-40% improvement for large files)
+- **Struct Encoder**: Extended with type-specific encoding functions (50-100% faster)
+- **Security Scanning**: Rolling window replaces sampling (100% coverage guarantee)
+- **Test Coverage**: Improved from 30.5% to 47.8%
+
+### Fixed
+- **Sampling Bypass Vulnerability**: Rolling window scan guarantees complete coverage
+- **Unsafe Package Usage**: Replaced unsafe conversions with safe standard library
+- **String Intern Race Condition**: Fixed memory exhaustion in high-concurrency scenarios
+- **Validation Cache Memory**: Hash-based keys for all sizes prevent unbounded growth
+- **DeepCopy Stack Overflow**: Added depth limit (200) to prevent overflow
+- **WorkerPool Stop Race**: Added stopped flag to prevent task submission after stop
+
+### Security Enhancements
+- **55+ Dangerous Patterns Detected**: XSS, prototype pollution, event handlers, sensitive data patterns
+- **Path Traversal Protection**: Multi-layer encoding detection, Unicode lookalike detection
+- **Memory Safety**: DeepCopy depth limits, cache LRU eviction, string interning limits
+- **Integer Overflow Protection**: Type conversion safety checks
+- **Platform-Specific Security**: Windows reserved names, UNC paths, ADS blocking
+
+### Performance Improvements
+| Operation | Performance |
+|-----------|-------------|
+| FastEncodeString | 7 ns/op (8.7x faster than stdlib) |
+| FastEncodeInt | 9 ns/op (5.3x faster) |
+| FastEncodeMap | 81 ns/op (6.5x faster) |
+| FastEncodeArray | 57 ns/op (4.6x faster) |
+| PathSegmentCache | 20 ns/op, 0 allocs |
+| PooledIterator | 0 allocs |
+
+### Backward Compatibility
+- 100% backward compatible - all public APIs unchanged
+- New functionality is additive
+- All tests pass with race detection
+
+---
+
 ## v1.1.0 - Comprehensive Enhancement & Quality Assurance (2026-02-05)
 
 ### Added

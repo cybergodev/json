@@ -909,19 +909,206 @@ if err != nil {
 
 ---
 
+## 📦 Advanced Features
+
+### JSONL (JSON Lines) Support
+
+The library provides comprehensive support for JSON Lines format, commonly used for logs, data pipelines, and streaming data:
+
+```go
+// Parse JSONL data
+jsonlData := `{"name":"Alice","age":25}
+{"name":"Bob","age":30}
+{"name":"Carol","age":28}`
+
+// Parse into slice
+results, err := json.ParseJSONL([]byte(jsonlData))
+
+// Stream processing for large files
+processor := json.NewJSONLProcessor(reader)
+err := processor.StreamLines(func(lineNum int, data any) bool {
+    fmt.Printf("Line %d: %v\n", lineNum, data)
+    return true // continue processing
+})
+
+// Parallel processing for CPU-bound operations
+err := processor.StreamLinesParallel(func(lineNum int, data any) error {
+    // Process each line in parallel
+    return nil
+}, 4) // 4 workers
+
+// Type-safe streaming with generics
+type User struct {
+    Name string `json:"name"`
+    Age  int    `json:"age"`
+}
+users, err := json.StreamLinesInto[User](reader, func(lineNum int, user User) error {
+    fmt.Printf("User: %s, Age: %d\n", user.Name, user.Age)
+    return nil
+})
+
+// Write JSONL output
+writer := json.NewJSONLWriter(outputWriter)
+writer.Write(map[string]any{"event": "login", "user": "alice"})
+writer.Write(map[string]any{"event": "logout", "user": "bob"})
+
+// Convert slice to JSONL
+data := []any{
+    map[string]any{"id": 1, "name": "Alice"},
+    map[string]any{"id": 2, "name": "Bob"},
+}
+jsonlBytes, err := json.ToJSONL(data)
+```
+
+### Streaming Processing
+
+For large JSON files, use streaming processors to avoid loading everything into memory:
+
+```go
+// Create streaming processor
+processor := json.NewStreamingProcessor(reader, 64*1024) // 64KB buffer
+
+// Stream array elements one at a time
+err := processor.StreamArray(func(index int, item any) bool {
+    fmt.Printf("Item %d: %v\n", index, item)
+    return true // continue
+})
+
+// Stream object key-value pairs
+err := processor.StreamObject(func(key string, value any) bool {
+    fmt.Printf("Key: %s, Value: %v\n", key, value)
+    return true
+})
+
+// Chunked processing for batch operations
+err := processor.StreamArrayChunked(100, func(chunk []any) error {
+    // Process 100 items at a time
+    return nil
+})
+
+// Stream transformations
+filtered, err := json.StreamArrayFilter(reader, func(item any) bool {
+    return item.(map[string]any)["active"] == true
+})
+
+transformed, err := json.StreamArrayMap(reader, func(item any) any {
+    item.(map[string]any)["processed"] = true
+    return item
+})
+
+// Memory-efficient array counting
+count, err := json.StreamArrayCount(reader)
+
+// Get first matching element (stops early)
+first, found, err := json.StreamArrayFirst(reader, func(item any) bool {
+    return item.(map[string]any)["priority"] == "high"
+})
+
+// Pagination support
+page2, err := json.StreamArraySkip(reader, 10)  // Skip first 10
+page, err := json.StreamArrayTake(reader, 10)   // Take first 10
+```
+
+### Lazy JSON Parsing
+
+Parse JSON on-demand for improved performance when only accessing specific paths:
+
+```go
+// Create lazy parser - parsing happens on first access
+lazy := json.NewLazyJSON(jsonBytes)
+
+// Parse only when Get is called
+value, err := lazy.Get("user.profile.name")
+
+// Check if already parsed
+if lazy.IsParsed() {
+    data := lazy.Parsed()
+}
+
+// Get parsing error (triggers parsing if not done)
+if err := lazy.Error(); err != nil {
+    log.Printf("Parse error: %v", err)
+}
+
+// Access raw bytes without parsing
+rawBytes := lazy.Raw()
+```
+
+### Large File Processing
+
+Process very large JSON files efficiently:
+
+```go
+// Configure for large files
+config := json.LargeFileConfig{
+    ChunkSize:       1024 * 1024,       // 1MB chunks
+    MaxMemory:       100 * 1024 * 1024, // 100MB max
+    BufferSize:      64 * 1024,         // 64KB buffer
+    SamplingEnabled: true,
+    SampleSize:      1000,
+}
+
+processor := json.NewLargeFileProcessor(config)
+
+// Process file element by element
+err := processor.ProcessFile("large.json", func(item any) error {
+    // Process each item without loading entire file
+    return nil
+})
+
+// Process in chunks for batch operations
+err := processor.ProcessFileChunked("large.json", 100, func(chunk []any) error {
+    // Process 100 items at a time
+    return nil
+})
+
+// Chunked reader for custom processing
+reader := json.NewChunkedReader(file, 1024*1024)
+err := reader.ReadArray(func(item any) bool {
+    // Process each item
+    return true
+})
+```
+
+### NDJSON Processing
+
+Process newline-delimited JSON files efficiently:
+
+```go
+processor := json.NewNDJSONProcessor(64 * 1024) // 64KB buffer
+
+// Process file line by line
+err := processor.ProcessFile("logs.ndjson", func(lineNum int, obj map[string]any) error {
+    fmt.Printf("Line %d: %v\n", lineNum, obj)
+    return nil
+})
+
+// Process from reader
+err := processor.ProcessReader(reader, func(lineNum int, obj map[string]any) error {
+    // Process each JSON object
+    return nil
+})
+```
+
+---
+
 ## 💡 Examples & Resources
 
 ### 📁 Example Code
 
-- **[Basic Usage](examples/1_basic_usage.go)** - examples/1.basic_usage.go
-- **[Advanced Features](examples/2_advanced_features.go)** - examples/2.advanced_features.go
-- **[Production Ready](examples/3_production_ready.go)** - examples/3.production_ready.go
+- **[Basic Usage](examples/1_basic_usage.go)** - Getting started with core operations
+- **[Advanced Features](examples/2_advanced_features.go)** - Complex path queries and file operations
+- **[Production Ready](examples/3_production_ready.go)** - Thread-safe patterns and monitoring
+- **[Type Conversion](examples/7_type_conversion.go)** - Safe type conversion utilities
+- **[File Operations](examples/10_file_operations.go)** - Reading and writing JSON files
+- **[Iterator Functions](examples/9_iterator_functions.go)** - Iteration and traversal patterns
+- **[With Defaults](examples/11_with_defaults.go)** - Default value handling
+- **[Advanced Delete](examples/12_advanced_delete.go)** - Complex deletion operations
 
 ### 📖 Additional Resources
 
-- **[Compatibility Guide](docs/COMPATIBILITY.md)** - Drop-in replacement for `encoding/json`
-- **[Quick Reference](docs/QUICK_REFERENCE.md)** - Common operations cheat sheet
 - **[API Documentation](https://pkg.go.dev/github.com/cybergodev/json)** - Complete API reference
+- **[Security Guide](docs/SECURITY.md)** - Security best practices and configuration
 
 ---
 

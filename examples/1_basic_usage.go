@@ -15,17 +15,21 @@ import (
 // Perfect for developers who want to quickly understand the core functionality.
 //
 // Topics covered:
-// - Basic Get/Set/Delete operations
+// - Basic Get/Set operations
 // - Type-safe retrieval (GetString, GetInt, GetBool, etc.)
 // - Array operations and indexing
-// - Batch operations
+// - Batch operations (GetMultiple, SetMultiple)
 // - 100% encoding/json compatibility
+//
+// For advanced delete operations, see: 12_advanced_delete.go
+// For advanced features, see: 2_advanced_features.go
+// For production patterns, see: 3_production_ready.go
 //
 // Run: go run examples/basic_usage.go
 
 func main() {
-	fmt.Println("🚀 JSON Library - Basic Usage")
-	fmt.Println("==============================\n ")
+	fmt.Println("Basic Usage - JSON Library")
+	fmt.Println("===========================\n ")
 
 	// Sample JSON data
 	sampleData := `{
@@ -46,44 +50,40 @@ func main() {
 	}`
 
 	// 1. BASIC GET OPERATIONS
-	fmt.Println("1️⃣  Basic Get Operations")
-	fmt.Println("─────────────────────────")
+	fmt.Println("1. Basic Get Operations")
+	fmt.Println("-----------------------")
 	demonstrateGet(sampleData)
 
 	// 2. TYPE-SAFE OPERATIONS
-	fmt.Println("\n2️⃣  Type-Safe Operations")
-	fmt.Println("─────────────────────────")
+	fmt.Println("\n2. Type-Safe Operations")
+	fmt.Println("-----------------------")
 	demonstrateTypeSafe(sampleData)
 
 	// 3. SET OPERATIONS
-	fmt.Println("\n3️⃣  Set Operations")
-	fmt.Println("───────────────────")
+	fmt.Println("\n3. Set Operations")
+	fmt.Println("-----------------")
 	demonstrateSet(sampleData)
 
-	// 4. DELETE OPERATIONS
-	fmt.Println("\n4️⃣  Delete Operations")
-	fmt.Println("──────────────────────")
-	demonstrateDelete(sampleData)
-
-	// 5. ARRAY OPERATIONS
-	fmt.Println("\n5️⃣  Array Operations")
-	fmt.Println("─────────────────────")
+	// 4. ARRAY OPERATIONS
+	fmt.Println("\n4. Array Operations")
+	fmt.Println("-------------------")
 	demonstrateArrays(sampleData)
 
-	// 6. BATCH OPERATIONS
-	fmt.Println("\n6️⃣  Batch Operations")
-	fmt.Println("─────────────────────")
+	// 5. BATCH OPERATIONS
+	fmt.Println("\n5. Batch Operations")
+	fmt.Println("-------------------")
 	demonstrateBatch(sampleData)
 
-	// 7. ENCODING/JSON COMPATIBILITY
-	fmt.Println("\n7️⃣  encoding/json Compatibility")
-	fmt.Println("────────────────────────────────")
+	// 6. ENCODING/JSON COMPATIBILITY
+	fmt.Println("\n6. encoding/json Compatibility")
+	fmt.Println("------------------------------")
 	demonstrateCompatibility()
 
-	fmt.Println("\n✅ Basic usage complete!")
-	fmt.Println("💡 Next steps:")
-	fmt.Println("   - Check advanced_features.go for complex operations")
-	fmt.Println("   - Check production_ready.go for production best practices")
+	fmt.Println("\nBasic usage complete!")
+	fmt.Println("Next steps:")
+	fmt.Println("   - Check 2_advanced_features.go for complex operations")
+	fmt.Println("   - Check 3_production_ready.go for production best practices")
+	fmt.Println("   - Check 12_advanced_delete.go for advanced delete operations")
 }
 
 func demonstrateGet(data string) {
@@ -102,6 +102,10 @@ func demonstrateGet(data string) {
 	// Negative index (last element)
 	lastTag, _ := json.Get(data, "user.tags[-1]")
 	fmt.Printf("   Last tag: %v\n", lastTag)
+
+	// Non-existent path returns nil
+	missing, _ := json.Get(data, "user.phone")
+	fmt.Printf("   Missing path (user.phone): %v\n", missing)
 }
 
 func demonstrateTypeSafe(data string) {
@@ -123,6 +127,10 @@ func demonstrateTypeSafe(data string) {
 
 	settings, _ := json.GetObject(data, "settings")
 	fmt.Printf("   Settings (object): %v\n", settings)
+
+	// Generic GetTyped for custom types
+	id, _ := json.GetTyped[int](data, "user.id")
+	fmt.Printf("   ID (generic): %d\n", id)
 }
 
 func demonstrateSet(data string) {
@@ -140,18 +148,11 @@ func demonstrateSet(data string) {
 	updated3, _ := json.SetWithAdd(data, "user.premium.level", "gold")
 	level, _ := json.GetString(updated3, "user.premium.level")
 	fmt.Printf("   New premium level (auto-created): %s\n", level)
-}
 
-func demonstrateDelete(data string) {
-	// Delete simple field
-	updated, _ := json.Delete(data, "settings.notifications")
-	value, _ := json.Get(updated, "settings.notifications")
-	fmt.Printf("   Notifications after delete: %v (should be nil)\n", value)
-
-	// Delete array element
-	updated2, _ := json.Delete(data, "user.tags[1]")
-	remainingTags, _ := json.Get(updated2, "user.tags")
-	fmt.Printf("   Remaining tags: %v\n", remainingTags)
+	// Set array element
+	updated4, _ := json.Set(data, "user.tags[0]", "VIP")
+	firstTag, _ := json.GetString(updated4, "user.tags[0]")
+	fmt.Printf("   Updated first tag: %s\n", firstTag)
 }
 
 func demonstrateArrays(data string) {
@@ -161,7 +162,11 @@ func demonstrateArrays(data string) {
 
 	// Extract all values from array
 	allTags, _ := json.GetArray(data, "user.tags")
-	fmt.Printf("   All tags: %v, Tags count: %d\n", allTags, len(allTags))
+	fmt.Printf("   All tags: %v, Count: %d\n", allTags, len(allTags))
+
+	// Array with negative indices
+	lastTwo, _ := json.Get(data, "user.tags[-2:]")
+	fmt.Printf("   Last two tags: %v\n", lastTwo)
 }
 
 func demonstrateBatch(data string) {
@@ -188,6 +193,15 @@ func demonstrateBatch(data string) {
 	newActive, _ := json.GetBool(updated, "user.active")
 	fmt.Printf("   After batch set - Age: %d, Theme: %s, Active: %t\n",
 		newAge, newTheme, newActive)
+
+	// SetMultipleWithAdd for paths that may not exist
+	newUpdates := map[string]any{
+		"user.stats.logins":    100,
+		"user.stats.lastLogin": "2024-06-15",
+	}
+	updated2, _ := json.SetMultipleWithAdd(data, newUpdates)
+	logins, _ := json.GetInt(updated2, "user.stats.logins")
+	fmt.Printf("   New stats.logins: %d\n", logins)
 }
 
 func demonstrateCompatibility() {
@@ -226,4 +240,8 @@ func demonstrateCompatibility() {
 	// MarshalIndent (same as encoding/json)
 	prettyJSON, _ := json.MarshalIndent(user, "", "  ")
 	fmt.Printf("   Pretty JSON:\n%s\n", string(prettyJSON))
+
+	// Valid (same as encoding/json)
+	valid := json.Valid(jsonBytes)
+	fmt.Printf("   JSON valid: %t\n", valid)
 }

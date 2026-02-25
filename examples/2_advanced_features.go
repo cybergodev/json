@@ -5,8 +5,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 
 	"github.com/cybergodev/json"
 )
@@ -14,20 +12,23 @@ import (
 // Advanced Features Example
 //
 // This example demonstrates advanced JSON operations for complex use cases.
-// Ideal for developers who need to work with nested structures, file I/O, and bulk operations.
+// Ideal for developers who need to work with nested structures and bulk operations.
 //
 // Topics covered:
 // - Complex path queries and nested extraction
 // - Flat extraction from deeply nested structures
-// - File I/O operations (read/write JSON files)
 // - Iteration and transformation
 // - Working with deeply nested data
+// - Batch modifications
+//
+// For file I/O operations, see: 10_file_operations.go
+// For iterator functions, see: 9_iterator_functions.go
 //
 // Run: go run examples/advanced_features.go
 
 func main() {
-	fmt.Println("🔧 JSON Library - Advanced Features")
-	fmt.Println("====================================\n ")
+	fmt.Println("Advanced Features - JSON Library")
+	fmt.Println("=================================\n ")
 
 	// Complex nested data structure
 	complexData := `{
@@ -71,37 +72,31 @@ func main() {
 	}`
 
 	// 1. COMPLEX PATH QUERIES
-	fmt.Println("1️⃣  Complex Path Queries")
-	fmt.Println("─────────────────────────")
+	fmt.Println("1. Complex Path Queries")
+	fmt.Println("-----------------------")
 	demonstrateComplexPaths(complexData)
 
 	// 2. NESTED EXTRACTION
-	fmt.Println("\n2️⃣  Nested Extraction")
-	fmt.Println("──────────────────────")
+	fmt.Println("\n2. Nested Extraction")
+	fmt.Println("--------------------")
 	demonstrateExtraction(complexData)
 
 	// 3. FLAT EXTRACTION
-	fmt.Println("\n3️⃣  Flat Extraction")
-	fmt.Println("────────────────────")
+	fmt.Println("\n3. Flat Extraction")
+	fmt.Println("------------------")
 	demonstrateFlatExtraction(complexData)
 
-	// 4. ITERATION & TRANSFORMATION
-	fmt.Println("\n4️⃣  Iteration & Transformation")
-	fmt.Println("───────────────────────────────")
-	demonstrateIteration(complexData)
-
-	// 5. FILE OPERATIONS
-	fmt.Println("\n5️⃣  File Operations")
-	fmt.Println("────────────────────")
-	demonstrateFileOps()
-
-	// 6. DEEP MODIFICATIONS
-	fmt.Println("\n6️⃣  Deep Modifications")
-	fmt.Println("───────────────────────")
+	// 4. DEEP MODIFICATIONS
+	fmt.Println("\n4. Deep Modifications")
+	fmt.Println("---------------------")
 	demonstrateDeepModifications(complexData)
 
-	fmt.Println("\n✅ Advanced features complete!")
-	fmt.Println("💡 These features enable powerful JSON manipulation without unmarshaling!")
+	// 5. BATCH OPERATIONS
+	fmt.Println("\n5. Batch Operations")
+	fmt.Println("-------------------")
+	demonstrateBatchOperations(complexData)
+
+	fmt.Println("\nAdvanced features complete!")
 }
 
 func demonstrateComplexPaths(data string) {
@@ -120,6 +115,10 @@ func demonstrateComplexPaths(data string) {
 	// Deep nested access
 	aliceRole, _ := json.GetString(data, "departments[0].teams[0].members[0].role")
 	fmt.Printf("   Alice's role: %s\n", aliceRole)
+
+	// Access skill within nested arrays
+	firstSkill, _ := json.GetString(data, "departments[0].teams[0].members[0].skills[0]")
+	fmt.Printf("   Alice's first skill: %s\n", firstSkill)
 }
 
 func demonstrateExtraction(data string) {
@@ -134,12 +133,14 @@ func demonstrateExtraction(data string) {
 	// Extract all member names from first department
 	memberNames, _ := json.Get(data, "departments[0].teams{members}{name}")
 	fmt.Printf("   Member names: %v\n", memberNames)
+
+	// Extract specific fields from all members
+	memberRoles, _ := json.Get(data, "departments{teams}{members}{role}")
+	fmt.Printf("   Member roles: %v\n", memberRoles)
 }
 
 func demonstrateFlatExtraction(data string) {
 	// Flat extraction - flattens all nested arrays into single array
-	// Note: For complex nested structures with multiple extraction levels,
-	// using flat: at each level separately is recommended
 
 	// Extract all teams (flat) from all departments
 	allTeams, _ := json.Get(data, "departments{flat:teams}")
@@ -150,96 +151,12 @@ func demonstrateFlatExtraction(data string) {
 	fmt.Printf("   All team names (flat): %v\n", teamNames)
 
 	// Extract all skills from all members (using chained flat extractions)
-	// This demonstrates extracting from deeply nested structures
 	allSkills, _ := json.Get(data, "departments{flat:teams}{flat:members}{flat:skills}")
-	fmt.Printf("   All skills by department: %v\n", allSkills)
-}
+	fmt.Printf("   All skills (flat): %v\n", allSkills)
 
-func demonstrateIteration(data string) {
-	// Iterate over departments
-	departments, err := json.GetArray(data, "departments")
-	if err != nil {
-		log.Printf("Error: %v", err)
-		return
-	}
-
-	fmt.Println("   Departments:")
-	for i, dept := range departments {
-		if deptMap, ok := dept.(map[string]any); ok {
-			fmt.Printf("   [%d] %v\n", i, deptMap["name"])
-		}
-	}
-
-	// Use ForeachWithPath to iterate over specific paths
-	fmt.Println("\n   Iterating over first department teams:")
-	err = json.ForeachWithPath(data, "departments[0].teams", func(key any, item *json.IterableValue) {
-		teamName := item.GetString("name")
-		fmt.Printf("   - Team: %s\n", teamName)
-	})
-	if err != nil {
-		log.Printf("Iteration error: %v", err)
-	}
-
-	// Use ForeachNested for recursive iteration
-	fmt.Println("\n   Nested iteration of first department:")
-	count := 0
-	json.ForeachNested(data, func(key any, item *json.IterableValue) {
-		// Access value safely using Get method
-		val := item.Get("")
-		if str, ok := val.(string); ok && str != "" {
-			count++
-		}
-	})
-	fmt.Printf("   Found %d non-empty string values in nested structure\n", count)
-}
-
-func demonstrateFileOps() {
-	// Create temporary directory
-	tempDir, err := os.MkdirTemp("", "json-example-*")
-	if err != nil {
-		log.Printf("Failed to create temp dir: %v", err)
-		return
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Sample data
-	config := map[string]any{
-		"version": "1.0.0",
-		"server": map[string]any{
-			"host": "localhost",
-			"port": 8080,
-		},
-		"features": []string{"auth", "logging", "metrics"},
-	}
-
-	// Marshal to JSON
-	jsonBytes, _ := json.MarshalIndent(config, "", "  ")
-
-	// Write to file
-	filePath := filepath.Join(tempDir, "config.json")
-	err = os.WriteFile(filePath, jsonBytes, 0644)
-	if err != nil {
-		log.Printf("Write error: %v", err)
-		return
-	}
-	fmt.Printf("   ✓ Written to: %s\n", filePath)
-
-	// Read from file
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		log.Printf("Read error: %v", err)
-		return
-	}
-
-	// Extract values using path operations
-	version, _ := json.GetString(string(content), "version")
-	port, _ := json.GetInt(string(content), "server.port")
-	fmt.Printf("   ✓ Read from file - Version: %s, Port: %d\n", version, port)
-
-	// Modify and write back
-	updated, _ := json.Set(string(content), "server.port", 9090)
-	os.WriteFile(filePath, []byte(updated), 0644)
-	fmt.Printf("   ✓ Modified and saved back to file\n")
+	// Extract member names with flat extraction
+	allMemberNames, _ := json.Get(data, "departments{flat:teams}{flat:members}{name}")
+	fmt.Printf("   All member names (flat): %v\n", allMemberNames)
 }
 
 func demonstrateDeepModifications(data string) {
@@ -264,20 +181,57 @@ func demonstrateDeepModifications(data string) {
 	allMembers, _ := json.Get(updated2, "departments[0].teams[0].members{name}")
 	fmt.Printf("   Backend members after addition: %v\n", allMembers)
 
+	// Add nested path that doesn't exist
+	updated3, _ := json.SetWithAdd(data, "departments[0].budget.allocated", 1000000)
+	budget, _ := json.Get(updated3, "departments[0].budget")
+	fmt.Printf("   New budget path: %v\n", budget)
+}
+
+func demonstrateBatchOperations(data string) {
 	// Batch update multiple deep paths
 	updates := map[string]any{
 		"departments[0].name":                     "Engineering & Innovation",
 		"departments[0].teams[0].members[0].name": "Alice Smith",
 		"metadata.tags[0]":                        "technology",
 	}
-	updated3, _ := json.SetMultiple(data, updates)
+	updated, _ := json.SetMultiple(data, updates)
 
-	newDeptName, _ := json.GetString(updated3, "departments[0].name")
-	newMemberName, _ := json.GetString(updated3, "departments[0].teams[0].members[0].name")
-	newTag, _ := json.GetString(updated3, "metadata.tags[0]")
+	newDeptName, _ := json.GetString(updated, "departments[0].name")
+	newMemberName, _ := json.GetString(updated, "departments[0].teams[0].members[0].name")
+	newTag, _ := json.GetString(updated, "metadata.tags[0]")
 
 	fmt.Printf("   After batch update:\n")
 	fmt.Printf("   - Department: %s\n", newDeptName)
 	fmt.Printf("   - Member: %s\n", newMemberName)
 	fmt.Printf("   - Tag: %s\n", newTag)
+
+	// Batch get multiple paths
+	paths := []string{
+		"organization",
+		"departments[0].name",
+		"departments[0].teams[0].name",
+		"metadata.created",
+	}
+
+	results, err := json.GetMultiple(data, paths)
+	if err != nil {
+		log.Printf("Error: %v", err)
+		return
+	}
+
+	fmt.Println("\n   Batch get results:")
+	for path, value := range results {
+		fmt.Printf("   - %s: %v\n", path, value)
+	}
+
+	// SetMultipleWithAdd for paths that may not exist
+	newUpdates := map[string]any{
+		"statistics.total_departments": 2,
+		"statistics.total_teams":       3,
+		"statistics.last_updated":      "2024-06-15",
+	}
+	updated2, _ := json.SetMultipleWithAdd(data, newUpdates)
+
+	stats, _ := json.Get(updated2, "statistics")
+	fmt.Printf("\n   New statistics section: %v\n", stats)
 }
