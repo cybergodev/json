@@ -1222,6 +1222,171 @@ func TestCrossPlatformPathValidation(t *testing.T) {
 }
 
 // ============================================================================
+// Sampling Bypass Security Tests
+// Tests for CVE-like vulnerability where attacks could be hidden between sample points
+// ============================================================================
+
+func TestSamplingBypassFixed(t *testing.T) {
+	// Create a processor with FullSecurityScan=false (default)
+	// This tests that even in optimized mode, the rolling window approach
+	// catches attacks hidden in the middle of large JSON
+	cfg := DefaultConfig()
+	cfg.FullSecurityScan = false // Test optimized mode
+	processor := New(cfg)
+	defer processor.Close()
+
+	t.Run("AttackHiddenInMiddle", func(t *testing.T) {
+		// Create a large JSON with an attack hidden in the middle
+		// The attack is positioned at exactly 50KB to try to hide it between sample points
+		attackPattern := `<script>alert('xss')</script>`
+
+		// Create padding before and after the attack
+		paddingSize := 50 * 1024 // 50KB padding on each side
+		beforePadding := strings.Repeat(`"padding":"`+strings.Repeat("A", 100)+`",`, paddingSize/120)
+		afterPadding := strings.Repeat(`"padding":"`+strings.Repeat("B", 100)+`",`, paddingSize/120)
+
+		maliciousJSON := `{"data":{` + beforePadding + `"attack":"` + attackPattern + `",` + afterPadding + `"end":true}}`
+
+		// This should now be caught even in optimized mode due to rolling window
+		// Validation happens during Parse/Get operations
+		var result any
+		err := processor.Parse(maliciousJSON, &result)
+		if err == nil {
+			t.Error("Expected security error for hidden XSS attack in optimized mode")
+		}
+	})
+
+	t.Run("AttackAtBoundary", func(t *testing.T) {
+		// Test attack positioned at window boundary (32KB)
+		attackPattern := `__proto__`
+
+		// Create JSON with attack at exactly 32KB boundary
+		beforeBoundary := strings.Repeat(`{"a":"`+strings.Repeat("X", 100)+`"},`, 320)
+
+		maliciousJSON := `{"items":[` + beforeBoundary + `{"evil":"` + attackPattern + `"}]}`
+
+		var result any
+		err := processor.Parse(maliciousJSON, &result)
+		if err == nil {
+			t.Error("Expected security error for attack at window boundary")
+		}
+	})
+
+	t.Run("AttackDistributedAcrossWindows", func(t *testing.T) {
+		// Test with multiple small attacks distributed across the JSON
+		// This tests the pattern fragment detection
+		fragments := []string{
+			`"f1":"eval`,
+			`"f2":"(`,
+			`"f3":"scri`,
+			`"f4":"pt>`,
+		}
+
+		var sb strings.Builder
+		sb.WriteString(`{"data":[`)
+		for i, frag := range fragments {
+			if i > 0 {
+				sb.WriteString(",")
+			}
+			// Add padding around each fragment
+			sb.WriteString(strings.Repeat(`{"p":"`+strings.Repeat("P", 1000)+`"},`, 10))
+			sb.WriteString(frag)
+		}
+		sb.WriteString(`]}`)
+
+		// The pattern fragment detection should catch this
+		// Even if individual fragments aren't complete patterns
+		maliciousJSON := sb.String()
+
+		// This should either be caught by pattern fragments or density check
+		// The exact behavior depends on the implementation details
+		var result any
+		_ = processor.Parse(maliciousJSON, &result)
+		// We just verify it doesn't panic or crash
+	})
+
+	t.Run("LegitimateLargeJSON", func(t *testing.T) {
+		// Ensure legitimate large JSON still passes
+		legitimateJSON := generateLargeJSON(100 * 1024) // 100KB
+
+		var result any
+		err := processor.Parse(legitimateJSON, &result)
+		if err != nil {
+			t.Errorf("Legitimate large JSON should pass validation: %v", err)
+		}
+	})
+
+	t.Run("FullSecurityScanStillWorks", func(t *testing.T) {
+		// Verify that FullSecurityScan=true still works as expected
+		secureConfig := HighSecurityConfig()
+		secureConfig.FullSecurityScan = true
+		secureProcessor := New(secureConfig)
+		defer secureProcessor.Close()
+
+		attackPattern := `<script>alert(1)</script>`
+		maliciousJSON := `{"data":"` + strings.Repeat("X", 5000) + attackPattern + strings.Repeat("Y", 5000) + `"}`
+
+		var result any
+		err := secureProcessor.Parse(maliciousJSON, &result)
+		if err == nil {
+			t.Error("FullSecurityScan should catch all attacks")
+		}
+	})
+}
+
+func TestRollingWindowCoverage(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.FullSecurityScan = false // Test optimized mode
+	processor := New(cfg)
+	defer processor.Close()
+
+	// Test that the rolling window approach covers the entire string
+	// by placing attacks at various positions and verifying they're all caught
+
+	positions := []int{
+		0,         // Start
+		16 * 1024, // 16KB
+		32 * 1024, // 32KB (window boundary)
+		48 * 1024, // 48KB (between windows)
+		64 * 1024, // 64KB
+		80 * 1024, // 80KB
+	}
+
+	for _, pos := range positions {
+		posKB := pos / 1024
+		t.Run("Position_"+string(rune('0'+posKB/10))+string(rune('0'+posKB%10))+"KB", func(t *testing.T) {
+			// Create JSON with attack at specific position
+			attackPattern := `<script>alert(1)</script>`
+
+			var sb strings.Builder
+			sb.WriteString(`{"data":"`)
+
+			// Add padding before attack
+			for sb.Len() < pos {
+				sb.WriteString("X")
+			}
+
+			sb.WriteString(attackPattern)
+
+			// Add padding after attack
+			for sb.Len() < pos+1024 {
+				sb.WriteString("Y")
+			}
+
+			sb.WriteString(`"}`)
+
+			maliciousJSON := sb.String()
+
+			var result any
+			err := processor.Parse(maliciousJSON, &result)
+			if err == nil {
+				t.Errorf("Attack at position %d should be caught", pos)
+			}
+		})
+	}
+}
+
+// ============================================================================
 // Benchmark tests
 // ============================================================================
 

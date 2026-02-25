@@ -580,3 +580,470 @@ func TestEncodeDecodeIntegration(t *testing.T) {
 		helper.AssertEqual(float64(42), decoded["count"])
 	})
 }
+
+// ============================================================================
+// SCHEMA VALIDATION TESTS
+// ============================================================================
+
+// TestProcessorValidateSchema tests Processor.ValidateSchema method
+func TestProcessorValidateSchema(t *testing.T) {
+	processor := New()
+	defer processor.Close()
+
+	t.Run("valid object with schema", func(t *testing.T) {
+		jsonStr := `{"name": "Alice", "age": 30}`
+		schema := &Schema{
+			Type:     "object",
+			Required: []string{"name"},
+			Properties: map[string]*Schema{
+				"name": {Type: "string"},
+				"age":  {Type: "number"},
+			},
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("missing required field", func(t *testing.T) {
+		jsonStr := `{"age": 30}`
+		schema := &Schema{
+			Type:     "object",
+			Required: []string{"name"},
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) == 0 {
+			t.Error("ValidateSchema should report missing required field")
+		}
+	})
+
+	t.Run("type mismatch", func(t *testing.T) {
+		jsonStr := `{"name": 123}`
+		schema := &Schema{
+			Type: "object",
+			Properties: map[string]*Schema{
+				"name": {Type: "string"},
+			},
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) == 0 {
+			t.Error("ValidateSchema should report type mismatch")
+		}
+	})
+
+	t.Run("nil schema returns error", func(t *testing.T) {
+		jsonStr := `{"name": "Alice"}`
+		_, err := processor.ValidateSchema(jsonStr, nil)
+		if err == nil {
+			t.Error("ValidateSchema should return error for nil schema")
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		jsonStr := `{invalid}`
+		schema := &Schema{Type: "object"}
+
+		_, err := processor.ValidateSchema(jsonStr, schema)
+		if err == nil {
+			t.Error("ValidateSchema should return error for invalid JSON")
+		}
+	})
+
+	t.Run("array validation", func(t *testing.T) {
+		jsonStr := `[1, 2, 3]`
+		schema := &Schema{
+			Type:     "array",
+			MinItems: 2,
+			MaxItems: 5,
+			Items:    &Schema{Type: "number"},
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("array min items violation", func(t *testing.T) {
+		jsonStr := `[1]`
+		schema := &Schema{
+			Type: "array",
+		}
+		schema.SetMinItems(2) // Use setter to set hasMinItems flag
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) == 0 {
+			t.Error("ValidateSchema should report min items violation")
+		}
+	})
+
+	t.Run("array max items violation", func(t *testing.T) {
+		jsonStr := `[1, 2, 3, 4, 5]`
+		schema := &Schema{
+			Type: "array",
+		}
+		schema.SetMaxItems(3) // Use setter to set hasMaxItems flag
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) == 0 {
+			t.Error("ValidateSchema should report max items violation")
+		}
+	})
+
+	t.Run("string validation", func(t *testing.T) {
+		jsonStr := `"hello"`
+		schema := &Schema{
+			Type:      "string",
+			MinLength: 1,
+			MaxLength: 10,
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("string pattern validation", func(t *testing.T) {
+		jsonStr := `"test@example.com"`
+		schema := &Schema{
+			Type:    "string",
+			Pattern: `^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`,
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("number validation", func(t *testing.T) {
+		jsonStr := `50`
+		schema := &Schema{
+			Type:    "number",
+			Minimum: 0,
+			Maximum: 100,
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("enum validation", func(t *testing.T) {
+		jsonStr := `"red"`
+		schema := &Schema{
+			Type: "string",
+			Enum: []any{"red", "green", "blue"},
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("enum validation failure", func(t *testing.T) {
+		jsonStr := `"yellow"`
+		schema := &Schema{
+			Type: "string",
+			Enum: []any{"red", "green", "blue"},
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) == 0 {
+			t.Error("ValidateSchema should report enum violation")
+		}
+	})
+
+	t.Run("const validation", func(t *testing.T) {
+		jsonStr := `"fixed"`
+		schema := &Schema{
+			Type:  "string",
+			Const: "fixed",
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("const validation failure", func(t *testing.T) {
+		jsonStr := `"other"`
+		schema := &Schema{
+			Type:  "string",
+			Const: "fixed",
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) == 0 {
+			t.Error("ValidateSchema should report const violation")
+		}
+	})
+
+	t.Run("boolean type validation", func(t *testing.T) {
+		jsonStr := `true`
+		schema := &Schema{
+			Type: "boolean",
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("null type validation", func(t *testing.T) {
+		jsonStr := `null`
+		schema := &Schema{
+			Type: "null",
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("unique items validation", func(t *testing.T) {
+		jsonStr := `[1, 2, 3, 4, 5]`
+		schema := &Schema{
+			Type:        "array",
+			UniqueItems: true,
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+
+	t.Run("unique items validation failure", func(t *testing.T) {
+		jsonStr := `[1, 2, 3, 2, 5]`
+		schema := &Schema{
+			Type:        "array",
+			UniqueItems: true,
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) == 0 {
+			t.Error("ValidateSchema should report duplicate items")
+		}
+	})
+
+	t.Run("additional properties not allowed", func(t *testing.T) {
+		jsonStr := `{"name": "Alice", "extra": "value"}`
+		schema := &Schema{
+			Type:                 "object",
+			AdditionalProperties: false,
+			Properties: map[string]*Schema{
+				"name": {Type: "string"},
+			},
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) == 0 {
+			t.Error("ValidateSchema should report additional property")
+		}
+	})
+
+	t.Run("nested object validation", func(t *testing.T) {
+		jsonStr := `{"user": {"name": "Alice", "age": 30}}`
+		schema := &Schema{
+			Type: "object",
+			Properties: map[string]*Schema{
+				"user": {
+					Type: "object",
+					Properties: map[string]*Schema{
+						"name": {Type: "string"},
+						"age":  {Type: "number"},
+					},
+				},
+			},
+		}
+
+		errors, err := processor.ValidateSchema(jsonStr, schema)
+		if err != nil {
+			t.Fatalf("ValidateSchema error: %v", err)
+		}
+		if len(errors) != 0 {
+			t.Errorf("ValidateSchema should have no errors, got: %v", errors)
+		}
+	})
+}
+
+// TestSchemaMethods tests Schema setter methods
+func TestSchemaMethods(t *testing.T) {
+	schema := &Schema{}
+
+	t.Run("SetMinLength", func(t *testing.T) {
+		schema.SetMinLength(5)
+		if schema.MinLength != 5 {
+			t.Errorf("MinLength = %d, want 5", schema.MinLength)
+		}
+	})
+
+	t.Run("SetMaxLength", func(t *testing.T) {
+		schema.SetMaxLength(100)
+		if schema.MaxLength != 100 {
+			t.Errorf("MaxLength = %d, want 100", schema.MaxLength)
+		}
+	})
+
+	t.Run("SetMinimum", func(t *testing.T) {
+		schema.SetMinimum(0.0)
+		if schema.Minimum != 0.0 {
+			t.Errorf("Minimum = %v, want 0.0", schema.Minimum)
+		}
+	})
+
+	t.Run("SetMaximum", func(t *testing.T) {
+		schema.SetMaximum(100.0)
+		if schema.Maximum != 100.0 {
+			t.Errorf("Maximum = %v, want 100.0", schema.Maximum)
+		}
+	})
+
+	t.Run("SetMinItems", func(t *testing.T) {
+		schema.SetMinItems(1)
+		if schema.MinItems != 1 {
+			t.Errorf("MinItems = %d, want 1", schema.MinItems)
+		}
+	})
+
+	t.Run("SetMaxItems", func(t *testing.T) {
+		schema.SetMaxItems(10)
+		if schema.MaxItems != 10 {
+			t.Errorf("MaxItems = %d, want 10", schema.MaxItems)
+		}
+	})
+
+	t.Run("SetExclusiveMinimum", func(t *testing.T) {
+		schema.SetExclusiveMinimum(true)
+		if !schema.ExclusiveMinimum {
+			t.Error("ExclusiveMinimum should be true")
+		}
+	})
+
+	t.Run("SetExclusiveMaximum", func(t *testing.T) {
+		schema.SetExclusiveMaximum(true)
+		if !schema.ExclusiveMaximum {
+			t.Error("ExclusiveMaximum should be true")
+		}
+	})
+
+	t.Run("HasMinLength", func(t *testing.T) {
+		if !schema.HasMinLength() {
+			t.Error("HasMinLength should be true")
+		}
+	})
+
+	t.Run("HasMaxLength", func(t *testing.T) {
+		if !schema.HasMaxLength() {
+			t.Error("HasMaxLength should be true")
+		}
+	})
+
+	t.Run("HasMinimum", func(t *testing.T) {
+		if !schema.HasMinimum() {
+			t.Error("HasMinimum should be true")
+		}
+	})
+
+	t.Run("HasMaximum", func(t *testing.T) {
+		if !schema.HasMaximum() {
+			t.Error("HasMaximum should be true")
+		}
+	})
+
+	t.Run("HasMinItems", func(t *testing.T) {
+		if !schema.HasMinItems() {
+			t.Error("HasMinItems should be true")
+		}
+	})
+
+	t.Run("HasMaxItems", func(t *testing.T) {
+		if !schema.HasMaxItems() {
+			t.Error("HasMaxItems should be true")
+		}
+	})
+}
+
+// TestDefaultSchema tests DefaultSchema function
+func TestDefaultSchema(t *testing.T) {
+	schema := DefaultSchema()
+
+	if schema == nil {
+		t.Fatal("DefaultSchema returned nil")
+	}
+
+	// Should have empty type by default
+	if schema.Type != "" {
+		t.Errorf("Default type = %q, want empty string", schema.Type)
+	}
+
+	// Should allow additional properties by default
+	if !schema.AdditionalProperties {
+		t.Error("AdditionalProperties should be true by default")
+	}
+}

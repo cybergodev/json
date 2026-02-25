@@ -66,6 +66,7 @@ type lruEntry struct {
 	accessTime int64
 	size       int32
 	hits       int64
+	freq       uint8 // Access frequency counter (0-255) for LFU-style eviction
 }
 
 // resetEntry resets all fields of an lruEntry for pool reuse
@@ -77,6 +78,7 @@ func (e *lruEntry) reset() {
 	e.accessTime = 0
 	e.size = 0
 	e.hits = 0
+	e.freq = 0
 }
 
 // NewCacheManager creates a new cache manager with sharding
@@ -246,6 +248,10 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 		if element, exists := shard.items[key]; exists {
 			entry := element.Value.(*lruEntry)
 			entry.accessTime = now
+			// Increment frequency for LFU-style eviction (cap at 255)
+			if entry.freq < 255 {
+				entry.freq++
+			}
 			shard.evictList.MoveToFront(element)
 		}
 		shard.mu.Unlock()
@@ -456,19 +462,43 @@ func (cm *CacheManager) hashKey(key string) uint64 {
 	return h
 }
 
-// evictLRU evicts the least recently used entry from a shard
+// evictLRU evicts entries using frequency-aware LRU strategy
+// PERFORMANCE: Considers access frequency to keep hot entries in cache
 func (cm *CacheManager) evictLRU(shard *cacheShard) {
 	element := shard.evictList.Back()
 	if element == nil {
 		return
 	}
 
-	entry := element.Value.(*lruEntry)
+	// Find the best candidate for eviction among the last 5 entries
+	// This provides LFU-style behavior while keeping overhead low
+	candidates := 0
+	bestCandidate := element
+	bestEntry := element.Value.(*lruEntry)
+
+	for e := element; e != nil && candidates < 5; e = e.Prev() {
+		entry := e.Value.(*lruEntry)
+		// Prefer evicting entries with lower frequency, or lower hits if frequency is equal
+		if entry.freq < bestEntry.freq || (entry.freq == bestEntry.freq && entry.hits < bestEntry.hits) {
+			bestCandidate = e
+			bestEntry = entry
+		}
+		candidates++
+	}
+
+	entry := bestCandidate.Value.(*lruEntry)
 	delete(shard.items, entry.key)
-	shard.evictList.Remove(element)
+	shard.evictList.Remove(bestCandidate)
 	shard.size--
 	atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
 	atomic.AddInt64(&cm.evictions, 1)
+
+	// Decay frequency of remaining entries to prevent old hot entries from dominating
+	for e := shard.evictList.Front(); e != nil; e = e.Next() {
+		if en := e.Value.(*lruEntry); en.freq > 0 {
+			en.freq = en.freq - 1
+		}
+	}
 
 	// Reset and return entry to pool
 	entry.reset()

@@ -168,6 +168,12 @@ func ValidateConfig(config *Config) error {
 }
 
 // HighSecurityConfig returns a configuration with enhanced security settings
+// for processing untrusted input from external sources.
+//
+// SECURITY: This configuration enables FullSecurityScan by default, which
+// disables sampling-based validation and performs complete security scanning
+// on all JSON input. Use this for public APIs, authentication endpoints,
+// financial data processing, or any scenario with untrusted input.
 func HighSecurityConfig() *Config {
 	config := DefaultConfig()
 	config.MaxNestingDepthSecurity = 20
@@ -178,6 +184,7 @@ func HighSecurityConfig() *Config {
 	config.MaxPathDepth = 20
 	config.EnableValidation = true
 	config.StrictMode = true
+	config.FullSecurityScan = true // SECURITY: Enable full scan for maximum protection
 	return config
 }
 

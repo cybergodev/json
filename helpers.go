@@ -619,14 +619,25 @@ func ValidatePath(path string) error {
 	return processor.validatePath(path)
 }
 
+// deepCopyMaxDepth is the maximum recursion depth for DeepCopy operations
+// SECURITY: Prevents stack overflow from deeply nested structures
+const deepCopyMaxDepth = 200
+
 // DeepCopy creates a deep copy of JSON-compatible data
 // Uses direct recursive copying for better performance (avoids marshal/unmarshal overhead)
+// SECURITY: Added depth limit to prevent stack overflow
 func DeepCopy(data any) (any, error) {
-	return deepCopyValue(data)
+	return deepCopyValueWithDepth(data, 0)
 }
 
-// deepCopyValue performs recursive deep copy without serialization
-func deepCopyValue(data any) (any, error) {
+// deepCopyValueWithDepth performs recursive deep copy with depth tracking
+// SECURITY: Depth parameter prevents stack overflow from deeply nested structures
+func deepCopyValueWithDepth(data any, depth int) (any, error) {
+	// SECURITY: Check depth limit to prevent stack overflow
+	if depth > deepCopyMaxDepth {
+		return nil, fmt.Errorf("deep copy depth limit exceeded: maximum depth is %d", deepCopyMaxDepth)
+	}
+
 	if data == nil {
 		return nil, nil
 	}
@@ -669,9 +680,9 @@ func deepCopyValue(data any) (any, error) {
 	// Handle complex types with type-specific optimizations
 	switch v := data.(type) {
 	case map[string]any:
-		return deepCopyMap(v)
+		return deepCopyMapWithDepth(v, depth)
 	case []any:
-		return deepCopySlice(v)
+		return deepCopySliceWithDepth(v, depth)
 	case map[string]string:
 		// Fast path for map[string]string - no recursion needed
 		result := make(map[string]string, len(v))
@@ -713,11 +724,12 @@ func deepCopyValue(data any) (any, error) {
 	}
 }
 
-// deepCopyMap creates a deep copy of a map
-func deepCopyMap(m map[string]any) (map[string]any, error) {
+// deepCopyMapWithDepth creates a deep copy of a map with depth tracking
+// SECURITY: Pass depth to recursive calls for stack overflow protection
+func deepCopyMapWithDepth(m map[string]any, depth int) (map[string]any, error) {
 	result := make(map[string]any, len(m))
 	for key, val := range m {
-		copied, err := deepCopyValue(val)
+		copied, err := deepCopyValueWithDepth(val, depth+1)
 		if err != nil {
 			return nil, fmt.Errorf("error copying key '%s': %v", key, err)
 		}
@@ -726,11 +738,12 @@ func deepCopyMap(m map[string]any) (map[string]any, error) {
 	return result, nil
 }
 
-// deepCopySlice creates a deep copy of a slice
-func deepCopySlice(s []any) ([]any, error) {
+// deepCopySliceWithDepth creates a deep copy of a slice with depth tracking
+// SECURITY: Pass depth to recursive calls for stack overflow protection
+func deepCopySliceWithDepth(s []any, depth int) ([]any, error) {
 	result := make([]any, len(s))
 	for i, val := range s {
-		copied, err := deepCopyValue(val)
+		copied, err := deepCopyValueWithDepth(val, depth+1)
 		if err != nil {
 			return nil, fmt.Errorf("error copying index %d: %v", i, err)
 		}

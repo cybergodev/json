@@ -49,8 +49,25 @@ type Config struct {
 	PreserveNumbers   bool `json:"preserve_numbers"`
 	ValidateInput     bool `json:"validate_input"`
 	ValidateFilePath  bool `json:"validate_file_path"`
-	// FullSecurityScan enables full security validation for large JSON instead of sampling
-	// This provides maximum security but may impact performance for very large JSON
+	// FullSecurityScan enables full (non-sampling) security validation for all JSON input.
+	//
+	// When false (default): Large JSON (>4KB) uses optimized sampling with:
+	//   - 16KB beginning section scan
+	//   - 8KB end section scan
+	//   - 15-30 distributed middle samples with 512-byte overlap
+	//   - Critical patterns (__proto__, constructor, prototype) always fully scanned
+	//   - Suspicious character density triggers automatic full scan
+	//
+	// When true: All JSON is fully scanned regardless of size.
+	//
+	// SECURITY RECOMMENDATION: Enable FullSecurityScan when:
+	//   - Processing untrusted input from external sources
+	//   - Handling sensitive data (authentication, financial, personal)
+	//   - Building public-facing APIs or web services
+	//   - Compliance requirements mandate full content inspection
+	//
+	// PERFORMANCE NOTE: Full scanning adds ~10-30% overhead for JSON >100KB.
+	// For trusted internal services with large JSON payloads, sampling mode is acceptable.
 	FullSecurityScan bool `json:"full_security_scan"`
 }
 

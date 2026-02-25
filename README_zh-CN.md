@@ -909,19 +909,206 @@ if err != nil {
 
 ---
 
+## 📦 高级功能
+
+### JSONL (JSON Lines) 支持
+
+库提供对 JSON Lines 格式的全面支持，常用于日志、数据管道和流式数据：
+
+```go
+// 解析 JSONL 数据
+jsonlData := `{"name":"Alice","age":25}
+{"name":"Bob","age":30}
+{"name":"Carol","age":28}`
+
+// 解析为切片
+results, err := json.ParseJSONL([]byte(jsonlData))
+
+// 大文件的流式处理
+processor := json.NewJSONLProcessor(reader)
+err := processor.StreamLines(func(lineNum int, data any) bool {
+    fmt.Printf("第 %d 行: %v\n", lineNum, data)
+    return true // 继续处理
+})
+
+// CPU 密集型操作的并行处理
+err := processor.StreamLinesParallel(func(lineNum int, data any) error {
+    // 并行处理每一行
+    return nil
+}, 4) // 4 个工作协程
+
+// 泛型类型安全流式处理
+type User struct {
+    Name string `json:"name"`
+    Age  int    `json:"age"`
+}
+users, err := json.StreamLinesInto[User](reader, func(lineNum int, user User) error {
+    fmt.Printf("用户: %s, 年龄: %d\n", user.Name, user.Age)
+    return nil
+})
+
+// 写入 JSONL 输出
+writer := json.NewJSONLWriter(outputWriter)
+writer.Write(map[string]any{"event": "login", "user": "alice"})
+writer.Write(map[string]any{"event": "logout", "user": "bob"})
+
+// 将切片转换为 JSONL
+data := []any{
+    map[string]any{"id": 1, "name": "Alice"},
+    map[string]any{"id": 2, "name": "Bob"},
+}
+jsonlBytes, err := json.ToJSONL(data)
+```
+
+### 流式处理
+
+对于大型 JSON 文件，使用流式处理器避免将所有内容加载到内存：
+
+```go
+// 创建流式处理器
+processor := json.NewStreamingProcessor(reader, 64*1024) // 64KB 缓冲区
+
+// 逐个流式处理数组元素
+err := processor.StreamArray(func(index int, item any) bool {
+    fmt.Printf("项目 %d: %v\n", index, item)
+    return true // 继续
+})
+
+// 流式处理对象键值对
+err := processor.StreamObject(func(key string, value any) bool {
+    fmt.Printf("键: %s, 值: %v\n", key, value)
+    return true
+})
+
+// 批量操作的分块处理
+err := processor.StreamArrayChunked(100, func(chunk []any) error {
+    // 每次处理 100 个项目
+    return nil
+})
+
+// 流式转换
+filtered, err := json.StreamArrayFilter(reader, func(item any) bool {
+    return item.(map[string]any)["active"] == true
+})
+
+transformed, err := json.StreamArrayMap(reader, func(item any) any {
+    item.(map[string]any)["processed"] = true
+    return item
+})
+
+// 内存高效的数组计数
+count, err := json.StreamArrayCount(reader)
+
+// 获取第一个匹配元素（提前终止）
+first, found, err := json.StreamArrayFirst(reader, func(item any) bool {
+    return item.(map[string]any)["priority"] == "high"
+})
+
+// 分页支持
+page2, err := json.StreamArraySkip(reader, 10)  // 跳过前 10 个
+page, err := json.StreamArrayTake(reader, 10)   // 获取前 10 个
+```
+
+### 懒加载 JSON 解析
+
+按需解析 JSON，仅在访问特定路径时提高性能：
+
+```go
+// 创建懒加载解析器 - 解析在首次访问时发生
+lazy := json.NewLazyJSON(jsonBytes)
+
+// 仅在调用 Get 时解析
+value, err := lazy.Get("user.profile.name")
+
+// 检查是否已解析
+if lazy.IsParsed() {
+    data := lazy.Parsed()
+}
+
+// 获取解析错误（如未解析则触发解析）
+if err := lazy.Error(); err != nil {
+    log.Printf("解析错误: %v", err)
+}
+
+// 不解析直接访问原始字节
+rawBytes := lazy.Raw()
+```
+
+### 大文件处理
+
+高效处理超大 JSON 文件：
+
+```go
+// 配置大文件处理
+config := json.LargeFileConfig{
+    ChunkSize:       1024 * 1024,       // 1MB 分块
+    MaxMemory:       100 * 1024 * 1024, // 100MB 最大内存
+    BufferSize:      64 * 1024,         // 64KB 缓冲区
+    SamplingEnabled: true,
+    SampleSize:      1000,
+}
+
+processor := json.NewLargeFileProcessor(config)
+
+// 逐元素处理文件
+err := processor.ProcessFile("large.json", func(item any) error {
+    // 处理每个项目而不加载整个文件
+    return nil
+})
+
+// 批量操作的块处理
+err := processor.ProcessFileChunked("large.json", 100, func(chunk []any) error {
+    // 每次处理 100 个项目
+    return nil
+})
+
+// 自定义处理的分块读取器
+reader := json.NewChunkedReader(file, 1024*1024)
+err := reader.ReadArray(func(item any) bool {
+    // 处理每个项目
+    return true
+})
+```
+
+### NDJSON 处理
+
+高效处理换行分隔的 JSON 文件：
+
+```go
+processor := json.NewNDJSONProcessor(64 * 1024) // 64KB 缓冲区
+
+// 逐行处理文件
+err := processor.ProcessFile("logs.ndjson", func(lineNum int, obj map[string]any) error {
+    fmt.Printf("第 %d 行: %v\n", lineNum, obj)
+    return nil
+})
+
+// 从 reader 处理
+err := processor.ProcessReader(reader, func(lineNum int, obj map[string]any) error {
+    // 处理每个 JSON 对象
+    return nil
+})
+```
+
+---
+
 ## 💡 示例与资源
 
 ### 📁 示例代码
 
-- **[基础用法](examples/1_basic_usage.go)** - examples/1.basic_usage.go
-- **[高级功能](examples/2_advanced_features.go)** - examples/2.advanced_features.go
-- **[生产就绪](examples/3_production_ready.go)** - examples/3.production_ready.go
+- **[基础用法](examples/1_basic_usage.go)** - 核心操作入门
+- **[高级功能](examples/2_advanced_features.go)** - 复杂路径查询和文件操作
+- **[生产就绪](examples/3_production_ready.go)** - 线程安全模式和监控
+- **[类型转换](examples/7_type_conversion.go)** - 安全类型转换工具
+- **[文件操作](examples/10_file_operations.go)** - JSON 文件读写
+- **[迭代器函数](examples/9_iterator_functions.go)** - 迭代和遍历模式
+- **[默认值处理](examples/11_with_defaults.go)** - 默认值处理
+- **[高级删除](examples/12_advanced_delete.go)** - 复杂删除操作
 
 ### 📖 更多资源
 
-- **[兼容性指南](docs/COMPATIBILITY.md)** - `encoding/json` 的直接替换
-- **[快速参考](docs/QUICK_REFERENCE.md)** - 常用操作速查表
 - **[API 文档](https://pkg.go.dev/github.com/cybergodev/json)** - 完整 API 参考
+- **[安全指南](docs/SECURITY.md)** - 安全最佳实践和配置
 
 ---
 

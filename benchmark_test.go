@@ -790,3 +790,217 @@ func BenchmarkIterableValue_GetTyped(b *testing.B) {
 		_ = iv.GetBool("active")
 	}
 }
+
+// ----------------------------------------------------------------------------
+// ADDITIONAL PERFORMANCE BENCHMARKS (from performance_test.go)
+// ----------------------------------------------------------------------------
+
+// BenchmarkFastSet_Simple compares FastSet vs Set performance
+func BenchmarkFastSet_Simple(b *testing.B) {
+	processor := New()
+	defer processor.Close()
+
+	jsonStr := `{"name":"test","age":30,"active":true}`
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = processor.FastSet(jsonStr, "name", "updated")
+	}
+}
+
+// BenchmarkSet_Simple for comparison with FastSet
+func BenchmarkSet_Simple(b *testing.B) {
+	processor := New()
+	defer processor.Close()
+
+	jsonStr := `{"name":"test","age":30,"active":true}`
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = processor.Set(jsonStr, "name", "updated")
+	}
+}
+
+// BenchmarkFastDelete_Simple compares FastDelete vs Delete performance
+func BenchmarkFastDelete_Simple(b *testing.B) {
+	processor := New()
+	defer processor.Close()
+
+	jsonStr := `{"name":"test","age":30,"active":true}`
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = processor.FastDelete(jsonStr, "name")
+	}
+}
+
+// BenchmarkDelete_Simple for comparison with FastDelete
+func BenchmarkDelete_Simple(b *testing.B) {
+	processor := New()
+	defer processor.Close()
+
+	jsonStr := `{"name":"test","age":30,"active":true}`
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = processor.Delete(jsonStr, "name")
+	}
+}
+
+// BenchmarkBatchSetOptimized benchmarks the BatchSetOptimized method
+func BenchmarkBatchSetOptimized(b *testing.B) {
+	processor := New()
+	defer processor.Close()
+
+	jsonStr := `{"a":1,"b":2,"c":3,"d":4,"e":5}`
+	updates := map[string]any{
+		"a": 10,
+		"b": 20,
+		"c": 30,
+	}
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = processor.BatchSetOptimized(jsonStr, updates)
+	}
+}
+
+// BenchmarkFastGetMultiple benchmarks the FastGetMultiple method
+func BenchmarkFastGetMultiple(b *testing.B) {
+	processor := New()
+	defer processor.Close()
+
+	jsonStr := `{"a":1,"b":2,"c":3,"d":4,"e":5}`
+	paths := []string{"a", "b", "c", "d", "e"}
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, _ = processor.FastGetMultiple(jsonStr, paths)
+	}
+}
+
+// BenchmarkPooledSliceIterator benchmarks pooled slice iterator
+func BenchmarkPooledSliceIterator(b *testing.B) {
+	data := make([]any, 1000)
+	for i := range data {
+		data[i] = i
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it := NewPooledSliceIterator(data)
+		for it.Next() {
+			_ = it.Value()
+		}
+		it.Release()
+	}
+}
+
+// BenchmarkRegularSliceIteration for comparison with pooled iterator
+func BenchmarkRegularSliceIteration(b *testing.B) {
+	data := make([]any, 1000)
+	for i := range data {
+		data[i] = i
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, v := range data {
+			_ = v
+		}
+	}
+}
+
+// BenchmarkPooledMapIterator benchmarks pooled map iterator
+func BenchmarkPooledMapIterator(b *testing.B) {
+	data := make(map[string]any, 100)
+	for i := 0; i < 100; i++ {
+		data[string(rune('a'+i%26))+string(rune('a'+i/26))] = i
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		it := NewPooledMapIterator(data)
+		for it.Next() {
+			_, _ = it.Key(), it.Value()
+		}
+		it.Release()
+	}
+}
+
+// BenchmarkRegularMapIteration for comparison with pooled iterator
+func BenchmarkRegularMapIteration(b *testing.B) {
+	data := make(map[string]any, 100)
+	for i := 0; i < 100; i++ {
+		data[string(rune('a'+i%26))+string(rune('a'+i/26))] = i
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for k, v := range data {
+			_, _ = k, v
+		}
+	}
+}
+
+// BenchmarkLargeBufferPool benchmarks large buffer pool operations
+func BenchmarkLargeBufferPool(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := getLargeBuffer()
+		*buf = append(*buf, make([]byte, 1024)...)
+		putLargeBuffer(buf)
+	}
+}
+
+// BenchmarkEncodeBufferPool benchmarks encode buffer pool operations
+func BenchmarkEncodeBufferPool(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := GetEncodeBuffer()
+		buf = append(buf, make([]byte, 512)...)
+		PutEncodeBuffer(buf)
+	}
+}
+
+// BenchmarkIsSimplePropertyAccess benchmarks simple property detection
+func BenchmarkIsSimplePropertyAccess(b *testing.B) {
+	paths := []string{
+		"name",
+		"user",
+		"profile",
+		"settings",
+		"data123",
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for _, p := range paths {
+			_ = isSimplePropertyAccess(p)
+		}
+	}
+}
+
+// BenchmarkStreamingProcessor_Array benchmarks streaming processor for arrays
+func BenchmarkStreamingProcessor_Array(b *testing.B) {
+	var buf bytes.Buffer
+	buf.WriteString("[")
+	for i := 0; i < 1000; i++ {
+		if i > 0 {
+			buf.WriteString(",")
+		}
+		buf.WriteString(`{"id":`)
+		buf.WriteString(strings.Repeat("0", 3))
+		buf.WriteString(`}`)
+	}
+	buf.WriteString("]")
+	data := buf.Bytes()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sp := NewStreamingProcessor(bytes.NewReader(data), 0)
+		_ = sp.StreamArray(func(index int, item any) bool {
+			return true
+		})
+	}
+}

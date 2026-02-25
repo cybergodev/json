@@ -324,10 +324,13 @@ func (pp *ParallelProcessor) ParallelForEachMap(m map[string]any, fn func(key st
 
 // WorkerPool manages a pool of worker goroutines
 type WorkerPool struct {
-	tasks    chan func()
-	workers  int
-	wg       sync.WaitGroup
-	stopChan chan struct{}
+	tasks     chan func()
+	workers   int
+	wg        sync.WaitGroup
+	stopChan  chan struct{}
+	stopped   atomic.Bool
+	taskCount int32      // Tracks the number of pending tasks
+	doneCond  *sync.Cond // Condition variable for efficient waiting
 }
 
 // NewWorkerPool creates a new worker pool
@@ -340,6 +343,7 @@ func NewWorkerPool(workers int) *WorkerPool {
 		tasks:    make(chan func(), workers*2),
 		workers:  workers,
 		stopChan: make(chan struct{}),
+		doneCond: sync.NewCond(&sync.Mutex{}),
 	}
 
 	// Start workers
@@ -359,6 +363,10 @@ func (wp *WorkerPool) worker() {
 		select {
 		case task := <-wp.tasks:
 			task()
+			// Decrement task count and signal if all tasks are done
+			if atomic.AddInt32(&wp.taskCount, -1) == 0 {
+				wp.doneCond.Broadcast()
+			}
 		case <-wp.stopChan:
 			return
 		}
@@ -367,26 +375,55 @@ func (wp *WorkerPool) worker() {
 
 // Submit adds a task to the pool
 func (wp *WorkerPool) Submit(task func()) {
+	// Don't accept new tasks if pool is stopped
+	if wp.stopped.Load() {
+		return
+	}
+
+	// Increment task count before submitting
+	atomic.AddInt32(&wp.taskCount, 1)
+
 	select {
 	case wp.tasks <- task:
+		// Task submitted successfully
 	default:
-		// If channel is full, run synchronously
-		task()
+		// Channel is full, run synchronously (only if not stopped)
+		if !wp.stopped.Load() {
+			task()
+			// Decrement task count since we ran it synchronously
+			if atomic.AddInt32(&wp.taskCount, -1) == 0 {
+				wp.doneCond.Broadcast()
+			}
+		} else {
+			// Pool stopped, decrement the count we added
+			if atomic.AddInt32(&wp.taskCount, -1) == 0 {
+				wp.doneCond.Broadcast()
+			}
+		}
 	}
 }
 
 // Stop stops the worker pool
 func (wp *WorkerPool) Stop() {
+	wp.stopped.Store(true)
 	close(wp.stopChan)
 	wp.wg.Wait()
 }
 
 // Wait waits for all tasks to complete
+// PERFORMANCE: Uses condition variable instead of busy-wait for efficient CPU usage
 func (wp *WorkerPool) Wait() {
-	// Wait for tasks channel to drain
-	for len(wp.tasks) > 0 {
-		// Busy wait - not ideal but simple
+	// Fast path: no tasks pending
+	if atomic.LoadInt32(&wp.taskCount) <= 0 {
+		return
 	}
+
+	// Wait for all tasks to complete using condition variable
+	wp.doneCond.L.Lock()
+	for atomic.LoadInt32(&wp.taskCount) > 0 {
+		wp.doneCond.Wait()
+	}
+	wp.doneCond.L.Unlock()
 }
 
 // ============================================================================
