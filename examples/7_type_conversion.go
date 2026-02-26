@@ -99,11 +99,11 @@ func demonstrateSafeConversion() {
 
 	fmt.Println("\n   Converting various types to bool:")
 	boolValues := []interface{}{
-		true, false, 1, 0, "true", "false", "yes", "no", 2, 0.0,
+		true, false, 1, 0, "true", "false", "TRUE", "FALSE", "1", "0", "T", "F", "yes", "no", "on", "off", 2, 0.0, 0.1,
 	}
 	for _, v := range boolValues {
 		if result, ok := json.ConvertToBool(v); ok {
-			fmt.Printf("   %10v -> %t\n", v, result)
+			fmt.Printf("   %25v -> %t\n", v, result)
 		}
 	}
 }
@@ -212,19 +212,21 @@ func demonstrateBoolConversion() {
 		{0.0},
 		{"true"},
 		{"false"},
+		{"TRUE"},
+		{"FALSE"},
 		{"1"},
 		{"0"},
+		{"T"},
+		{"F"},
 		{"yes"},
 		{"no"},
+		{"on"},
+		{"off"},
 	}
 
 	for _, tc := range testCases {
 		if result, ok := json.ConvertToBool(tc.value); ok {
-			status := "truthy"
-			if !result {
-				status = "falsy"
-			}
-			fmt.Printf("   %15v -> %t (%s)\n", tc.value, result, status)
+			fmt.Printf("   %15v -> %t\n", tc.value, result)
 		}
 	}
 }

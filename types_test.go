@@ -398,6 +398,30 @@ func TestConvertToBool(t *testing.T) {
 			shouldSucceed: true,
 		},
 		{
+			name:          "from string T",
+			input:         "T",
+			expected:      true,
+			shouldSucceed: true,
+		},
+		{
+			name:          "from string F",
+			input:         "F",
+			expected:      false,
+			shouldSucceed: true,
+		},
+		{
+			name:          "from string True",
+			input:         "True",
+			expected:      true,
+			shouldSucceed: true,
+		},
+		{
+			name:          "from string False",
+			input:         "False",
+			expected:      false,
+			shouldSucceed: true,
+		},
+		{
 			name:          "from string yes",
 			input:         "yes",
 			expected:      true,

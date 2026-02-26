@@ -120,11 +120,11 @@ func demonstrateHTMLEscaping() {
 
 	// With HTML escaping (default, safe for web)
 	configWithEscape := json.DefaultEncodeConfig()
-	configWithEscape.EscapeHTML = true
-	configWithEscape.Pretty = true
+	configWithEscape.EscapeHTML = true // default
+	configWithEscape.Pretty = false    // default
 
 	escapedJSON, _ := json.Encode(data, configWithEscape)
-	fmt.Println("   With HTML escaping (safe for web):")
+	fmt.Println("   With HTML escaping (default, safe for web):")
 	fmt.Println(escapedJSON)
 
 	// Without HTML escaping
@@ -133,7 +133,7 @@ func demonstrateHTMLEscaping() {
 	configWithoutEscape.Pretty = true
 
 	unescapedJSON, _ := json.Encode(data, configWithoutEscape)
-	fmt.Println("\n   Without HTML escaping (readable):")
+	fmt.Println("\n   Without HTML escaping (custom, readable):")
 	fmt.Println(unescapedJSON)
 }
 
@@ -186,23 +186,33 @@ func demonstrateFloatPrecision() {
 	fmt.Println("   Default precision (auto):")
 	fmt.Println(defaultJSON)
 
-	// Fixed precision: 2 decimal places
+	// Fixed precision: 2 decimal places (rounding)
 	configFixed2 := json.DefaultEncodeConfig()
 	configFixed2.Pretty = true
 	configFixed2.FloatPrecision = 2
 
 	fixed2JSON, _ := json.Encode(data, configFixed2)
-	fmt.Println("\n   Fixed precision (2 decimals):")
+	fmt.Println("\n   Fixed precision (2 decimals, rounded):")
 	fmt.Println(fixed2JSON)
 
-	// Fixed precision: 4 decimal places
+	// Fixed precision: 4 decimal places (rounding)
 	configFixed4 := json.DefaultEncodeConfig()
 	configFixed4.Pretty = true
 	configFixed4.FloatPrecision = 4
 
 	fixed4JSON, _ := json.Encode(data, configFixed4)
-	fmt.Println("\n   Fixed precision (4 decimals):")
+	fmt.Println("\n   Fixed precision (4 decimals, rounded):")
 	fmt.Println(fixed4JSON)
+
+	// Fixed precision: 4 decimal places (truncate)
+	configTruncate := json.DefaultEncodeConfig()
+	configTruncate.Pretty = true
+	configTruncate.FloatPrecision = 4
+	configTruncate.FloatTruncate = true // Enable truncation
+
+	truncateJSON, _ := json.Encode(data, configTruncate)
+	fmt.Println("\n   Fixed precision (4 decimals, truncated):")
+	fmt.Println(truncateJSON)
 }
 
 func demonstrateOmitEmpty() {

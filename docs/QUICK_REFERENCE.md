@@ -193,6 +193,17 @@ json.ForeachWithPathAndIterator(data, "data.users", func(key any, item *json.Ite
 })
 ```
 
+### Streaming Iteration
+
+```go
+// Stream array elements without loading entire JSON
+processor := json.NewStreamingProcessor(reader, 64*1024)
+err := processor.StreamArray(func(index int, item any) bool {
+    fmt.Printf("Item %d: %v\n", index, item)
+    return true  // continue
+})
+```
+
 ### Complete Foreach Functions List
 
 | Function | Description | Use Case |
@@ -296,20 +307,29 @@ defer processor.Close()
 
 // Use custom configuration
 config := &json.Config{
-    EnableCache:      true,
-    MaxCacheSize:     128,                 // Default cache entry count
-    CacheTTL:         5 * time.Minute,     // Default cache TTL
-    MaxJSONSize:      100 * 1024 * 1024,   // 100MB (default)
-    MaxPathDepth:     50,                  // Default path depth
-    MaxConcurrency:   50,                  // Default max concurrency
-    EnableValidation: true,
+    EnableCache:               true,
+    MaxCacheSize:              128,                 // Default cache entry count
+    CacheTTL:                  5 * time.Minute,     // Default cache TTL
+    MaxJSONSize:               100 * 1024 * 1024,   // 100MB (default)
+    MaxPathDepth:              50,                  // Default path depth
+    MaxConcurrency:            50,                  // Default max concurrency
+    ParallelThreshold:         10,                  // Default parallel threshold
+    MaxBatchSize:              2000,                // Default batch size
+    MaxNestingDepthSecurity:   200,                 // Default nesting depth
+    MaxSecurityValidationSize: 10 * 1024 * 1024,    // 10MB validation size
+    MaxObjectKeys:             100000,              // Default max object keys
+    MaxArrayElements:          100000,              // Default max array elements
+    EnableValidation:          true,
+    ValidateInput:             true,
+    ValidateFilePath:          true,
 }
 processor := json.New(config)
 defer processor.Close()
 
 // Use predefined configurations
-processor := json.New(json.HighSecurityConfig())
-processor := json.New(json.LargeDataConfig())
+processor := json.New(json.HighSecurityConfig())  // For untrusted input
+processor := json.New(json.LargeDataConfig())     // For large JSON files
+processor := json.New(json.DefaultConfig())       // Same as json.New()
 ```
 
 ### Performance Monitoring
@@ -335,14 +355,20 @@ fmt.Printf("Health status: %v\n", health.Healthy)
 schema := &json.Schema{
     Type: "object",
     Properties: map[string]*json.Schema{
-        "name": {Type: "string"},
-        "age":  {Type: "number"},
+        "name": {Type: "string", MinLength: 1, MaxLength: 100},
+        "age":  {Type: "number", Minimum: 0, Maximum: 150},
+        "email": {Type: "string", Format: "email"},
     },
     Required: []string{"name", "age"},
 }
 
 processor := json.New(json.DefaultConfig())
 errors, err := processor.ValidateSchema(data, schema)
+
+// Check validation errors
+for _, verr := range errors {
+    fmt.Printf("Error at %s: %s\n", verr.Path, verr.Message)
+}
 ```
 
 ### Basic Validation
@@ -351,6 +377,16 @@ errors, err := processor.ValidateSchema(data, schema)
 // Validate JSON
 if json.Valid([]byte(jsonStr)) {
     fmt.Println("Valid JSON")
+}
+
+// Quick validation check
+if json.IsValidJSON(jsonStr) {
+    fmt.Println("Valid JSON")
+}
+
+// Validate path expression
+if json.IsValidPath("user.profile.name") {
+    fmt.Println("Valid path")
 }
 ```
 
@@ -375,6 +411,19 @@ name := json.GetStringWithDefault(data, "user.name", "Anonymous")
 if errors.Is(err, json.ErrTypeMismatch) {
     // Handle type mismatch
 }
+
+// 4. Check specific error types
+var jsonsErr *json.JsonsError
+if errors.As(err, &jsonsErr) {
+    fmt.Printf("Operation: %s, Path: %s\n", jsonsErr.Op, jsonsErr.Path)
+}
+
+// 5. Type-safe result handling
+result := json.TypeSafeResult[string]{}
+if result.Ok() {
+    fmt.Println(result.Value)
+}
+value := result.UnwrapOr("default")
 ```
 
 ### Set Operations Safety Guarantee
@@ -398,21 +447,126 @@ if err != nil {
 ## 💡 Tips
 
 ### Performance Optimization
-- ✅ Use caching for repeated queries
+- ✅ Use caching for repeated queries (enabled by default)
 - ✅ Batch operations are better than multiple single operations
-- ✅ Configure size limits appropriately
+- ✅ Configure size limits appropriately for your use case
+- ✅ Use streaming processors for large JSON files
+- ✅ Use `SkipValidation` option for trusted input only
 
 ### Best Practices
-- ✅ Use type-safe GetTyped methods
+- ✅ Use type-safe GetTyped methods for compile-time checking
 - ✅ Use default values for potentially missing fields
-- ✅ Enable validation in production
+- ✅ Enable validation in production (enabled by default)
 - ✅ Use defer processor.Close() to release resources
+- ✅ Use HighSecurityConfig() for untrusted input
 
 ### Common Pitfalls
 - ⚠️ Note the difference between null and missing fields
 - ⚠️ Array indices start at 0
 - ⚠️ Negative indices start at -1 (last element)
 - ⚠️ ForeachWithPath is read-only, cannot modify data
+- ⚠️ Set operations return original data on failure
+
+### Type Conversion Utilities
+
+```go
+// Safe type conversion
+intVal, ok := json.ConvertToInt(value)
+floatVal, ok := json.ConvertToFloat64(value)
+boolVal, ok := json.ConvertToBool(value)
+strVal := json.ConvertToString(value)
+
+// Generic type conversion
+result, ok := json.UnifiedTypeConversion[int](value)
+result, err := json.TypeSafeConvert[string](value)
+
+// Fast conversion (for hot paths)
+strVal, ok := json.FastToString(value)
+intVal, ok := json.FastToInt(value)
+floatVal, ok := json.FastToFloat64(value)
+boolVal, ok := json.FastToBool(value)
+```
+
+---
+
+## 🔄 JSONL (JSON Lines) Support
+
+```go
+// Parse JSONL data
+jsonlData := `{"name":"Alice","age":25}
+{"name":"Bob","age":30}
+{"name":"Carol","age":28}`
+results, err := json.ParseJSONL([]byte(jsonlData))
+
+// Stream processing for large files
+processor := json.NewJSONLProcessor(reader)
+err := processor.StreamLines(func(lineNum int, data any) bool {
+    fmt.Printf("Line %d: %v\n", lineNum, data)
+    return true  // continue
+})
+
+// Type-safe streaming
+type User struct {
+    Name string `json:"name"`
+    Age  int    `json:"age"`
+}
+users, err := json.StreamLinesInto[User](reader, func(lineNum int, user User) error {
+    fmt.Printf("User: %s, Age: %d\n", user.Name, user.Age)
+    return nil
+})
+
+// Write JSONL output
+writer := json.NewJSONLWriter(outputWriter)
+writer.Write(map[string]any{"event": "login", "user": "alice"})
+
+// Convert slice to JSONL
+data := []any{
+    map[string]any{"id": 1, "name": "Alice"},
+    map[string]any{"id": 2, "name": "Bob"},
+}
+jsonlBytes, err := json.ToJSONL(data)
+```
+
+---
+
+## 🌊 Streaming Processing
+
+```go
+// Create streaming processor for large JSON arrays
+processor := json.NewStreamingProcessor(reader, 64*1024) // 64KB buffer
+
+// Stream array elements
+err := processor.StreamArray(func(index int, item any) bool {
+    fmt.Printf("Item %d: %v\n", index, item)
+    return true  // continue
+})
+
+// Stream object key-value pairs
+err := processor.StreamObject(func(key string, value any) bool {
+    fmt.Printf("Key: %s, Value: %v\n", key, value)
+    return true
+})
+
+// Chunked processing for batch operations
+err := processor.StreamArrayChunked(100, func(chunk []any) error {
+    // Process 100 items at a time
+    return nil
+})
+
+// Stream transformations
+filtered, err := json.StreamArrayFilter(reader, func(item any) bool {
+    return item.(map[string]any)["active"] == true
+})
+
+transformed, err := json.StreamArrayMap(reader, func(item any) any {
+    item.(map[string]any)["processed"] = true
+    return item
+})
+
+// Pagination support
+page, err := json.StreamArraySkip(reader, 10)  // Skip first 10
+page, err := json.StreamArrayTake(reader, 10)  // Take first 10
+```
 
 ---
 

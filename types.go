@@ -298,6 +298,7 @@ type EncodeConfig struct {
 	// Number formatting
 	PreserveNumbers bool `json:"preserve_numbers"`
 	FloatPrecision  int  `json:"float_precision"`
+	FloatTruncate   bool `json:"float_truncate"` // Truncate instead of round when FloatPrecision >= 0
 
 	// Character escaping
 	DisableEscaping bool `json:"disable_escaping"`

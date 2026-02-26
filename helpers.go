@@ -344,7 +344,10 @@ func ConvertToFloat64(value any) (float64, bool) {
 	return 0.0, false
 }
 
-// ConvertToBool converts any value to bool
+// ConvertToBool converts any value to bool.
+// String conversion supports both standard formats and user-friendly formats:
+// Standard: "1", "t", "T", "TRUE", "true", "True", "0", "f", "F", "FALSE", "false", "False"
+// Extended: "yes", "on" -> true, "no", "off", "" -> false
 func ConvertToBool(value any) (bool, bool) {
 	switch v := value.(type) {
 	case bool:
@@ -374,10 +377,15 @@ func ConvertToBool(value any) (bool, bool) {
 	case float64:
 		return v != 0.0, true
 	case string:
+		// First try standard library format
+		if result, err := strconv.ParseBool(v); err == nil {
+			return result, true
+		}
+		// Then try extended user-friendly formats
 		switch strings.ToLower(v) {
-		case "true", "1", "yes", "on":
+		case "yes", "on":
 			return true, true
-		case "false", "0", "no", "off", "":
+		case "no", "off", "":
 			return false, true
 		}
 	case json.Number:

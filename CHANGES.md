@@ -7,6 +7,21 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.2.1 - Encoding & Documentation Update (2026-02-26)
+
+### Added
+- **FloatTruncate option**: New `EncodeConfig.FloatTruncate` field to truncate float precision instead of rounding
+
+### Changed
+- **ConvertToBool**: Extended with user-friendly formats (`yes`, `no`, `on`, `off`)
+- **Documentation**: Updated `docs/` for accuracy with actual codebase (COMPATIBILITY.md, QUICK_REFERENCE.md, SECURITY.md)
+
+### Fixed
+- **EscapeHTML option**: Correctly disables HTML escaping when set to `false`
+- **Pretty option**: Properly applies indentation formatting
+
+---
+
 ## v1.2.0 - Performance & Security Enhancement (2026-02-26)
 
 ### Added
