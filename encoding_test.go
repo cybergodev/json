@@ -119,6 +119,118 @@ func TestEncodingAdvanced(t *testing.T) {
 				helper.AssertTrue(strings.Contains(result, "3.1"))
 			})
 		})
+
+		t.Run("FloatTruncate", func(t *testing.T) {
+			type Data struct {
+				Value float64 `json:"value"`
+			}
+
+			t.Run("TruncateVsRound_Pi", func(t *testing.T) {
+				data := Data{Value: 3.141592653589793}
+
+				// Test rounding (default behavior)
+				configRound := DefaultEncodeConfig()
+				configRound.FloatPrecision = 4
+				configRound.FloatTruncate = false
+
+				resultRound, err := processor.EncodeWithConfig(data, configRound)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(resultRound, "3.1416"), "Expected 3.1416 (rounded)")
+
+				// Test truncation
+				configTrunc := DefaultEncodeConfig()
+				configTrunc.FloatPrecision = 4
+				configTrunc.FloatTruncate = true
+
+				resultTrunc, err := processor.EncodeWithConfig(data, configTrunc)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(resultTrunc, "3.1415"), "Expected 3.1415 (truncated)")
+			})
+
+			t.Run("Truncate_Precision2", func(t *testing.T) {
+				data := Data{Value: 3.149} // Should truncate to 3.14, not round to 3.15
+
+				config := DefaultEncodeConfig()
+				config.FloatPrecision = 2
+				config.FloatTruncate = true
+
+				result, err := processor.EncodeWithConfig(data, config)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(result, "3.14"), "Expected 3.14 (truncated)")
+			})
+
+			t.Run("Truncate_NegativeNumber", func(t *testing.T) {
+				data := Data{Value: -3.141592653589793}
+
+				config := DefaultEncodeConfig()
+				config.FloatPrecision = 4
+				config.FloatTruncate = true
+
+				result, err := processor.EncodeWithConfig(data, config)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(result, "-3.1415"), "Expected -3.1415 (truncated)")
+			})
+
+			t.Run("Truncate_Precision0", func(t *testing.T) {
+				data := Data{Value: 3.999}
+
+				config := DefaultEncodeConfig()
+				config.FloatPrecision = 0
+				config.FloatTruncate = true
+
+				result, err := processor.EncodeWithConfig(data, config)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(result, ":3"), "Expected 3 (truncated to integer)")
+			})
+
+			t.Run("Truncate_SmallNumber", func(t *testing.T) {
+				data := Data{Value: 0.123456789}
+
+				config := DefaultEncodeConfig()
+				config.FloatPrecision = 3
+				config.FloatTruncate = true
+
+				result, err := processor.EncodeWithConfig(data, config)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(result, "0.123"), "Expected 0.123 (truncated)")
+			})
+
+			t.Run("Truncate_LargePrecision", func(t *testing.T) {
+				data := Data{Value: 1.5} // Only 1 decimal place
+
+				config := DefaultEncodeConfig()
+				config.FloatPrecision = 5
+				config.FloatTruncate = true
+
+				result, err := processor.EncodeWithConfig(data, config)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(result, "1.50000"), "Expected 1.50000 (padded with zeros)")
+			})
+
+			t.Run("Truncate_IntegerValue", func(t *testing.T) {
+				data := Data{Value: 42.0}
+
+				config := DefaultEncodeConfig()
+				config.FloatPrecision = 3
+				config.FloatTruncate = true
+
+				result, err := processor.EncodeWithConfig(data, config)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(result, "42.000"), "Expected 42.000 (padded with zeros)")
+			})
+
+			t.Run("Truncate_VerySmallNumber", func(t *testing.T) {
+				data := Data{Value: 0.00000123456}
+
+				config := DefaultEncodeConfig()
+				config.FloatPrecision = 8
+				config.FloatTruncate = true
+
+				result, err := processor.EncodeWithConfig(data, config)
+				helper.AssertNoError(err)
+				helper.AssertTrue(strings.Contains(result, "0.00000123"), "Expected 0.00000123 (truncated)")
+			})
+		})
 	})
 
 	t.Run("HTMLEscaping", func(t *testing.T) {

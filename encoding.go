@@ -718,6 +718,8 @@ func (p *Processor) validateDepth(value any, maxDepth, currentDepth int) error {
 }
 
 // needsCustomEncodingOpts checks if the encoding options require custom encoding logic
+// Note: Go std lib json.Marshal escapes HTML by default since Go 1.13,
+// so we only need custom encoding when EscapeHTML is explicitly set to false.
 func needsCustomEncodingOpts(cfg *EncodeConfig) bool {
 	return cfg.DisableEscaping ||
 		cfg.EscapeUnicode ||
@@ -726,7 +728,7 @@ func needsCustomEncodingOpts(cfg *EncodeConfig) bool {
 		!cfg.EscapeTabs || // When false, need custom encoding to NOT escape
 		cfg.CustomEscapes != nil ||
 		cfg.SortKeys ||
-		cfg.EscapeHTML || // When true, need custom encoding to escape HTML (std lib doesn't)
+		!cfg.EscapeHTML || // When false, need custom encoding to NOT escape (std lib escapes by default)
 		cfg.FloatPrecision >= 0 ||
 		!cfg.IncludeNulls
 }
@@ -1111,6 +1113,13 @@ func (e *CustomEncoder) encodeJSONNumber(num json.Number) error {
 
 func (e *CustomEncoder) encodeFloat(f float64, bits int) error {
 	if e.config.FloatPrecision >= 0 {
+		if e.config.FloatTruncate {
+			// Truncate mode: format with higher precision then truncate
+			formatted := e.truncateFloat(f, e.config.FloatPrecision, bits)
+			e.buffer.WriteString(formatted)
+			return nil
+		}
+		// Default: round using standard FormatFloat
 		formatted := strconv.FormatFloat(f, 'f', e.config.FloatPrecision, bits)
 		e.buffer.WriteString(formatted)
 		return nil
@@ -1125,6 +1134,38 @@ func (e *CustomEncoder) encodeFloat(f float64, bits int) error {
 	}
 
 	return nil
+}
+
+// truncateFloat truncates a float to the specified precision without rounding
+func (e *CustomEncoder) truncateFloat(f float64, precision int, bits int) string {
+	// Format with high precision to get all digits
+	formatted := strconv.FormatFloat(f, 'f', 20, bits)
+
+	// Find decimal point
+	dotIdx := strings.Index(formatted, ".")
+	if dotIdx == -1 {
+		// No decimal point, add trailing zeros if precision > 0
+		if precision > 0 {
+			return formatted + "." + strings.Repeat("0", precision)
+		}
+		return formatted
+	}
+
+	// Calculate how many digits after decimal
+	afterDot := len(formatted) - dotIdx - 1
+
+	if precision == 0 {
+		// Return only integer part
+		return formatted[:dotIdx]
+	}
+
+	if afterDot <= precision {
+		// Need to pad with zeros
+		return formatted + strings.Repeat("0", precision-afterDot)
+	}
+
+	// Truncate to desired precision (simply cut off extra digits)
+	return formatted[:dotIdx+1+precision]
 }
 
 func (e *CustomEncoder) encodeString(s string) error {

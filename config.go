@@ -213,6 +213,7 @@ func DefaultEncodeConfig() *EncodeConfig {
 		DisallowUnknown: false,
 		PreserveNumbers: false,
 		FloatPrecision:  -1,
+		FloatTruncate:   false,
 		DisableEscaping: false,
 		EscapeUnicode:   false,
 		EscapeSlash:     false,

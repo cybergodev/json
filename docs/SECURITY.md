@@ -94,12 +94,20 @@ The default configuration provides balanced security and performance:
 ```go
 config := json.DefaultConfig()
 // Default security settings:
-// - MaxJSONSize: 100MB
+// - MaxJSONSize: 100MB (100 * 1024 * 1024)
 // - MaxPathDepth: 50
 // - MaxNestingDepthSecurity: 200
+// - MaxSecurityValidationSize: 10MB (10 * 1024 * 1024)
 // - MaxObjectKeys: 100,000
 // - MaxArrayElements: 100,000
+// - MaxConcurrency: 50
+// - ParallelThreshold: 10
+// - MaxBatchSize: 2,000
 // - EnableValidation: true
+// - ValidateInput: true
+// - ValidateFilePath: true
+// - StrictMode: false
+// - FullSecurityScan: false (uses optimized sampling for large JSON)
 ```
 
 ### High Security Configuration
@@ -115,11 +123,19 @@ defer processor.Close()
 // - MaxJSONSize: 5MB (more restrictive)
 // - MaxPathDepth: 20 (more restrictive than DefaultConfig's 50)
 // - MaxNestingDepthSecurity: 20 (very restrictive)
+// - MaxSecurityValidationSize: 10MB
 // - MaxObjectKeys: 1,000 (fewer keys)
 // - MaxArrayElements: 1,000 (fewer elements)
-// - MaxSecurityValidationSize: 10MB
 // - StrictMode: true (strict validation)
 // - EnableValidation: true (forced validation)
+// - FullSecurityScan: true (disables sampling, full scan all JSON)
+
+// SECURITY NOTE: FullSecurityScan=true ensures complete content inspection
+// but adds ~10-30% overhead for JSON >100KB. Use for:
+// - Public APIs and authentication endpoints
+// - Processing untrusted input from external sources
+// - Financial data and sensitive information
+// - Compliance requirements mandating full inspection
 ```
 
 ### Custom Security Configuration
@@ -254,11 +270,31 @@ The library performs security-specific validation:
 // 5. Malicious pattern detection
 // 6. Null byte detection
 // 7. Excessive string length detection
+// 8. Zero-width character detection
+// 9. Unicode normalization (NFC) for homograph attack prevention
 
 // Example: Detecting deeply nested JSON
 deeplyNested := `{"a":{"b":{"c":{"d":{"e":{"f":{"g":{"h":{"i":{"j":"value"}}}}}}}}}}}`
 _, err := processor.Get(deeplyNested, "a.b.c.d.e.f.g.h.i.j")
 // Will fail if nesting exceeds MaxNestingDepthSecurity
+```
+
+### Optimized Security Scanning
+
+For large JSON (>4KB), the library uses an optimized security scanning approach:
+
+```go
+// Default mode (FullSecurityScan: false) - Optimized for performance:
+// - 32KB rolling window scan with guaranteed 100% coverage
+// - Critical patterns (__proto__, constructor, prototype) always fully scanned
+// - Suspicious character density triggers automatic full scan
+// - Pattern fragment detection for targeted scanning
+// - SHA-256 based cache key generation for validation results
+
+// Full scan mode (FullSecurityScan: true) - Maximum security:
+// - All JSON is fully scanned regardless of size
+// - Recommended for untrusted input and sensitive data
+config := json.HighSecurityConfig()  // Has FullSecurityScan: true by default
 ```
 
 ---
@@ -385,27 +421,29 @@ if err != nil {
 
 ### Sensitive Data Detection
 
-The cache automatically excludes sensitive data:
+The cache automatically excludes sensitive data by detecting patterns:
 
 ```go
-// Data containing sensitive keywords is not cached
-sensitiveData := `{
-    "username": "john",
-    "password": "secret123",
-    "api_token": "abc123xyz"
-}`
+// Automatically detected sensitive patterns:
+// - Authentication: password, passwd, pwd, token, bearer, jwt, secret, apikey
+// - PII: ssn, credit_card, passport, driver_license
+// - Financial: account_number, pin, routing_number
+// - Session: session_id, cookie, csrf
+// - Cloud: aws_access_key, azure_key, gcp_credentials
+// - Crypto: private_key, encryption_key, certificate
 
-// This will not be cached due to sensitive keywords
-result, err := processor.Get(sensitiveData, "username")
+// These patterns prevent sensitive data from being cached
+processor := json.New()
+defer processor.Close()
 
-// Sensitive patterns detected:
-// - password
-// - token
-// - secret
-// - key
-// - auth
-// - credential
+// Cache will skip values containing sensitive patterns
+result, err := processor.Get(jsonString, "user.credentials")
+// The result won't be cached if it contains sensitive patterns
 ```
+
+### Secure Cache Keys
+
+Cache keys use secure hashing:
 
 ### Secure Cache Keys
 
@@ -758,12 +796,13 @@ result, err := processor.Get(input, "data")
 Use this checklist to ensure your implementation is secure:
 
 ### Configuration
-- [ ] Use `HighSecurityConfig()` for production environments
-- [ ] Set appropriate `MaxJSONSize` limits
-- [ ] Configure `MaxPathDepth` and `MaxNestingDepthSecurity`
-- [ ] Enable `EnableValidation` and `StrictMode`
-- [ ] Set reasonable `MaxConcurrency` limits
-- [ ] Configure cache limits with `MaxCacheSize` and `CacheTTL`
+- [ ] Use `HighSecurityConfig()` for production environments with untrusted input
+- [ ] Set appropriate `MaxJSONSize` limits (default: 100MB, high-security: 5MB)
+- [ ] Configure `MaxPathDepth` (default: 50) and `MaxNestingDepthSecurity` (default: 200)
+- [ ] Enable `EnableValidation` and `ValidateInput` (enabled by default)
+- [ ] Set reasonable `MaxConcurrency` limits (default: 50)
+- [ ] Configure cache limits with `MaxCacheSize` (default: 128) and `CacheTTL` (default: 5 minutes)
+- [ ] Enable `FullSecurityScan: true` for maximum protection with untrusted input
 
 ### Input Validation
 - [ ] Validate all external JSON input
@@ -795,7 +834,7 @@ Use this checklist to ensure your implementation is secure:
 - [ ] Monitor cache hit ratios
 - [ ] Set up alerts for anomalies
 - [ ] Log security-relevant events
-- [ ] Implement health checks
+- [ ] Implement health checks with `processor.GetHealthStatus()`
 
 ### Testing
 - [ ] Test with malicious inputs

@@ -69,6 +69,17 @@ import "github.com/cybergodev/json"
 | `UnsupportedValueError` | ✅      | Same unsupported value handling         |
 | `MarshalerError`        | ✅      | Same marshaler error wrapping           |
 
+### Extended Error Types
+
+In addition to standard library errors, the library provides:
+
+| Error Type       | Description                                |
+|------------------|--------------------------------------------|
+| `JsonsError`     | Custom error with operation context        |
+| `PathError`      | Path-related errors with detailed info     |
+| `SizeLimitError` | Size limit exceeded errors                 |
+| `SecurityError`  | Security validation failures               |
+
 ## ✅ Fully Compatible Interfaces
 
 | Interface         | Status | Notes                                |
@@ -78,55 +89,6 @@ import "github.com/cybergodev/json"
 | `TextMarshaler`   | ✅      | Same `MarshalText() ([]byte, error)` |
 | `TextUnmarshaler` | ✅      | Same `UnmarshalText([]byte) error`   |
 
-## 🧪 Compatibility Testing
-
-We maintain comprehensive compatibility tests that verify identical behavior:
-
-```bash
-# Run all compatibility tests
-go test -v -run "Compatibility"
-
-# Run specific compatibility tests
-go test -v -run TestMarshalCompatibility
-go test -v -run TestUnmarshalCompatibility
-go test -v -run TestMarshalIndentCompatibility
-go test -v -run TestValidCompatibility
-go test -v -run TestCompactCompatibility
-go test -v -run TestIndentCompatibility
-go test -v -run TestHTMLEscapeCompatibility
-go test -v -run TestEncoderDecoderCompatibility
-go test -v -run TestExtendedCompatibility
-go test -v -run TestEncodingCompatibility
-```
-
-## 📊 Test Results
-
-All compatibility tests pass with 100% success rate:
-
-```
-=== RUN   TestMarshalCompatibility
---- PASS: TestMarshalCompatibility (0.00s)
-=== RUN   TestUnmarshalCompatibility
---- PASS: TestUnmarshalCompatibility (0.00s)
-=== RUN   TestValidCompatibility
---- PASS: TestValidCompatibility (0.00s)
-=== RUN   TestCompactCompatibility
---- PASS: TestCompactCompatibility (0.00s)
-=== RUN   TestIndentCompatibility
---- PASS: TestIndentCompatibility (0.00s)
-=== RUN   TestMarshalIndentCompatibility
---- PASS: TestMarshalIndentCompatibility (0.00s)
-=== RUN   TestHTMLEscapeCompatibility
---- PASS: TestHTMLEscapeCompatibility (0.00s)
-=== RUN   TestEncoderDecoderCompatibility
---- PASS: TestEncoderDecoderCompatibility (0.00s)
-=== RUN   TestExtendedCompatibility
---- PASS: TestExtendedCompatibility (0.01s)
-=== RUN   TestEncodingCompatibility
---- PASS: TestEncodingCompatibility (0.00s)
-```
-
-**Note**: While all tests pass, there may be minor differences in key ordering for map serialization, which is semantically equivalent but not byte-identical. This is acceptable as JSON object key ordering is not guaranteed by the JSON specification.
 
 ## 🚀 Migration Examples
 
@@ -173,10 +135,17 @@ if syntaxErr, ok := err.(*json.SyntaxError); ok {
 Beyond 100% compatibility, our library also provides:
 
 - **Advanced Path Operations**: `json.Get()`, `json.Set()`, `json.Delete()`
-- **Type-Safe Generics**: `json.GetTyped[T]()`
-- **Performance Optimizations**: Caching, memory pools
-- **Thread Safety**: Concurrent-safe operations
+- **Type-Safe Generics**: `json.GetTyped[T]()`, `json.TypeSafeConvert[T]()`
+- **Performance Optimizations**: Caching, memory pools, string interning
+- **Thread Safety**: Concurrent-safe operations with atomic operations
 - **Rich Query Syntax**: Dot notation, array slicing, JSON Pointer
+- **Streaming Processing**: `json.NewStreamingProcessor()`, `json.StreamArrayFilter()`
+- **JSONL Support**: `json.NewJSONLProcessor()`, `json.ParseJSONL()`, `json.ToJSONL()`
+- **Lazy Parsing**: `json.NewLazyJSON()` for on-demand parsing
+- **Advanced Encoding**: `json.EncodeStream()`, `json.EncodeBatch()`, `json.EncodeFields()`
+- **File Operations**: `json.LoadFromFile()`, `json.SaveToFile()`, `json.MarshalToFile()`
+- **Schema Validation**: `json.ValidateSchema()` with comprehensive schema support
+- **Data Utilities**: `json.DeepCopy()`, `json.CompareJson()`, `json.MergeJson()`
 
 ## 🔒 Compatibility Guarantee
 
