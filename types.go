@@ -563,13 +563,6 @@ type CacheKey struct {
 	Options   string
 }
 
-// RateLimiter interface for rate limiting (reserved for future use)
-type RateLimiter interface {
-	Allow() bool
-	Wait(ctx context.Context) error
-	Limit() int
-}
-
 // DeletedMarker is a special marker for deleted values
 var DeletedMarker = &struct{ deleted bool }{deleted: true}
 

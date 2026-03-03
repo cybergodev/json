@@ -15,45 +15,6 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// sensitivePatterns contains patterns for detecting sensitive data in cache values
-// PERFORMANCE: Defined at package level to avoid allocation on each containsSensitivePatterns() call
-var sensitivePatterns = []string{
-	// Authentication and authorization
-	"password", "passwd", "pwd",
-	"token", "bearer", "jwt", "access_token", "refresh_token", "auth_token",
-	"secret", "secret_key", "client_secret",
-	"apikey", "api_key", "api-key", "x-api-key",
-	"auth", "authorization", "authenticate",
-	"credential", "credentials",
-	"private", "private_key",
-
-	// Personal Identifiable Information (PII)
-	"ssn", "social_security", "social_security_number",
-	"credit_card", "creditcard", "card_number", "cvv", "cvc",
-	"passport", "passport_number",
-	"driver_license", "license_number",
-
-	// Financial sensitive data
-	"account_number", "bank_account", "routing_number",
-	"pin", "pin_number",
-
-	// Cryptographic keys
-	"private_key", "public_key", "encryption_key", "signing_key",
-	"certificate", "private_certificate",
-
-	// Session and cookies
-	"session", "session_id", "session_key",
-	"cookie", "csrf", "xsrf",
-
-	// Database and infrastructure
-	"database_url", "db_password", "db_user", "db_pass",
-	"connection_string", "connectionstring",
-
-	// Cloud provider keys
-	"aws_access_key", "aws_secret", "aws_key",
-	"azure_key", "gcp_key", "gcp_credentials",
-}
-
 // Processor is the main JSON processing engine with thread safety and performance optimization
 type Processor struct {
 	config            *Config
@@ -102,10 +63,15 @@ func New(config ...*Config) *Processor {
 		cfg = DefaultConfig()
 	}
 
-	// Validate configuration and use defaults for invalid values
+	// Validate configuration and apply corrections for invalid values
+	// ValidateConfig modifies the config in-place to fix invalid values
+	// Only replace with default config if validation fails for critical errors
 	if err := ValidateConfig(cfg); err != nil {
-		// Log the error but continue with corrected config instead of returning broken processor
-		cfg = DefaultConfig()
+		// Log warning about validation failure but continue with corrected config
+		// The ValidateConfig function already applies corrections to invalid values
+		// We don't discard the entire config, just log the issue
+		slog.Default().With("component", "json-processor").Warn("configuration validation warning, corrections applied",
+			"error", err.Error())
 	}
 
 	p := &Processor{

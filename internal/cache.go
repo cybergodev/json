@@ -56,6 +56,9 @@ type cacheShard struct {
 	size        int64
 	maxSize     int
 	lastCleanup int64
+	// PERFORMANCE: Counter for probabilistic frequency decay
+	// Instead of decaying on every eviction, we decay every N evictions
+	evictionsSinceDecay int64
 }
 
 // lruEntry represents an entry in the LRU cache
@@ -464,6 +467,7 @@ func (cm *CacheManager) hashKey(key string) uint64 {
 
 // evictLRU evicts entries using frequency-aware LRU strategy
 // PERFORMANCE: Considers access frequency to keep hot entries in cache
+// OPTIMIZED: Uses probabilistic frequency decay instead of full traversal on every eviction
 func (cm *CacheManager) evictLRU(shard *cacheShard) {
 	element := shard.evictList.Back()
 	if element == nil {
@@ -493,10 +497,16 @@ func (cm *CacheManager) evictLRU(shard *cacheShard) {
 	atomic.AddInt64(&cm.memoryUsage, -int64(entry.size))
 	atomic.AddInt64(&cm.evictions, 1)
 
-	// Decay frequency of remaining entries to prevent old hot entries from dominating
-	for e := shard.evictList.Front(); e != nil; e = e.Next() {
-		if en := e.Value.(*lruEntry); en.freq > 0 {
-			en.freq = en.freq - 1
+	// PERFORMANCE: Probabilistic frequency decay
+	// Only decay frequencies every 10 evictions to reduce CPU overhead
+	// This still prevents old hot entries from dominating while being much faster
+	shard.evictionsSinceDecay++
+	if shard.evictionsSinceDecay >= 10 {
+		shard.evictionsSinceDecay = 0
+		for e := shard.evictList.Front(); e != nil; e = e.Next() {
+			if en := e.Value.(*lruEntry); en.freq > 0 {
+				en.freq = en.freq - 1
+			}
 		}
 	}
 

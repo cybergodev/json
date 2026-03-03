@@ -37,6 +37,7 @@ const (
 	CacheCleanupKeepSize = 256
 
 	// Operation Limits - Secure defaults with reasonable headroom
+	// InvalidArrayIndex is a sentinel value indicating an invalid or out-of-bounds array index
 	InvalidArrayIndex        = -999999
 	DefaultMaxJSONSize       = 100 * 1024 * 1024 // 100MB
 	DefaultMaxSecuritySize   = 10 * 1024 * 1024
@@ -64,11 +65,8 @@ const (
 	AcquireSlotRetryDelay   = 1 * time.Millisecond
 
 	// Path Validation - Secure but flexible
-	MaxPathLength          = 5000
-	MaxSegmentLength       = 1024
-	MaxExtractionDepth     = 10
-	MaxConsecutiveColons   = 3
-	MaxConsecutiveBrackets = 3
+	MaxPathLength    = 5000
+	MaxSegmentLength = 1024
 
 	// Cache TTL
 	DefaultCacheTTL = 5 * time.Minute
@@ -106,6 +104,8 @@ const (
 )
 
 // DefaultConfig returns the default configuration.
+// Creates a new instance each time to allow modifications without affecting other callers.
+// PERFORMANCE NOTE: For read-only access in hot paths, cache the result.
 func DefaultConfig() *Config {
 	return &Config{
 		MaxCacheSize:              DefaultCacheSize,

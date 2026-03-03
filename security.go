@@ -95,6 +95,45 @@ var caseSensitivePatterns = []struct {
 	{"__proto__", "prototype pollution"},
 }
 
+// sensitivePatterns contains patterns for detecting sensitive data in cache values
+// PERFORMANCE: Defined at package level to avoid allocation on each containsSensitivePatterns() call
+var sensitivePatterns = []string{
+	// Authentication and authorization
+	"password", "passwd", "pwd",
+	"token", "bearer", "jwt", "access_token", "refresh_token", "auth_token",
+	"secret", "secret_key", "client_secret",
+	"apikey", "api_key", "api-key", "x-api-key",
+	"auth", "authorization", "authenticate",
+	"credential", "credentials",
+	"private", "private_key",
+
+	// Personal Identifiable Information (PII)
+	"ssn", "social_security", "social_security_number",
+	"credit_card", "creditcard", "card_number", "cvv", "cvc",
+	"passport", "passport_number",
+	"driver_license", "license_number",
+
+	// Financial sensitive data
+	"account_number", "bank_account", "routing_number",
+	"pin", "pin_number",
+
+	// Cryptographic keys
+	"private_key", "public_key", "encryption_key", "signing_key",
+	"certificate", "private_certificate",
+
+	// Session and cookies
+	"session", "session_id", "session_key",
+	"cookie", "csrf", "xsrf",
+
+	// Database and infrastructure
+	"database_url", "db_password", "db_user", "db_pass",
+	"connection_string", "connectionstring",
+
+	// Cloud provider keys
+	"aws_access_key", "aws_secret", "aws_key",
+	"azure_key", "gcp_key", "gcp_credentials",
+}
+
 // validationCacheEntry holds a cache entry with access time for LRU eviction
 // SECURITY FIX: Track access time for better cache management
 type validationCacheEntry struct {
@@ -219,19 +258,19 @@ func (sv *SecurityValidator) getValidationCacheKey(jsonStr string) string {
 
 // isValidationCached checks if JSON string was previously validated successfully
 // PERFORMANCE: Returns the cache key for reuse in cacheValidation to avoid double hash computation
+// RACE-FIX: Access time is not updated in read lock to avoid data race.
+// The LRU eviction still works correctly with occasional access time updates during Set operations.
 func (sv *SecurityValidator) isValidationCached(jsonStr string) (string, bool) {
 	// Compute cache key once
 	cacheKey := sv.getValidationCacheKey(jsonStr)
 
 	// Use read lock for fast lookup
 	sv.cacheMutex.RLock()
-	defer sv.cacheMutex.RUnlock()
-
 	entry, cached := sv.validationCache[cacheKey]
-	if cached {
-		// Update last access time (requires write lock, but we skip for performance)
-		// The entry will be updated on next access or during eviction
-	}
+	// RACE-FIX: Do NOT update entry.lastAccess here with read lock
+	// The access time will be updated when the entry is re-validated or during eviction
+	sv.cacheMutex.RUnlock()
+
 	return cacheKey, cached && entry.validated
 }
 
@@ -262,7 +301,7 @@ func (sv *SecurityValidator) cacheValidation(jsonStr string) {
 }
 
 // evictLRUEntries removes oldest 25% of entries using LRU strategy
-// SECURITY FIX: Replaces clearCacheHalf with more intelligent LRU eviction
+// SECURITY: Intelligent LRU eviction for validation cache
 func (sv *SecurityValidator) evictLRUEntries() {
 	if len(sv.validationCache) == 0 {
 		return
@@ -293,12 +332,6 @@ func (sv *SecurityValidator) evictLRUEntries() {
 	for i := 0; i < toRemove && i < len(entries); i++ {
 		delete(sv.validationCache, entries[i].key)
 	}
-}
-
-// clearCacheHalf clears approximately half of the validation cache
-// DEPRECATED: Use evictLRUEntries for better cache management
-func (sv *SecurityValidator) clearCacheHalf() {
-	sv.evictLRUEntries()
 }
 
 // ValidatePathInput performs comprehensive path validation with enhanced security.
@@ -677,12 +710,6 @@ func fastIndexIgnoreCase(s, pattern string) int {
 	return internal.IndexIgnoreCase(s, pattern)
 }
 
-// indexIgnoreCase finds pattern case-insensitively without allocation
-// Delegates to shared implementation in internal package
-func indexIgnoreCase(s, pattern string) int {
-	return internal.IndexIgnoreCase(s, pattern)
-}
-
 // isDangerousContextIgnoreCase checks if a pattern match is in a dangerous context (case-insensitive)
 // SECURITY FIX: Improved to handle patterns that start/end with special characters
 func (sv *SecurityValidator) isDangerousContextIgnoreCase(s string, idx, patternLen int) bool {
@@ -792,7 +819,7 @@ func containsZeroWidthChars(s string) bool {
 // containsAnyIgnoreCase checks if s contains any of the patterns case-insensitively
 func containsAnyIgnoreCase(s string, patterns ...string) bool {
 	for _, pattern := range patterns {
-		if indexIgnoreCase(s, pattern) != -1 {
+		if fastIndexIgnoreCase(s, pattern) != -1 {
 			return true
 		}
 	}

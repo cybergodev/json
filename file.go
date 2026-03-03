@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cybergodev/json/internal"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -457,86 +456,27 @@ func (p *Processor) validateFilePath(filePath string) error {
 // containsPathTraversal checks for path traversal patterns comprehensively
 // Uses case-insensitive matching without allocation for better performance
 // Includes Unicode normalization and recursive URL decoding for enhanced security
+// REFACTORED: Split into smaller helper functions for better maintainability
 func containsPathTraversal(path string) bool {
 	// SECURITY: First apply Unicode NFC normalization to detect homograph attacks
-	// This ensures that visually similar characters are normalized before checking
 	normalized := norm.NFC.String(path)
 
 	// SECURITY: Recursively decode URL encoding to catch multi-layered obfuscation
-	// Decode up to 3 levels to handle double/triple encoding
 	decoded := recursiveURLDecode(normalized)
 
-	// Fast path: check for standard traversal first (most common case)
-	if strings.Contains(decoded, "..") {
+	// Fast path: check for standard traversal patterns
+	if containsBasicTraversal(decoded, path) {
 		return true
 	}
 
-	// Also check original path for patterns that might be hidden by encoding
-	if strings.Contains(path, "..") {
+	// Check for encoded traversal patterns
+	if containsEncodedTraversal(decoded, path) {
 		return true
 	}
 
-	// Check for various path traversal patterns including bypass attempts
-	// Using case-insensitive matching without allocation
-	patterns := []string{
-		"%2e%2e",         // URL encoded
-		"%252e%252e",     // Double URL encoded
-		"%25252e%25252e", // Triple URL encoded
-		"..%2f",          // Mixed encoding
-		"..%5c",          // Windows backslash encoded
-		"..%c0%af",       // UTF-8 overlong encoding
-		"..%c1%9c",       // UTF-8 overlong encoding variant
-		".%2e",           // Partial encoding
-		"%2e.",           // Partial encoding variant
-		"%2e%2e%2f",      // Full URL encoded traversal
-		"%2e%2e%5c",      // Windows variant
-		"..\\",           // Windows backslash
-		"..\\/",          // Mixed separators
-		"..%00",          // Null byte injection
-		"..%0a",          // Newline injection
-		"..%0d",          // Carriage return injection
-		"..%09",          // Tab injection
-		"..%20",          // Space injection
-		"....//",         // Double dot with double slash
-		"....\\\\",       // Double dot with double backslash
-		".....",          // Five consecutive dots
-		"......",         // Six consecutive dots (defense in depth)
-		// Additional patterns for comprehensive security
-		"%2E%2E",       // Mixed case URL encoded
-		"%2E%2e",       // Mixed case variant
-		"%2e%2E",       // Mixed case variant
-		"..%2F",        // Mixed case encoding
-		"..%5C",        // Mixed case Windows variant
-		"%c0%ae",       // UTF-8 overlong encoding for dot
-		"%c1%1c",       // UTF-8 overlong encoding variant
-		"%c1%9c",       // UTF-8 overlong encoding variant
-		"..%255c",      // Double encoded backslash
-		"..%c0%af",     // UTF-8 overlong encoded slash
-		"..%c1%9c",     // UTF-8 overlong encoded backslash
-		"%uff0e%uff0e", // Fullwidth dot encoding
-		"..%ef%bc%8f",  // Fullwidth slash encoding
-	}
-
-	// Check both original and decoded paths
-	for _, pattern := range patterns {
-		if indexIgnoreCaseFile(decoded, pattern) != -1 ||
-			indexIgnoreCaseFile(path, pattern) != -1 {
-			return true
-		}
-	}
-
-	// Additional check: consecutive dots in any form (3 or more)
-	if containsConsecutiveDots(decoded, 3) || containsConsecutiveDots(path, 3) {
+	// Check for encoded null bytes and control characters
+	if containsEncodedControlChars(decoded, path) {
 		return true
-	}
-
-	// Check for encoded null bytes and control characters (case-insensitive)
-	encodedNulls := []string{"%00", "%0a", "%0d", "%09", "%20"}
-	for _, encoded := range encodedNulls {
-		if indexIgnoreCaseFile(decoded, encoded) != -1 ||
-			indexIgnoreCaseFile(path, encoded) != -1 {
-			return true
-		}
 	}
 
 	// Check for partial double encoding bypass attempts
@@ -545,11 +485,74 @@ func containsPathTraversal(path string) bool {
 		return true
 	}
 
-	// SECURITY: Check for Unicode lookalike characters that could be used for bypass
+	// SECURITY: Check for Unicode lookalike characters
 	if containsUnicodeLookalikes(decoded) {
 		return true
 	}
 
+	return false
+}
+
+// containsBasicTraversal checks for standard path traversal patterns
+func containsBasicTraversal(decoded, original string) bool {
+	// Check for standard traversal (most common case)
+	if strings.Contains(decoded, "..") || strings.Contains(original, "..") {
+		return true
+	}
+
+	// Check for consecutive dots (3 or more)
+	if containsConsecutiveDots(decoded, 3) || containsConsecutiveDots(original, 3) {
+		return true
+	}
+
+	return false
+}
+
+// pathTraversalPatterns contains known traversal attack patterns
+// REFACTORED: Extracted to package-level variable for maintainability
+var pathTraversalPatterns = []string{
+	// URL encoded patterns
+	"%2e%2e", "%252e%252e", "%25252e%25252e",
+	// Mixed encoding patterns
+	"..%2f", "..%5c", "..%c0%af", "..%c1%9c",
+	// Partial encoding patterns
+	".%2e", "%2e.", "%2e%2e%2f", "%2e%2e%5c",
+	// Windows patterns
+	"..\\", "..\\/",
+	// Injection patterns
+	"..%00", "..%0a", "..%0d", "..%09", "..%20",
+	// Double patterns
+	"....//", "....\\\\", ".....", "......",
+	// Mixed case patterns
+	"%2E%2E", "%2E%2e", "%2e%2E", "..%2F", "..%5C",
+	// UTF-8 overlong encoding
+	"%c0%ae", "%c1%1c", "%c1%9c", "..%255c",
+	// Fullwidth encoding
+	"%uff0e%uff0e", "..%ef%bc%8f",
+}
+
+// containsEncodedTraversal checks for encoded path traversal patterns
+func containsEncodedTraversal(decoded, original string) bool {
+	for _, pattern := range pathTraversalPatterns {
+		if fastIndexIgnoreCase(decoded, pattern) != -1 ||
+			fastIndexIgnoreCase(original, pattern) != -1 {
+			return true
+		}
+	}
+	return false
+}
+
+// encodedControlCharPatterns contains encoded control character patterns
+var encodedControlCharPatterns = []string{"%00", "%0a", "%0d", "%09", "%20"}
+
+// containsEncodedControlChars checks for encoded null bytes and control characters
+func containsEncodedControlChars(decoded, original string) bool {
+	for _, encoded := range encodedControlCharPatterns {
+		if fastIndexIgnoreCase(decoded, encoded) != -1 ||
+			fastIndexIgnoreCase(original, encoded) != -1 {
+			return true
+		}
+	}
 	return false
 }
 
@@ -608,17 +611,11 @@ func containsUnicodeLookalikes(s string) bool {
 	return false
 }
 
-// indexIgnoreCaseFile finds pattern case-insensitively without allocation
-// Delegates to shared implementation in internal package
-func indexIgnoreCaseFile(s, pattern string) int {
-	return internal.IndexIgnoreCase(s, pattern)
-}
-
 // containsPartialDoubleEncodingIgnoreCase checks for partial double encoding bypass attempts (case-insensitive)
 func containsPartialDoubleEncodingIgnoreCase(path string) bool {
 	patterns := []string{"%2e%2", "%25%2e", "%2f%2", "%5c%2"}
 	for _, pattern := range patterns {
-		if indexIgnoreCaseFile(path, pattern) != -1 {
+		if fastIndexIgnoreCase(path, pattern) != -1 {
 			return true
 		}
 	}
