@@ -209,60 +209,6 @@ func (p *Processor) parseSliceParameters(segmentValue string, arrayLength int) (
 	return start, end, step, nil
 }
 
-func (p *Processor) parseSliceParametersWithExtension(segmentValue string, arrayLength int) (start, end, step int, err error) {
-	start, end, step, err = p.parseSliceParameters(segmentValue, arrayLength)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-
-	// Handle negative indices
-	if start < 0 {
-		start = arrayLength + start
-	}
-	if end < 0 {
-		end = arrayLength + end
-	}
-
-	// Bounds checking with extension support
-	if start < 0 {
-		start = 0
-	}
-	if end < 0 {
-		end = 0
-	}
-
-	return start, end, step, nil
-}
-
-func (p *Processor) isSliceSyntax(segment string) bool {
-	return strings.Contains(segment, ":")
-}
-
-func (p *Processor) parseSliceSegment(segment *PathSegment) error {
-	if segment == nil {
-		return fmt.Errorf("segment cannot be nil")
-	}
-
-	// Parse slice parameters
-	start, end, step, err := p.parseSliceParameters(segment.String(), 0)
-	if err != nil {
-		return err
-	}
-
-	// Set slice properties using direct values and flags
-	segment.Index = start // Use Index field for start value
-	segment.End = end
-	segment.Step = step
-	segment.Flags = internal.FlagHasStart | internal.FlagHasEnd | internal.FlagHasStep
-
-	return nil
-}
-
-func (p *Processor) parseSliceFromSegment(segmentValue string) (start, end, step int) {
-	start, end, step, _ = p.parseSliceParameters(segmentValue, 0)
-	return start, end, step
-}
-
 func (p *Processor) isArrayIndex(segment string) bool {
 	// Remove brackets if present
 	if strings.HasPrefix(segment, "[") && strings.HasSuffix(segment, "]") {
@@ -272,28 +218,6 @@ func (p *Processor) isArrayIndex(segment string) bool {
 	// Check if it's a valid integer
 	_, err := strconv.Atoi(segment)
 	return err == nil
-}
-
-func (p *Processor) isNumericIndex(segment string) bool {
-	_, err := strconv.Atoi(segment)
-	return err == nil
-}
-
-func (p *Processor) isNumericProperty(property string) bool {
-	_, err := strconv.Atoi(property)
-	return err == nil
-}
-
-func (p *Processor) navigateToArrayIndex(current any, index int, createPaths bool) (any, error) {
-	switch v := current.(type) {
-	case []any:
-		if index < 0 || index >= len(v) {
-			return nil, fmt.Errorf("array index %d out of bounds (length %d)", index, len(v))
-		}
-		return v[index], nil
-	default:
-		return nil, fmt.Errorf("cannot access array index %d on type %T", index, current)
-	}
 }
 
 func (p *Processor) navigateToArrayIndexWithNegative(current any, index int, createPaths bool) (any, error) {
@@ -317,24 +241,6 @@ func (p *Processor) navigateToArrayIndexWithNegative(current any, index int, cre
 	}
 }
 
-func (p *Processor) extendAndSetArray(arr []any, index int, value any) error {
-	if index < 0 {
-		return fmt.Errorf("cannot extend array with negative index: %d", index)
-	}
-
-	// Check if we need to extend the array
-	if index >= len(arr) {
-		// Extend array with nil values
-		for len(arr) <= index {
-			arr = append(arr, nil)
-		}
-	}
-
-	// Set the value
-	arr[index] = value
-	return nil
-}
-
 func (p *Processor) assignValueToSlice(arr []any, start, end, step int, value any) error {
 	if start < 0 || end > len(arr) || start >= end {
 		return fmt.Errorf("invalid slice range: [%d:%d] for array length %d", start, end, len(arr))
@@ -352,140 +258,9 @@ func (p *Processor) assignValueToSlice(arr []any, start, end, step int, value an
 	return nil
 }
 
-func (p *Processor) extendArrayInPath(data any, segments []PathSegment, currentLen, requiredLen int) error {
-	if requiredLen <= currentLen {
-		return nil // No extension needed
-	}
-
-	// Navigate to the parent of the array
-	current := data
-	for i := 0; i < len(segments)-1; i++ {
-		segment := segments[i]
-		switch segment.TypeString() {
-		case "property":
-			if obj, ok := current.(map[string]any); ok {
-				if next, exists := obj[segment.Key]; exists {
-					current = next
-				} else {
-					return fmt.Errorf("property %s not found", segment.Key)
-				}
-			} else {
-				return fmt.Errorf("cannot access property %s on type %T", segment.Key, current)
-			}
-		case "array":
-			if arr, ok := current.([]any); ok {
-				index := segment.Index
-				if index < 0 {
-					index = len(arr) + index
-				}
-				if index >= 0 && index < len(arr) {
-					current = arr[index]
-				} else {
-					return fmt.Errorf("array index %d out of bounds", index)
-				}
-			} else {
-				return fmt.Errorf("cannot access array index on type %T", current)
-			}
-		}
-	}
-
-	// The last segment should point to the array to extend
-	lastSegment := segments[len(segments)-1]
-	if lastSegment.TypeString() == "property" {
-		if obj, ok := current.(map[string]any); ok {
-			if arr, ok := obj[lastSegment.Key].([]any); ok {
-				// Extend the array
-				for len(arr) < requiredLen {
-					arr = append(arr, nil)
-				}
-				obj[lastSegment.Key] = arr
-			}
-		}
-	}
-
-	return nil
-}
-func (p *Processor) replaceArrayInParentContext(data any, segments []PathSegment, arrayIndex int, newArray []any) error {
-	if len(segments) == 0 {
-		return fmt.Errorf("no segments provided")
-	}
-
-	// Navigate to the parent
-	current := data
-	for i := 0; i < len(segments)-1; i++ {
-		segment := segments[i]
-		switch segment.TypeString() {
-		case "property":
-			if obj, ok := current.(map[string]any); ok {
-				if next, exists := obj[segment.Key]; exists {
-					current = next
-				} else {
-					return fmt.Errorf("property %s not found", segment.Key)
-				}
-			} else {
-				return fmt.Errorf("cannot access property %s on type %T", segment.Key, current)
-			}
-		case "array":
-			if arr, ok := current.([]any); ok {
-				index := segment.Index
-				if index < 0 {
-					index = len(arr) + index
-				}
-				if index >= 0 && index < len(arr) {
-					current = arr[index]
-				} else {
-					return fmt.Errorf("array index %d out of bounds", index)
-				}
-			} else {
-				return fmt.Errorf("cannot access array index on type %T", current)
-			}
-		}
-	}
-
-	// Replace the array in the parent
-	lastSegment := segments[len(segments)-1]
-	if lastSegment.TypeString() == "property" {
-		if obj, ok := current.(map[string]any); ok {
-			obj[lastSegment.Key] = newArray
-		}
-	} else if lastSegment.TypeString() == "array" {
-		if arr, ok := current.([]any); ok {
-			index := lastSegment.Index
-			if index < 0 {
-				index = len(arr) + index
-			}
-			if index >= 0 && index < len(arr) {
-				arr[index] = newArray
-			}
-		}
-	}
-
-	return nil
-}
-
 // detectConsecutiveExtractions identifies groups of consecutive extraction segments
 func (p *Processor) detectConsecutiveExtractions(segments []PathSegment) []ExtractionGroup {
 	return internal.DetectConsecutiveExtractions(segments)
-}
-
-func (p *Processor) cleanupArrayNulls(arr []any) {
-	writeIndex := 0
-	for readIndex := 0; readIndex < len(arr); readIndex++ {
-		if arr[readIndex] != nil {
-			if writeIndex != readIndex {
-				arr[writeIndex] = arr[readIndex]
-			}
-			writeIndex++
-		}
-	}
-
-	// Clear the remaining elements
-	for i := writeIndex; i < len(arr); i++ {
-		arr[i] = nil
-	}
-
-	// Truncate the slice
-	arr = arr[:writeIndex]
 }
 
 func (p *Processor) cleanupArrayWithReconstruction(arr []any, compactArrays bool) []any {
@@ -509,30 +284,6 @@ func (p *Processor) cleanupArrayWithReconstruction(arr []any, compactArrays bool
 	return result
 }
 
-func (p *Processor) cleanupNullValues(data any) {
-	p.cleanupNullValuesRecursive(data)
-}
-
-func (p *Processor) cleanupNullValuesRecursive(data any) {
-	switch v := data.(type) {
-	case map[string]any:
-		for key, value := range v {
-			if value == nil {
-				delete(v, key)
-			} else {
-				p.cleanupNullValuesRecursive(value)
-			}
-		}
-	case []any:
-		p.cleanupArrayNulls(v)
-		for _, item := range v {
-			if item != nil {
-				p.cleanupNullValuesRecursive(item)
-			}
-		}
-	}
-}
-
 func (p *Processor) isEmptyContainer(data any) bool {
 	switch v := data.(type) {
 	case map[string]any:
@@ -543,15 +294,6 @@ func (p *Processor) isEmptyContainer(data any) bool {
 		return len(v) == 0
 	case string:
 		return v == ""
-	default:
-		return false
-	}
-}
-
-func (p *Processor) isContainer(data any) bool {
-	switch data.(type) {
-	case map[string]any, map[any]any, []any:
-		return true
 	default:
 		return false
 	}

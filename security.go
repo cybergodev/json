@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,37 @@ import (
 
 	"github.com/cybergodev/json/internal"
 	"golang.org/x/text/unicode/norm"
+)
+
+// Security validation thresholds - named constants for clarity
+const (
+	// securitySmallJSONThreshold is the size threshold for full security scanning (4KB)
+	// JSON strings smaller than this are always fully scanned
+	securitySmallJSONThreshold = 4096
+
+	// securityScanWindowSize is the window size for rolling security scans (32KB)
+	// Fits well in CPU cache for efficient scanning
+	securityScanWindowSize = 32768
+
+	// securitySampleSize is the size of samples taken from different regions (4KB)
+	// Used for suspicious character density checks
+	securitySampleSize = 4096
+
+	// securityNestingValidationThreshold is the size threshold for detailed nesting validation (64KB)
+	// Smaller JSON relies on standard library's built-in validation
+	securityNestingValidationThreshold = 65536
+
+	// securityMaxTotalBrackets is the maximum total bracket count allowed (1 million)
+	// Prevents DoS attacks with massive bracket structures
+	securityMaxTotalBrackets = 1000000
+
+	// securityMaxConsecutiveOpens is the maximum consecutive opening brackets (100)
+	// Detects anomalypatterns that could indicate attacks
+	securityMaxConsecutiveOpens = 100
+
+	// securityCacheHighWatermark is the cache size threshold for LRU eviction (8000 = 80% of 10000)
+	// Triggers proactive cleanup to prevent memory spikes
+	securityCacheHighWatermark = 8000
 )
 
 // dangerousPatterns contains all dangerous patterns for security validation
@@ -234,6 +266,7 @@ const validationCacheHashThreshold = 4096
 // getValidationCacheKey computes and returns the cache key for a JSON string
 // PERFORMANCE: Returns the key for reuse to avoid double hash computation
 // SECURITY FIX: Uses SHA-256 for larger strings to prevent collision attacks
+// OPTIMIZED: Uses manual buffer building to avoid fmt.Sprintf allocations
 func (sv *SecurityValidator) getValidationCacheKey(jsonStr string) string {
 	strLen := len(jsonStr)
 
@@ -248,12 +281,39 @@ func (sv *SecurityValidator) getValidationCacheKey(jsonStr string) string {
 		}
 		// Include length in hash to prevent length extension issues
 		h ^= uint64(strLen)
-		return fmt.Sprintf("%d:%016x", strLen, h)
+
+		// Build key manually: "len:hash" format
+		// Use strconv.AppendInt for the length part
+		var buf [32]byte
+		lenBytes := strconv.AppendInt(buf[:0], int64(strLen), 10)
+		buf[len(lenBytes)] = ':'
+
+		// Write 16 hex characters for the hash (avoid fmt.Sprintf)
+		const hexChars = "0123456789abcdef"
+		start := len(lenBytes) + 1
+		for i := 15; i >= 0; i-- {
+			buf[start+i] = hexChars[h&0xF]
+			h >>= 4
+		}
+		return string(buf[:start+16])
 	}
 
 	// SECURITY FIX: For larger strings, use SHA-256 for strong collision resistance
 	hash := sha256.Sum256([]byte(jsonStr))
-	return fmt.Sprintf("%d:%x", strLen, hash[:16]) // Use first 16 bytes of SHA-256
+
+	// Build key manually: "len:hash" format
+	var buf [48]byte
+	lenBytes := strconv.AppendInt(buf[:0], int64(strLen), 10)
+	buf[len(lenBytes)] = ':'
+
+	// Write first 16 bytes of SHA-256 as hex (32 chars)
+	const hexChars = "0123456789abcdef"
+	start := len(lenBytes) + 1
+	for i := 0; i < 16; i++ {
+		buf[start+i*2] = hexChars[hash[i]>>4]
+		buf[start+i*2+1] = hexChars[hash[i]&0xF]
+	}
+	return string(buf[:start+32])
 }
 
 // isValidationCached checks if JSON string was previously validated successfully
@@ -282,7 +342,7 @@ func (sv *SecurityValidator) cacheValidationWithKey(cacheKey string) {
 	defer sv.cacheMutex.Unlock()
 
 	// SECURITY FIX: Proactive cleanup at 80% capacity instead of 100%
-	const cacheHighWatermark = 8000 // 80% of 10000
+	const cacheHighWatermark = securityCacheHighWatermark
 	if len(sv.validationCache) >= cacheHighWatermark {
 		sv.evictLRUEntries()
 	}
@@ -294,7 +354,8 @@ func (sv *SecurityValidator) cacheValidationWithKey(cacheKey string) {
 }
 
 // cacheValidation marks a JSON string as successfully validated
-// DEPRECATED: Use cacheValidationWithKey for better performance with large JSON
+// Deprecated: Use cacheValidationWithKey for better performance with large JSON.
+// This method will be removed in v3.0.0.
 func (sv *SecurityValidator) cacheValidation(jsonStr string) {
 	cacheKey := sv.getValidationCacheKey(jsonStr)
 	sv.cacheValidationWithKey(cacheKey)
@@ -363,8 +424,8 @@ func (sv *SecurityValidator) validateJSONSecurity(jsonStr string) error {
 	}
 
 	// Fast path: for small JSON strings, use the original approach
-	// For large JSON strings (>4KB), use a sampling approach
-	if len(jsonStr) < 4096 {
+	// For large JSON strings (>4KB), use a samplingapproach
+	if len(jsonStr) < securitySmallJSONThreshold {
 		return sv.validateJSONSecurityFull(jsonStr)
 	}
 
@@ -537,7 +598,7 @@ func (sv *SecurityValidator) validateJSONSecurityOptimized(jsonStr string) error
 
 	// SECURITY FIX: Use rolling window approach with guaranteed coverage
 	// Window size is tuned for cache efficiency while maintaining reasonable overhead
-	windowSize := 32768 // 32KB windows - fits well in CPU cache
+	windowSize := securityScanWindowSize
 
 	// For smaller JSON, just scan it all
 	if jsonLen <= windowSize*2 {
@@ -604,7 +665,7 @@ func (sv *SecurityValidator) hasSuspiciousCharacterDensity(jsonStr string) bool 
 
 	// SECURITY FIX: Sample from multiple regions: beginning, middle, and end
 	// This prevents attackers from hiding malicious code in any single region
-	sampleSize := 4096 // Sample 4KB from each region
+	sampleSize := securitySampleSize
 
 	countSuspicious := func(start, end int) (count int, density float64) {
 		if start < 0 {
@@ -864,7 +925,7 @@ func (sv *SecurityValidator) validateNestingDepth(jsonStr string) error {
 	// PERFORMANCE: For small JSON (< 64KB), skip detailed nesting validation
 	// The standard library json.Unmarshal already handles this efficiently
 	// Only do detailed scan for large JSON where DoS attacks are more likely
-	if len(jsonStr) < 65536 {
+	if len(jsonStr) < securityNestingValidationThreshold {
 		return nil
 	}
 
@@ -880,11 +941,11 @@ func (sv *SecurityValidator) validateNestingDepth(jsonStr string) error {
 	// Attackers can create shallow but massive bracket structures
 	// Set limit high enough for normal use but prevent excessive structures
 	totalBrackets := 0
-	maxTotalBrackets := 1000000 // 1 million brackets - reasonable for large JSON
+	maxTotalBrackets := securityMaxTotalBrackets
 
 	// SECURITY: Track consecutive opening brackets for anomaly detection
 	consecutiveOpens := 0
-	maxConsecutiveOpens := 100
+	maxConsecutiveOpens := securityMaxConsecutiveOpens
 
 	// Use byte-level iteration for better performance
 	// Check all JSON regardless of size to prevent depth-based attacks
@@ -1039,7 +1100,7 @@ func hashStringFast(s string) [16]byte {
 
 	// For very large strings, use sampling to reduce CPU overhead
 	// Sample every Nth character where N depends on string length
-	if lenS > 65536 {
+	if lenS > securityNestingValidationThreshold {
 		// Sample approximately 8192 characters for large strings
 		step := lenS / 8192
 		if step < 1 {

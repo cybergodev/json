@@ -3,7 +3,6 @@ package json
 import (
 	"errors"
 	"fmt"
-	"time"
 )
 
 // Primary errors for common cases.
@@ -98,24 +97,9 @@ func newSizeLimitError(operation string, actual, limit int64) error {
 	return &JsonsError{Op: operation, Message: fmt.Sprintf("size %d exceeds limit %d", actual, limit), Err: ErrSizeLimit}
 }
 
-// newDepthLimitError creates a JsonsError for depth limit violations
-func newDepthLimitError(operation, path string, actual, limit int) error {
-	return &JsonsError{Op: operation, Path: path, Message: fmt.Sprintf("depth %d exceeds limit %d", actual, limit), Err: ErrDepthLimit}
-}
-
-// newConcurrencyLimitError creates a JsonsError for concurrency limit violations
-func newConcurrencyLimitError(operation string, current, limit int) error {
-	return &JsonsError{Op: operation, Message: fmt.Sprintf("concurrent operations %d exceeds limit %d", current, limit), Err: ErrConcurrencyLimit}
-}
-
 // newSecurityError creates a security-related error
 func newSecurityError(operation, message string) error {
 	return &JsonsError{Op: operation, Message: message, Err: ErrSecurityViolation}
-}
-
-// newTimeoutError creates a timeout error
-func newTimeoutError(operation, path string, duration time.Duration) error {
-	return &JsonsError{Op: operation, Path: path, Message: fmt.Sprintf("operation timed out after %v", duration), Err: ErrOperationTimeout}
 }
 
 // IsRetryable determines if an error is retryable

@@ -143,23 +143,6 @@ func (si *StringIntern) InternBytes(b []byte) string {
 	return si.Intern(s)
 }
 
-// evictOldest removes entries when size limit is reached
-// Uses a simple strategy: remove half the entries
-// SECURITY: Renamed to evictOldestLocked to indicate it must be called with lock held
-func (si *StringIntern) evictOldest() {
-	// Remove half the entries
-	count := 0
-	target := len(si.strings) / 2
-	for k := range si.strings {
-		if count >= target {
-			break
-		}
-		si.size -= int64(len(k))
-		delete(si.strings, k)
-		count++
-	}
-}
-
 // evictOldestLocked removes entries when size limit is reached
 // Returns true if entries were evicted, false if no entries to evict
 // SECURITY: Must be called with lock already held
@@ -219,7 +202,11 @@ func (si *StringIntern) Clear() {
 // ============================================================================
 // KEY INTERN - Specialized for JSON keys
 // PERFORMANCE: Increased shards to 64, added hot key cache with sync.Map
+// SECURITY FIX: Added memory-based eviction to prevent unbounded growth
 // ============================================================================
+
+// maxShardSize is the maximum size per shard before eviction (256KB)
+const maxShardSize = 256 * 1024
 
 // KeyIntern is a specialized interner for JSON keys
 // Uses sharding for better concurrent performance with hot key cache
@@ -230,9 +217,10 @@ type KeyIntern struct {
 }
 
 type keyInternShard struct {
-	mu      sync.RWMutex
-	strings map[string]string
-	size    int64 // Track memory usage for eviction
+	mu        sync.RWMutex
+	strings   map[string]string
+	size      int64 // Track memory usage for eviction
+	evictions int64 // SECURITY: Track eviction count for monitoring
 }
 
 // GlobalKeyIntern is the global key interner
@@ -255,6 +243,7 @@ func NewKeyIntern() *KeyIntern {
 
 // Intern returns an interned version of the key
 // PERFORMANCE: First checks hot key cache (lock-free), then falls back to sharded lookup
+// SECURITY FIX: Added memory-based eviction when shard exceeds maxShardSize
 func (ki *KeyIntern) Intern(key string) string {
 	if len(key) == 0 {
 		return ""
@@ -293,6 +282,13 @@ func (ki *KeyIntern) Intern(key string) string {
 		return interned
 	}
 
+	// SECURITY FIX: Check if we need to evict before adding
+	// Use 80% watermark for proactive eviction (256KB * 80% = 204.8KB)
+	const highWatermark = (maxShardSize * 80) / 100
+	if shard.size+int64(len(key)) > highWatermark {
+		ki.evictShardLocked(shard)
+	}
+
 	// SECURITY FIX: Use safe string copy instead of unsafe
 	copied := string([]byte(key))
 	shard.strings[copied] = copied
@@ -301,6 +297,44 @@ func (ki *KeyIntern) Intern(key string) string {
 	// Promote to hot key cache
 	ki.hotKeys.Store(key, copied)
 	return copied
+}
+
+// evictShardLocked removes entries when shard size limit is reached
+// SECURITY: Must be called with shard lock already held
+// PERFORMANCE: Collects keys first to avoid multiple sync.Map operations during iteration
+func (ki *KeyIntern) evictShardLocked(shard *keyInternShard) bool {
+	if len(shard.strings) == 0 {
+		return false
+	}
+
+	// Remove half the entries
+	target := len(shard.strings) / 2
+	if target < 1 {
+		target = 1
+	}
+
+	// SECURITY FIX: Collect keys to delete first, then batch delete
+	// This ensures consistency between shard.strings and hotKeys
+	keysToDelete := make([]string, 0, target)
+	count := 0
+	for k := range shard.strings {
+		if count >= target {
+			break
+		}
+		keysToDelete = append(keysToDelete, k)
+		shard.size -= int64(len(k))
+		delete(shard.strings, k)
+		count++
+	}
+
+	// Delete from hot key cache after modifying shard
+	// This is safe because sync.Map.Delete is safe for concurrent use
+	for _, k := range keysToDelete {
+		ki.hotKeys.Delete(k)
+	}
+
+	shard.evictions += int64(count)
+	return count > 0
 }
 
 // InternBytes returns an interned string from a byte slice

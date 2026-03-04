@@ -539,9 +539,7 @@ func (p *Processor) navigateJSONPointer(data any, path string) (any, error) {
 	}
 
 	pathWithoutSlash := path[1:]
-	segmentCount := strings.Count(pathWithoutSlash, "/") + 1
-	segments := make([]string, 0, segmentCount)
-	segments = strings.Split(pathWithoutSlash, "/")
+	segments := strings.Split(pathWithoutSlash, "/")
 
 	current := data
 

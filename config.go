@@ -1,6 +1,9 @@
 package json
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // ConfigInterface defines the interface for configuration objects
 type ConfigInterface interface {
@@ -65,6 +68,8 @@ const (
 	AcquireSlotRetryDelay   = 1 * time.Millisecond
 
 	// Path Validation - Secure but flexible
+	// Note: MaxPathLength (5000) is also defined in internal/constants.go for internal use
+	// Both definitions must be kept in sync
 	MaxPathLength    = 5000
 	MaxSegmentLength = 1024
 
@@ -200,9 +205,142 @@ func LargeDataConfig() *Config {
 	return config
 }
 
+// WebAPIConfig returns a configuration optimized for web API handlers.
+// This configuration provides a balance between security and performance
+// for public-facing APIs that receive JSON input from external clients.
+//
+// Key characteristics:
+//   - Full security scan enabled for all input
+//   - Moderate limits suitable for typical API payloads
+//   - Strict mode enabled for predictable parsing
+//   - Caching enabled for repeated operations
+//
+// Use this for: REST APIs, GraphQL endpoints, webhooks, public APIs.
+func WebAPIConfig() *Config {
+	config := DefaultConfig()
+	// Security settings - moderate but comprehensive
+	config.MaxNestingDepthSecurity = 50
+	config.MaxSecurityValidationSize = 10 * 1024 * 1024 // 10MB
+	config.MaxObjectKeys = 5000
+	config.MaxArrayElements = 5000
+	config.MaxJSONSize = 10 * 1024 * 1024 // 10MB max payload
+	config.MaxPathDepth = 30
+	config.FullSecurityScan = true
+	config.StrictMode = true
+	config.EnableValidation = true
+	// Performance settings
+	config.EnableCache = true
+	config.MaxCacheSize = 256
+	config.CacheTTL = 3 * time.Minute
+	return config
+}
+
+// FastConfig returns a configuration optimized for trusted internal services.
+// This configuration maximizes performance by reducing security overhead
+// and should ONLY be used when you trust the source of JSON data.
+//
+// Key characteristics:
+//   - Sampling-based security validation (faster but less thorough)
+//   - Larger limits for trusted internal data
+//   - Caching enabled with larger cache
+//   - Non-strict mode for flexible parsing
+//
+// SECURITY WARNING: Do NOT use this configuration for:
+//   - Public APIs
+//   - User-submitted data
+//   - External webhooks
+//   - Any untrusted input
+//
+// Use this for: Internal microservices, config files, trusted data pipelines.
+func FastConfig() *Config {
+	config := DefaultConfig()
+	// Relaxed limits for trusted internal data
+	config.MaxNestingDepthSecurity = 150
+	config.MaxSecurityValidationSize = 100 * 1024 * 1024 // 100MB
+	config.MaxObjectKeys = 100000
+	config.MaxArrayElements = 100000
+	config.MaxJSONSize = 50 * 1024 * 1024 // 50MB
+	config.MaxPathDepth = 100
+	// Performance optimizations
+	config.FullSecurityScan = false // Use sampling-based validation
+	config.StrictMode = false
+	config.EnableCache = true
+	config.MaxCacheSize = 512
+	config.CacheTTL = 10 * time.Minute
+	config.MaxConcurrency = 100
+	return config
+}
+
+// MinimalConfig returns a configuration with minimal overhead for maximum performance.
+// This configuration disables most safety features and should only be used in
+// controlled environments where you have complete control over the JSON data.
+//
+// Key characteristics:
+//   - Security validation disabled
+//   - Caching disabled
+//   - Maximum limits
+//   - No strict mode
+//
+// SECURITY WARNING: This configuration provides NO protection against:
+//   - Malformed JSON attacks
+//   - Deeply nested payload attacks
+//   - Memory exhaustion attacks
+//   - Prototype pollution attempts
+//
+// Use this for: Benchmarking, testing, trusted in-memory processing.
+func MinimalConfig() *Config {
+	config := DefaultConfig()
+	// Maximum limits
+	config.MaxNestingDepthSecurity = 200
+	config.MaxSecurityValidationSize = 500 * 1024 * 1024 // 500MB
+	config.MaxObjectKeys = 100000
+	config.MaxArrayElements = 100000
+	config.MaxJSONSize = 200 * 1024 * 1024 // 200MB
+	config.MaxPathDepth = 200
+	// Disable overhead features
+	config.EnableValidation = false
+	config.FullSecurityScan = false
+	config.StrictMode = false
+	config.EnableCache = false
+	config.MaxCacheSize = 0
+	config.EnableMetrics = false
+	config.EnableHealthCheck = false
+	return config
+}
+
+// defaultEncodeConfigPool caches encode config objects to reduce allocations
+// PERFORMANCE: Avoids repeated struct allocations for hot encoding paths
+var defaultEncodeConfigPool = &sync.Pool{
+	New: func() any {
+		return &EncodeConfig{
+			Pretty:          false,
+			Indent:          "  ",
+			Prefix:          "",
+			EscapeHTML:      true,
+			SortKeys:        false,
+			ValidateUTF8:    true,
+			MaxDepth:        100,
+			DisallowUnknown: false,
+			PreserveNumbers: false,
+			FloatPrecision:  -1,
+			FloatTruncate:   false,
+			DisableEscaping: false,
+			EscapeUnicode:   false,
+			EscapeSlash:     false,
+			EscapeNewlines:  true,
+			EscapeTabs:      true,
+			IncludeNulls:    true,
+			CustomEscapes:   nil,
+		}
+	},
+}
+
 // DefaultEncodeConfig returns default encoding configuration
+// PERFORMANCE: Uses sync.Pool to reduce allocations in hot paths
 func DefaultEncodeConfig() *EncodeConfig {
-	return &EncodeConfig{
+	cfg := defaultEncodeConfigPool.Get().(*EncodeConfig)
+	// Reset to defaults in case caller modified it
+	*cfg = EncodeConfig{
 		Pretty:          false,
 		Indent:          "  ",
 		Prefix:          "",
@@ -222,6 +360,16 @@ func DefaultEncodeConfig() *EncodeConfig {
 		IncludeNulls:    true,
 		CustomEscapes:   nil,
 	}
+	return cfg
+}
+
+// PutEncodeConfig returns an EncodeConfig to the pool
+// PERFORMANCE: Call this after using DefaultEncodeConfig to reduce GC pressure
+func PutEncodeConfig(cfg *EncodeConfig) {
+	if cfg != nil {
+		cfg.CustomEscapes = nil // Clear potential reference
+		defaultEncodeConfigPool.Put(cfg)
+	}
 }
 
 // NewPrettyConfig returns configuration for pretty-printed JSON
@@ -232,7 +380,10 @@ func NewPrettyConfig() *EncodeConfig {
 	return cfg
 }
 
-// Clone creates a deep copy of the configuration
+// Clone creates a copy of the configuration.
+// Note: Config currently contains only value types (int, bool, time.Duration),
+// so a shallow copy is sufficient. If reference types (slices, maps, pointers)
+// are added in the future, this method must be updated to perform deep copying.
 func (c *Config) Clone() *Config {
 	if c == nil {
 		return DefaultConfig()

@@ -564,6 +564,7 @@ func isIntegerFloat(f float64) bool {
 
 // EncodeFloat encodes a floating point number
 // PERFORMANCE: Uses pre-computed common values and fast integer conversion
+// SECURITY: Special values (NaN, Inf) are encoded as null for JSON compatibility
 func (e *FastEncoder) EncodeFloat(n float64, bits int) {
 	// Fast path for zero
 	if n == 0 {
@@ -571,17 +572,18 @@ func (e *FastEncoder) EncodeFloat(n float64, bits int) {
 		return
 	}
 
-	// Check for special values
+	// Check for special values - encode as null for JSON compatibility
+	// JSON standard (RFC 8259) does not support NaN/Infinity
 	if n != n { // NaN
-		e.buf = append(e.buf, "NaN"...)
+		e.buf = append(e.buf, "null"...)
 		return
 	}
 	if n > 0 && n/2 == n { // +Inf
-		e.buf = append(e.buf, "Infinity"...)
+		e.buf = append(e.buf, "null"...)
 		return
 	}
 	if n < 0 && n/2 == n { // -Inf
-		e.buf = append(e.buf, "-Infinity"...)
+		e.buf = append(e.buf, "null"...)
 		return
 	}
 
@@ -872,6 +874,7 @@ func (e *FastEncoder) EncodeUint64Slice(arr []uint64) {
 
 // FastParseInt parses an integer from a byte slice
 // PERFORMANCE: Avoids string allocation by parsing directly from bytes
+// SECURITY FIX: Proper overflow detection for both positive and negative numbers
 func FastParseInt(b []byte) (int64, error) {
 	if len(b) == 0 {
 		return 0, strconv.ErrSyntax
@@ -888,18 +891,38 @@ func FastParseInt(b []byte) (int64, error) {
 		}
 	}
 
-	// Parse digits
+	// Parse digits with proper overflow detection
 	var n int64
 	for i := start; i < len(b); i++ {
 		c := b[i]
 		if c < '0' || c > '9' {
 			return 0, strconv.ErrSyntax
 		}
-		// Check overflow
-		if n > (1<<63-1)/10 {
-			return 0, strconv.ErrRange
+		digit := int64(c - '0')
+
+		// SECURITY FIX: Improved overflow detection
+		// For positive: n*10 + digit <= MaxInt64 (9223372036854775807)
+		// For negative: -(n*10 + digit) >= MinInt64 (-9223372036854775808)
+		// MinInt64 = -9223372036854775808, so we need n*10 + digit <= 9223372036854775808
+		// MaxInt64 = 9223372036854775807, so we need n*10 + digit <= 9223372036854775807
+		if neg {
+			// For negative numbers, the absolute value can be up to 9223372036854775808
+			// Check: n*10 + digit <= 9223372036854775808
+			// Safe threshold: n < 922337203685477580 OR (n == 922337203685477580 AND digit <= 8)
+			const maxVal = 1 << 63 // 9223372036854775808
+			if n > maxVal/10 || (n == maxVal/10 && digit > 8) {
+				return 0, strconv.ErrRange
+			}
+		} else {
+			// For positive numbers, the value can be up to 9223372036854775807
+			// Check: n*10 + digit <= 9223372036854775807
+			// Safe threshold: n < 922337203685477580 OR (n == 922337203685477580 AND digit <= 7)
+			const maxVal = 1<<63 - 1 // 9223372036854775807
+			if n > maxVal/10 || (n == maxVal/10 && digit > 7) {
+				return 0, strconv.ErrRange
+			}
 		}
-		n = n*10 + int64(c-'0')
+		n = n*10 + digit
 	}
 
 	if neg {

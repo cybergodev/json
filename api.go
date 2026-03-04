@@ -294,6 +294,12 @@ func Encode(value any, config ...*EncodeConfig) (string, error) {
 	return getDefaultProcessor().EncodeWithConfig(value, cfg)
 }
 
+// EncodeWithOptions converts any Go value to JSON string with processor options.
+// This allows passing both EncodeConfig and ProcessorOptions in a single call.
+func EncodeWithOptions(value any, config *EncodeConfig, opts ...*ProcessorOptions) (string, error) {
+	return getDefaultProcessor().EncodeWithConfig(value, config, opts...)
+}
+
 // EncodePretty converts any Go value to pretty-formatted JSON string
 func EncodePretty(value any, config ...*EncodeConfig) (string, error) {
 	var cfg *EncodeConfig
@@ -310,9 +316,17 @@ func FormatPretty(jsonStr string, opts ...*ProcessorOptions) (string, error) {
 	return getDefaultProcessor().FormatPretty(jsonStr, opts...)
 }
 
-// FormatCompact removes whitespace from JSON string.
-func FormatCompact(jsonStr string, opts ...*ProcessorOptions) (string, error) {
+// CompactString removes whitespace from JSON string.
+// This is the recommended function name for consistency with Processor.Compact.
+func CompactString(jsonStr string, opts ...*ProcessorOptions) (string, error) {
 	return getDefaultProcessor().Compact(jsonStr, opts...)
+}
+
+// FormatCompact removes whitespace from JSON string.
+//
+// Deprecated: Use CompactString for consistency with Processor.Compact.
+func FormatCompact(jsonStr string, opts ...*ProcessorOptions) (string, error) {
+	return CompactString(jsonStr, opts...)
 }
 
 // Print prints any Go value as JSON to stdout in compact format.
@@ -402,11 +416,25 @@ func printData(data any, pretty bool) (string, error) {
 	}
 }
 
-// Valid reports whether data is valid JSON
+// Valid reports whether data is valid JSON.
+// This function is 100% compatible with encoding/json.Valid.
 func Valid(data []byte) bool {
 	jsonStr := string(data)
 	valid, err := getDefaultProcessor().Valid(jsonStr)
 	return err == nil && valid
+}
+
+// ValidString reports whether the JSON string is valid.
+// This is a convenience wrapper for Valid that accepts a string directly.
+func ValidString(jsonStr string) bool {
+	valid, err := getDefaultProcessor().Valid(jsonStr)
+	return err == nil && valid
+}
+
+// ValidWithOptions reports whether the JSON string is valid with optional processor options.
+// Returns both the validation result and any error that occurred during validation.
+func ValidWithOptions(jsonStr string, opts ...*ProcessorOptions) (bool, error) {
+	return getDefaultProcessor().Valid(jsonStr, opts...)
 }
 
 // ValidateSchema validates JSON data against a schema
@@ -458,10 +486,11 @@ func MarshalToFile(path string, data any, pretty ...bool) error {
 // Parameters:
 //   - path: file path to read JSON from
 //   - v: pointer to the target variable where JSON will be unmarshaled
+//   - opts: optional ProcessorOptions for security validation and processing
 //
 // Returns error if file reading fails or JSON cannot be unmarshaled.
-func UnmarshalFromFile(path string, v any) error {
-	return getDefaultProcessor().UnmarshalFromFile(path, v)
+func UnmarshalFromFile(path string, v any, opts ...*ProcessorOptions) error {
+	return getDefaultProcessor().UnmarshalFromFile(path, v, opts...)
 }
 
 // ProcessBatch processes multiple JSON operations in a single batch.

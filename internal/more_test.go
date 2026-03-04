@@ -2,7 +2,6 @@ package internal
 
 import (
 	"testing"
-	"time"
 )
 
 // ============================================================================
@@ -753,10 +752,10 @@ func TestDetectConsecutiveExtractions(t *testing.T) {
 }
 
 // ============================================================================
-// UNIQUE ARRAY TESTS
+// UNIQUE ARRAY TESTS (merged UniqueArray and UniqueArrayOptimized)
 // ============================================================================
 
-// TestUniqueArray tests the UniqueArray function
+// TestUniqueArray tests both UniqueArray and UniqueArrayOptimized functions
 func TestUniqueArray(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -772,71 +771,16 @@ func TestUniqueArray(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Test UniqueArray
 			result := UniqueArray(tt.input)
 			if len(result) != tt.expected {
 				t.Errorf("UniqueArray returned %d items, want %d", len(result), tt.expected)
 			}
-		})
-	}
-}
 
-// ============================================================================
-// REVERSE ARRAY TESTS
-// ============================================================================
-
-// TestReverseArray tests the ReverseArray function
-func TestReverseArray(t *testing.T) {
-	t.Run("empty array", func(t *testing.T) {
-		arr := []any{}
-		ReverseArray(arr)
-		if len(arr) != 0 {
-			t.Error("empty array should remain empty")
-		}
-	})
-
-	t.Run("single element", func(t *testing.T) {
-		arr := []any{1}
-		ReverseArray(arr)
-		if arr[0] != 1 {
-			t.Errorf("single element should remain, got %v", arr[0])
-		}
-	})
-
-	t.Run("multiple elements", func(t *testing.T) {
-		arr := []any{1, 2, 3, 4, 5}
-		ReverseArray(arr)
-		expected := []any{5, 4, 3, 2, 1}
-		for i, v := range arr {
-			if v != expected[i] {
-				t.Errorf("arr[%d] = %v, want %v", i, v, expected[i])
-			}
-		}
-	})
-}
-
-// ============================================================================
-// UNIQUE ARRAY OPTIMIZED TESTS
-// ============================================================================
-
-// TestUniqueArrayOptimized tests the UniqueArrayOptimized function
-func TestUniqueArrayOptimized(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    []any
-		expected int
-	}{
-		{"empty", []any{}, 0},
-		{"single", []any{1}, 1},
-		{"no duplicates", []any{1, 2, 3}, 3},
-		{"with duplicates", []any{1, 2, 1, 3, 2}, 3},
-		{"all same", []any{1, 1, 1}, 1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := UniqueArrayOptimized(tt.input)
-			if len(result) != tt.expected {
-				t.Errorf("UniqueArrayOptimized returned %d items, want %d", len(result), tt.expected)
+			// Test UniqueArrayOptimized
+			resultOpt := UniqueArrayOptimized(tt.input)
+			if len(resultOpt) != tt.expected {
+				t.Errorf("UniqueArrayOptimized returned %d items, want %d", len(resultOpt), tt.expected)
 			}
 		})
 	}
@@ -900,34 +844,45 @@ func TestChunkArrayOptimized(t *testing.T) {
 }
 
 // ============================================================================
-// REVERSE ARRAY OPTIMIZED TESTS
+// REVERSE ARRAY TESTS (merged ReverseArray and ReverseArrayOptimized)
 // ============================================================================
 
-// TestReverseArrayOptimized tests the ReverseArrayOptimized function
-func TestReverseArrayOptimized(t *testing.T) {
+// TestReverseArray tests both ReverseArray and ReverseArrayOptimized functions
+func TestReverseArray(t *testing.T) {
 	t.Run("empty array", func(t *testing.T) {
-		arr := []any{}
-		ReverseArrayOptimized(arr)
-		if len(arr) != 0 {
+		arr1 := []any{}
+		arr2 := []any{}
+		ReverseArray(arr1)
+		ReverseArrayOptimized(arr2)
+		if len(arr1) != 0 || len(arr2) != 0 {
 			t.Error("empty array should remain empty")
 		}
 	})
 
 	t.Run("single element", func(t *testing.T) {
-		arr := []any{1}
-		ReverseArrayOptimized(arr)
-		if arr[0] != 1 {
-			t.Errorf("single element should remain, got %v", arr[0])
+		arr1 := []any{1}
+		arr2 := []any{1}
+		ReverseArray(arr1)
+		ReverseArrayOptimized(arr2)
+		if arr1[0] != 1 || arr2[0] != 1 {
+			t.Errorf("single element should remain, got %v and %v", arr1[0], arr2[0])
 		}
 	})
 
 	t.Run("multiple elements", func(t *testing.T) {
-		arr := []any{1, 2, 3, 4, 5}
-		ReverseArrayOptimized(arr)
+		arr1 := []any{1, 2, 3, 4, 5}
+		arr2 := []any{1, 2, 3, 4, 5}
+		ReverseArray(arr1)
+		ReverseArrayOptimized(arr2)
 		expected := []any{5, 4, 3, 2, 1}
-		for i, v := range arr {
+		for i, v := range arr1 {
 			if v != expected[i] {
-				t.Errorf("arr[%d] = %v, want %v", i, v, expected[i])
+				t.Errorf("ReverseArray arr[%d] = %v, want %v", i, v, expected[i])
+			}
+		}
+		for i, v := range arr2 {
+			if v != expected[i] {
+				t.Errorf("ReverseArrayOptimized arr[%d] = %v, want %v", i, v, expected[i])
 			}
 		}
 	})
@@ -1156,264 +1111,5 @@ func TestGetSafeArrayElement(t *testing.T) {
 				t.Errorf("GetSafeArrayElement(arr, %d) = %v, want %v", tt.index, result, tt.expected)
 			}
 		})
-	}
-}
-
-// ============================================================================
-// PARALLEL PROCESSOR TESTS
-// ============================================================================
-
-// TestParallelConfig tests ParallelConfig defaults
-func TestDefaultParallelConfig(t *testing.T) {
-	config := DefaultParallelConfig()
-	if config.Workers < 2 {
-		t.Errorf("Workers = %d, want at least 2", config.Workers)
-	}
-	if config.BatchSize <= 0 {
-		t.Error("BatchSize should be positive")
-	}
-	if config.MinParallel <= 0 {
-		t.Error("MinParallel should be positive")
-	}
-}
-
-// TestNewParallelProcessor tests NewParallelProcessor
-func TestNewParallelProcessor(t *testing.T) {
-	t.Run("with defaults", func(t *testing.T) {
-		pp := NewParallelProcessor(DefaultParallelConfig())
-		if pp == nil {
-			t.Fatal("NewParallelProcessor returned nil")
-		}
-	})
-
-	t.Run("with zero values", func(t *testing.T) {
-		pp := NewParallelProcessor(ParallelConfig{})
-		if pp == nil {
-			t.Fatal("NewParallelProcessor returned nil")
-		}
-		if pp.config.Workers <= 0 {
-			t.Error("Workers should be set to default")
-		}
-	})
-}
-
-// TestParallelSlice tests ParallelSlice
-func TestParallelSlice(t *testing.T) {
-	pp := NewParallelProcessor(ParallelConfig{
-		Workers:     2,
-		BatchSize:   10,
-		MinParallel: 100,
-	})
-
-	t.Run("small slice sequential", func(t *testing.T) {
-		arr := []any{1, 2, 3, 4, 5}
-		result, err := pp.ParallelSlice(arr, func(index int, value any) (any, error) {
-			return value.(int) * 2, nil
-		})
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-		if len(result) != 5 {
-			t.Errorf("Expected 5 results, got %d", len(result))
-		}
-	})
-
-	t.Run("with error", func(t *testing.T) {
-		arr := []any{1, 2, 3}
-		_, err := pp.ParallelSlice(arr, func(index int, value any) (any, error) {
-			if value.(int) == 2 {
-				return nil, ErrInvalidPath
-			}
-			return value, nil
-		})
-		if err == nil {
-			t.Error("Expected error, got nil")
-		}
-	})
-}
-
-// TestParallelMap tests ParallelMap
-func TestParallelMap(t *testing.T) {
-	pp := NewParallelProcessor(ParallelConfig{
-		Workers:     2,
-		BatchSize:   10,
-		MinParallel: 100,
-	})
-
-	t.Run("small map sequential", func(t *testing.T) {
-		m := map[string]any{"a": 1, "b": 2, "c": 3}
-		result, err := pp.ParallelMap(m, func(key string, value any) (any, error) {
-			return value.(int) * 2, nil
-		})
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-		if len(result) != 3 {
-			t.Errorf("Expected 3 results, got %d", len(result))
-		}
-	})
-
-	t.Run("with error", func(t *testing.T) {
-		m := map[string]any{"a": 1, "b": 2}
-		_, err := pp.ParallelMap(m, func(key string, value any) (any, error) {
-			if key == "b" {
-				return nil, ErrInvalidPath
-			}
-			return value, nil
-		})
-		if err == nil {
-			t.Error("Expected error, got nil")
-		}
-	})
-}
-
-// TestParallelForEach tests ParallelForEach
-func TestParallelForEach(t *testing.T) {
-	pp := NewParallelProcessor(ParallelConfig{
-		Workers:     2,
-		BatchSize:   10,
-		MinParallel: 100,
-	})
-
-	t.Run("small slice sequential", func(t *testing.T) {
-		arr := []any{1, 2, 3}
-		sum := 0
-		err := pp.ParallelForEach(arr, func(index int, value any) error {
-			sum += value.(int)
-			return nil
-		})
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-		}
-		if sum != 6 {
-			t.Errorf("Sum = %d, want 6", sum)
-		}
-	})
-}
-
-// TestParallelFilter tests ParallelFilter
-func TestParallelFilter(t *testing.T) {
-	pp := NewParallelProcessor(ParallelConfig{
-		Workers:     2,
-		BatchSize:   10,
-		MinParallel: 100,
-	})
-
-	t.Run("small slice", func(t *testing.T) {
-		arr := []any{1, 2, 3, 4, 5}
-		result := pp.ParallelFilter(arr, func(value any) bool {
-			return value.(int)%2 == 0
-		})
-		if len(result) != 2 {
-			t.Errorf("Expected 2 results, got %d", len(result))
-		}
-	})
-}
-
-// TestParallelTransform tests ParallelTransform
-func TestParallelTransform(t *testing.T) {
-	pp := NewParallelProcessor(ParallelConfig{
-		Workers:     2,
-		BatchSize:   10,
-		MinParallel: 100,
-	})
-
-	t.Run("small slice", func(t *testing.T) {
-		arr := []any{1, 2, 3}
-		result := pp.ParallelTransform(arr, func(value any) any {
-			return value.(int) * 2
-		})
-		if len(result) != 3 {
-			t.Errorf("Expected 3 results, got %d", len(result))
-		}
-		for i, v := range result {
-			if v != (i+1)*2 {
-				t.Errorf("result[%d] = %v, want %d", i, v, (i+1)*2)
-			}
-		}
-	})
-}
-
-// ============================================================================
-// WORKER POOL TESTS
-// ============================================================================
-
-// TestNewWorkerPool tests NewWorkerPool
-func TestNewWorkerPool(t *testing.T) {
-	wp := NewWorkerPool(2)
-	if wp == nil {
-		t.Fatal("NewWorkerPool returned nil")
-	}
-	defer wp.Stop()
-
-	// Submit a task
-	done := make(chan bool, 1)
-	wp.Submit(func() {
-		done <- true
-	})
-
-	// Wait for task to complete with timeout
-	select {
-	case <-done:
-		// Task completed successfully
-	case <-time.After(1 * time.Second):
-		t.Error("Task was not executed within timeout")
-	}
-}
-
-// ============================================================================
-// CHUNK PROCESSOR TESTS
-// ============================================================================
-
-// TestNewChunkProcessor tests NewChunkProcessor
-func TestNewChunkProcessor(t *testing.T) {
-	cp := NewChunkProcessor(100)
-	if cp == nil {
-		t.Fatal("NewChunkProcessor returned nil")
-	}
-	if cp.chunkSize != 100 {
-		t.Errorf("chunkSize = %d, want 100", cp.chunkSize)
-	}
-
-	// Test with zero (should use default)
-	cp2 := NewChunkProcessor(0)
-	if cp2.chunkSize != 1000 {
-		t.Errorf("default chunkSize = %d, want 1000", cp2.chunkSize)
-	}
-}
-
-// TestProcessSlice tests ProcessSlice
-func TestProcessSlice(t *testing.T) {
-	cp := NewChunkProcessor(2)
-	arr := []any{1, 2, 3, 4, 5}
-
-	chunks := 0
-	err := cp.ProcessSlice(arr, func(chunk []any) error {
-		chunks++
-		return nil
-	})
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if chunks != 3 {
-		t.Errorf("Expected 3 chunks, got %d", chunks)
-	}
-}
-
-// TestProcessMap tests ProcessMap
-func TestProcessMap(t *testing.T) {
-	cp := NewChunkProcessor(2)
-	m := map[string]any{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5}
-
-	chunks := 0
-	err := cp.ProcessMap(m, func(chunk map[string]any) error {
-		chunks++
-		return nil
-	})
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	if chunks < 2 {
-		t.Errorf("Expected at least 2 chunks, got %d", chunks)
 	}
 }

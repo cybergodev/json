@@ -797,18 +797,6 @@ func ForeachWithPath(jsonStr, path string, fn func(key any, item *IterableValue)
 	return nil
 }
 
-// foreachWithPathAndIterator iterates with IterableValue and path information (full version)
-func foreachWithPathAndIterator(jsonStr, path string, fn func(key any, item *IterableValue, currentPath string) IteratorControl) error {
-	processor := getDefaultProcessor()
-
-	data, err := processor.Get(jsonStr, path)
-	if err != nil {
-		return err
-	}
-
-	return foreachWithPathIterableValue(data, "", fn)
-}
-
 // foreachWithPathIterableValue iterates with IterableValue and path information
 // PERFORMANCE: Uses pooled IterableValue to reduce allocations
 func foreachWithPathIterableValue(data any, currentPath string, fn func(key any, item *IterableValue, currentPath string) IteratorControl) error {
@@ -882,30 +870,6 @@ func foreachOnValue(data any, fn func(key any, value any) IteratorControl) error
 	return nil
 }
 
-// foreachWithPathOnValue iterates over a value and applies a function with path information
-func foreachWithPathOnValue(data any, currentPath string, fn func(key any, value any, currentPath string) IteratorControl) error {
-	switch v := data.(type) {
-	case []any:
-		for i, item := range v {
-			path := fmt.Sprintf("%s[%d]", currentPath, i)
-			if ctrl := fn(i, item, path); ctrl == IteratorBreak {
-				return nil
-			}
-		}
-	case map[string]any:
-		for key, val := range v {
-			path := currentPath + "." + key
-			if ctrl := fn(key, val, path); ctrl == IteratorBreak {
-				return nil
-			}
-		}
-	default:
-		return newOperationPathError("foreach", currentPath, fmt.Sprintf("value is not iterable: %T", data), ErrTypeMismatch)
-	}
-
-	return nil
-}
-
 // ForeachNested iterates over nested JSON structures
 func ForeachNested(jsonStr string, fn func(key any, item *IterableValue)) {
 	processor := getDefaultProcessor()
@@ -946,133 +910,6 @@ func foreachNestedOnValue(data any, fn func(key any, item *IterableValue)) {
 // isComplexPathIterator checks if the path contains array indices or other complex syntax
 func isComplexPathIterator(path string) bool {
 	return strings.ContainsAny(path, "[]")
-}
-
-// navigateToPathWithArraySupport provides path navigation with array index support
-func navigateToPathWithArraySupport(data any, path string) (any, error) {
-	current := data
-
-	// Parse path using internal parser
-	segments, err := internal.ParsePath(path)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, segment := range segments {
-		switch segment.Type {
-		case internal.PropertySegment:
-			// Property access
-			obj, ok := current.(map[string]any)
-			if !ok {
-				return nil, newPathError(segment.Key, fmt.Sprintf("cannot access property '%s' on type %T", segment.Key, current), ErrTypeMismatch)
-			}
-			var exists bool
-			current, exists = obj[segment.Key]
-			if !exists {
-				return nil, newPathError(segment.Key, fmt.Sprintf("key not found: %s", segment.Key), ErrPathNotFound)
-			}
-
-		case internal.ArrayIndexSegment:
-			// Array index access
-			arr, ok := current.([]any)
-			if !ok {
-				return nil, newPathError(path, fmt.Sprintf("cannot access index on type %T", current), ErrTypeMismatch)
-			}
-
-			// Handle negative index
-			index := segment.Index
-			if index < 0 {
-				index = len(arr) + index
-			}
-
-			if index < 0 || index >= len(arr) {
-				return nil, newPathError(path, fmt.Sprintf("array index out of bounds: %d", segment.Index), ErrPathNotFound)
-			}
-			current = arr[index]
-
-		case internal.ArraySliceSegment:
-			// Array slice access - build slice part string
-			arr, ok := current.([]any)
-			if !ok {
-				return nil, newPathError(path, fmt.Sprintf("cannot slice type %T", current), ErrTypeMismatch)
-			}
-
-			// Build slice string from segment flags and values
-			var sliceStr string
-			if segment.HasStart() {
-				sliceStr += fmt.Sprintf("%d", segment.Index) // Index stores start for slices
-			}
-			sliceStr += ":"
-			if segment.HasEnd() {
-				sliceStr += fmt.Sprintf("%d", segment.End)
-			}
-			if segment.HasStep() {
-				sliceStr += fmt.Sprintf(":%d", segment.Step)
-			}
-
-			start, end, step, err := internal.ParseSliceComponents(sliceStr)
-			if err != nil {
-				return nil, err
-			}
-
-			// Normalize indices
-			startVal := 0
-			if start != nil {
-				startVal = *start
-			}
-			endVal := len(arr)
-			if end != nil {
-				endVal = *end
-			}
-			stepVal := 1
-			if step != nil {
-				stepVal = *step
-			}
-
-			// Handle negative indices
-			if startVal < 0 {
-				startVal = len(arr) + startVal
-			}
-			if endVal < 0 {
-				endVal = len(arr) + endVal
-			}
-
-			// Calculate expected size before allocation
-			expectedSize := 0
-			if stepVal > 0 && startVal < endVal {
-				for i := startVal; i < endVal && i < len(arr); i += stepVal {
-					if i >= 0 {
-						expectedSize++
-					}
-				}
-			} else if stepVal < 0 && startVal > endVal {
-				for i := startVal; i > endVal && i >= 0; i += stepVal {
-					if i < len(arr) {
-						expectedSize++
-					}
-				}
-			}
-
-			// Apply slice with pre-allocated result
-			result := make([]any, 0, expectedSize)
-			if stepVal > 0 {
-				for i := startVal; i < endVal; i += stepVal {
-					if i >= 0 && i < len(arr) {
-						result = append(result, arr[i])
-					}
-				}
-			} else if stepVal < 0 {
-				for i := startVal; i > endVal; i += stepVal {
-					if i >= 0 && i < len(arr) {
-						result = append(result, arr[i])
-					}
-				}
-			}
-			current = result
-		}
-	}
-
-	return current, nil
 }
 
 // navigateToPathSimple provides simple path navigation for IterableValue

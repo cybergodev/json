@@ -563,8 +563,11 @@ type CacheKey struct {
 	Options   string
 }
 
-// DeletedMarker is a special marker for deleted values
-var DeletedMarker = &struct{ deleted bool }{deleted: true}
+// DeletedMarker is a special sentinel value used to mark array elements
+// for deletion. It is compared by pointer identity (using ==).
+// SECURITY: This is an unexported struct pointer to prevent external modification.
+// The zero-size struct{}{} is used because we only need unique pointer identity.
+var DeletedMarker = &struct{}{} // deleted marker - empty struct for pointer identity
 
 // ValidateOptions validates processor options with enhanced checks
 func ValidateOptions(options *ProcessorOptions) error {

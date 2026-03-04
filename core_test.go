@@ -43,13 +43,20 @@ func captureStdout(f func()) string {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	f()
-
-	w.Close()
-	os.Stdout = old
+	// Run f() in a goroutine to avoid deadlock
+	// If f() writes more than the pipe buffer size, it will block
+	// until io.Copy reads from the pipe
+	done := make(chan struct{})
+	go func() {
+		f()
+		w.Close()
+		close(done)
+	}()
 
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
+	<-done
+	os.Stdout = old
 	return buf.String()
 }
 
@@ -59,13 +66,20 @@ func captureStderr(f func()) string {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	f()
-
-	w.Close()
-	os.Stderr = old
+	// Run f() in a goroutine to avoid deadlock
+	// If f() writes more than the pipe buffer size, it will block
+	// until io.Copy reads from the pipe
+	done := make(chan struct{})
+	go func() {
+		f()
+		w.Close()
+		close(done)
+	}()
 
 	var buf bytes.Buffer
 	io.Copy(&buf, r)
+	<-done
+	os.Stderr = old
 	return buf.String()
 }
 
@@ -74,35 +88,12 @@ func intPtr(i int) *int {
 	return &i
 }
 
-// floatPtr returns a pointer to a float64
-func floatPtr(f float64) *float64 {
-	return &f
-}
-
 // getProp gets a property from a map
 func getProp(data any, key string) any {
 	if m, ok := data.(map[string]any); ok {
 		return m[key]
 	}
 	return nil
-}
-
-// coreSliceEqual compares two slices for equality
-func coreSliceEqual(a, b []any) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// coreSliceEqualHelper is an alias for coreSliceEqual
-func coreSliceEqualHelper(a, b []any) bool {
-	return coreSliceEqual(a, b)
 }
 
 // slicesEqual compares two slices for equality
@@ -592,7 +583,7 @@ func TestArrayHelper_PerformSlice(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := ah.PerformSlice(arr, tt.start, tt.end, tt.step)
-			if !coreSliceEqualHelper(result, tt.expected) {
+			if !slicesEqual(result, tt.expected) {
 				t.Errorf("PerformSlice(%d, %d, %d) = %v, want %v", tt.start, tt.end, tt.step, result, tt.expected)
 			}
 		})
@@ -811,7 +802,19 @@ func TestArraySliceOperations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Set slice error: %v", err)
 		}
-		_ = result
+		// Verify the slice was updated
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("Failed to parse result: %v", err)
+		}
+		items, ok := parsed["items"].([]any)
+		if !ok {
+			t.Fatal("items should be an array")
+		}
+		// Check first two items were replaced
+		if len(items) != 5 {
+			t.Errorf("Expected 5 items, got %d", len(items))
+		}
 	})
 }
 
@@ -827,8 +830,19 @@ func TestBatchDeleteOptimized(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BatchDeleteOptimized error: %v", err)
 		}
-		if result == "" {
-			t.Error("BatchDeleteOptimized returned empty result")
+		// Verify the result has keys deleted
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("Failed to parse result: %v", err)
+		}
+		if _, exists := parsed["a"]; exists {
+			t.Error("key 'a' should be deleted")
+		}
+		if _, exists := parsed["c"]; exists {
+			t.Error("key 'c' should be deleted")
+		}
+		if _, exists := parsed["b"]; !exists {
+			t.Error("key 'b' should still exist")
 		}
 	})
 
@@ -839,7 +853,14 @@ func TestBatchDeleteOptimized(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BatchDeleteOptimized error: %v", err)
 		}
-		_ = result
+		// Verify original JSON is returned unchanged
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("Failed to parse result: %v", err)
+		}
+		if _, exists := parsed["a"]; !exists {
+			t.Error("key 'a' should still exist when no paths to delete")
+		}
 	})
 }
 
@@ -871,7 +892,14 @@ func TestBatchSetOptimized(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BatchSetOptimized error: %v", err)
 		}
-		_ = result
+		// Verify original JSON is returned unchanged
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("Failed to parse result: %v", err)
+		}
+		if parsed["a"].(float64) != 1 {
+			t.Errorf("Expected a=1, got %v", parsed["a"])
+		}
 	})
 }
 
@@ -1432,6 +1460,65 @@ func TestConfiguration(t *testing.T) {
 		helper.AssertEqual(200, config.MaxPathDepth)
 	})
 
+	t.Run("WebAPIConfig", func(t *testing.T) {
+		config := WebAPIConfig()
+
+		helper.AssertNotNil(config)
+		// Security settings
+		helper.AssertEqual(50, config.MaxNestingDepthSecurity)
+		helper.AssertEqual(int64(10*1024*1024), config.MaxSecurityValidationSize)
+		helper.AssertEqual(5000, config.MaxObjectKeys)
+		helper.AssertEqual(5000, config.MaxArrayElements)
+		helper.AssertEqual(int64(10*1024*1024), config.MaxJSONSize)
+		helper.AssertEqual(30, config.MaxPathDepth)
+		helper.AssertTrue(config.FullSecurityScan)
+		helper.AssertTrue(config.StrictMode)
+		helper.AssertTrue(config.EnableValidation)
+		// Performance settings
+		helper.AssertTrue(config.EnableCache)
+		helper.AssertEqual(256, config.MaxCacheSize)
+	})
+
+	t.Run("FastConfig", func(t *testing.T) {
+		config := FastConfig()
+
+		helper.AssertNotNil(config)
+		// Relaxed limits for trusted data
+		helper.AssertEqual(150, config.MaxNestingDepthSecurity)
+		helper.AssertEqual(int64(100*1024*1024), config.MaxSecurityValidationSize)
+		helper.AssertEqual(100000, config.MaxObjectKeys)
+		helper.AssertEqual(100000, config.MaxArrayElements)
+		helper.AssertEqual(int64(50*1024*1024), config.MaxJSONSize)
+		helper.AssertEqual(100, config.MaxPathDepth)
+		// Performance optimizations
+		helper.AssertFalse(config.FullSecurityScan)
+		helper.AssertFalse(config.StrictMode)
+		helper.AssertTrue(config.EnableCache)
+		helper.AssertEqual(512, config.MaxCacheSize)
+		helper.AssertEqual(100, config.MaxConcurrency)
+	})
+
+	t.Run("MinimalConfig", func(t *testing.T) {
+		config := MinimalConfig()
+
+		helper.AssertNotNil(config)
+		// Maximum limits
+		helper.AssertEqual(200, config.MaxNestingDepthSecurity)
+		helper.AssertEqual(int64(500*1024*1024), config.MaxSecurityValidationSize)
+		helper.AssertEqual(100000, config.MaxObjectKeys)
+		helper.AssertEqual(100000, config.MaxArrayElements)
+		helper.AssertEqual(int64(200*1024*1024), config.MaxJSONSize)
+		helper.AssertEqual(200, config.MaxPathDepth)
+		// Features disabled
+		helper.AssertFalse(config.EnableValidation)
+		helper.AssertFalse(config.FullSecurityScan)
+		helper.AssertFalse(config.StrictMode)
+		helper.AssertFalse(config.EnableCache)
+		helper.AssertEqual(0, config.MaxCacheSize)
+		helper.AssertFalse(config.EnableMetrics)
+		helper.AssertFalse(config.EnableHealthCheck)
+	})
+
 	t.Run("ConfigClone", func(t *testing.T) {
 		original := DefaultConfig()
 		original.EnableCache = false
@@ -1652,6 +1739,54 @@ func TestConfigurationIntegration(t *testing.T) {
 		helper.AssertNoError(err)
 		helper.AssertTrue(len(result) > 0)
 	})
+
+	t.Run("WebAPIProcessor", func(t *testing.T) {
+		processor := New(WebAPIConfig())
+		defer processor.Close()
+
+		testData := `{"user": "test", "data": {"id": 123}}`
+
+		// Should work with normal data
+		result, err := processor.Get(testData, "user")
+		helper.AssertNoError(err)
+		helper.AssertEqual("test", result)
+
+		// Verify cache is enabled
+		stats := processor.GetStats()
+		helper.AssertTrue(stats.CacheEnabled)
+	})
+
+	t.Run("FastProcessor", func(t *testing.T) {
+		processor := New(FastConfig())
+		defer processor.Close()
+
+		testData := `{"items": [1, 2, 3, 4, 5]}`
+
+		result, err := processor.GetArray(testData, "items")
+		helper.AssertNoError(err)
+		helper.AssertEqual(5, len(result))
+
+		// Verify cache is enabled with larger size
+		stats := processor.GetStats()
+		helper.AssertTrue(stats.CacheEnabled)
+		helper.AssertEqual(512, stats.MaxCacheSize)
+	})
+
+	t.Run("MinimalProcessor", func(t *testing.T) {
+		processor := New(MinimalConfig())
+		defer processor.Close()
+
+		testData := `{"test": "value"}`
+
+		// Should work without validation overhead
+		result, err := processor.Get(testData, "test")
+		helper.AssertNoError(err)
+		helper.AssertEqual("value", result)
+
+		// Verify cache is disabled
+		stats := processor.GetStats()
+		helper.AssertFalse(stats.CacheEnabled)
+	})
 }
 
 // TestDeleteWithCleanNull tests deletion with null cleanup
@@ -1720,7 +1855,14 @@ func TestDeleteWithCleanupNulls(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Delete error: %v", err)
 		}
-		_ = result
+		// Verify 'b' is deleted
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("Failed to parse result: %v", err)
+		}
+		if _, exists := parsed["b"]; exists {
+			t.Error("key 'b' should be deleted")
+		}
 	})
 }
 
@@ -2270,7 +2412,14 @@ func TestExtractionOperations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get extract error: %v", err)
 		}
-		_ = result
+		// Verify extraction result
+		arr, ok := result.([]any)
+		if !ok {
+			t.Fatalf("Expected array, got %T", result)
+		}
+		if len(arr) != 2 {
+			t.Errorf("Expected 2 extracted items, got %d", len(arr))
+		}
 	})
 }
 
@@ -2485,7 +2634,7 @@ func TestForwardSlice(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := processor.forwardSlice(arr, tt.start, tt.end, tt.step)
-			if !coreSliceEqual(result, tt.expected) {
+			if !slicesEqual(result, tt.expected) {
 				t.Errorf("forwardSlice(%d, %d, %d) = %v; want %v", tt.start, tt.end, tt.step, result, tt.expected)
 			}
 		})
@@ -3831,14 +3980,25 @@ func TestNegativeArrayIndex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Delete error: %v", err)
 		}
-		_ = result
+		// Verify last item is deleted
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("Failed to parse result: %v", err)
+		}
+		items, ok := parsed["items"].([]any)
+		if !ok {
+			t.Fatal("items should be an array")
+		}
+		if len(items) != 4 {
+			t.Errorf("Expected 4 items, got %d", len(items))
+		}
 	})
 }
 
 func TestNewPrettyConfig(t *testing.T) {
 	cfg := NewPrettyConfig()
 	if cfg == nil {
-		t.Error("NewPrettyConfig should not return nil")
+		t.Fatal("NewPrettyConfig should not return nil")
 	}
 	if !cfg.Pretty {
 		t.Error("NewPrettyConfig should have Pretty = true")
@@ -4649,7 +4809,7 @@ func TestPerformArraySlice(t *testing.T) {
 			}
 
 			result := processor.performArraySlice(input, tt.start, tt.end, tt.step)
-			if !coreSliceEqual(result, tt.expected) {
+			if !slicesEqual(result, tt.expected) {
 				t.Errorf("%s: performArraySlice() = %v; want %v", tt.description, result, tt.expected)
 			}
 		})
@@ -5607,7 +5767,14 @@ func TestProcessor_WildcardAndExtraction(t *testing.T) {
 		if err != nil {
 			t.Errorf("Get error: %v", err)
 		}
-		_ = result
+		// Verify extraction result
+		arr, ok := result.([]any)
+		if !ok {
+			t.Fatalf("Expected array, got %T", result)
+		}
+		if len(arr) != 2 {
+			t.Errorf("Expected 2 extracted names, got %d", len(arr))
+		}
 	})
 }
 
@@ -6028,7 +6195,7 @@ func TestReverseSlice(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := processor.reverseSlice(arr, tt.start, tt.end, tt.step)
-			if !coreSliceEqual(result, tt.expected) {
+			if !slicesEqual(result, tt.expected) {
 				t.Errorf("reverseSlice(%d, %d, %d) = %v; want %v", tt.start, tt.end, tt.step, result, tt.expected)
 			}
 		})

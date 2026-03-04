@@ -580,13 +580,15 @@ func TestFastEncoder_EncodeFloat(t *testing.T) {
 }
 
 func TestFastEncoder_EncodeFloat_SpecialValues(t *testing.T) {
+	// SECURITY FIX: NaN and Infinity are now encoded as null for JSON compatibility
+	// JSON standard (RFC 8259) does not support these special values
 	t.Run("NaN", func(t *testing.T) {
 		e := GetEncoder()
 		defer PutEncoder(e)
 
 		e.EncodeFloat(math.NaN(), 64)
-		if string(e.buf) != "NaN" {
-			t.Errorf("expected 'NaN', got %s", string(e.buf))
+		if string(e.buf) != "null" {
+			t.Errorf("expected 'null' for JSON compatibility, got %s", string(e.buf))
 		}
 	})
 
@@ -595,8 +597,8 @@ func TestFastEncoder_EncodeFloat_SpecialValues(t *testing.T) {
 		defer PutEncoder(e)
 
 		e.EncodeFloat(math.Inf(1), 64)
-		if string(e.buf) != "Infinity" {
-			t.Errorf("expected 'Infinity', got %s", string(e.buf))
+		if string(e.buf) != "null" {
+			t.Errorf("expected 'null' for JSON compatibility, got %s", string(e.buf))
 		}
 	})
 
@@ -605,8 +607,8 @@ func TestFastEncoder_EncodeFloat_SpecialValues(t *testing.T) {
 		defer PutEncoder(e)
 
 		e.EncodeFloat(math.Inf(-1), 64)
-		if string(e.buf) != "-Infinity" {
-			t.Errorf("expected '-Infinity', got %s", string(e.buf))
+		if string(e.buf) != "null" {
+			t.Errorf("expected 'null' for JSON compatibility, got %s", string(e.buf))
 		}
 	})
 }
@@ -965,10 +967,62 @@ func TestFastParseInt(t *testing.T) {
 }
 
 func TestFastParseInt_Overflow(t *testing.T) {
-	// Test overflow detection
+	// Test positive overflow detection
 	_, err := FastParseInt([]byte("99999999999999999999999999999999999999999999"))
 	if err != strconv.ErrRange {
-		t.Errorf("expected ErrRange, got %v", err)
+		t.Errorf("expected ErrRange for huge positive, got %v", err)
+	}
+
+	// Test negative overflow detection
+	_, err = FastParseInt([]byte("-99999999999999999999999999999999999999999999"))
+	if err != strconv.ErrRange {
+		t.Errorf("expected ErrRange for huge negative, got %v", err)
+	}
+}
+
+func TestFastParseInt_BoundaryValues(t *testing.T) {
+	// SECURITY FIX: Test boundary values for overflow detection
+	tests := []struct {
+		name        string
+		input       string
+		expected    int64
+		expectError error
+	}{
+		// MaxInt64 boundary
+		{"MaxInt64", "9223372036854775807", math.MaxInt64, nil},
+		{"MaxInt64+1", "9223372036854775808", 0, strconv.ErrRange},
+		{"MaxInt64+10", "9223372036854775817", 0, strconv.ErrRange},
+
+		// MinInt64 boundary (the critical case that was broken)
+		{"MinInt64", "-9223372036854775808", math.MinInt64, nil},
+		{"MinInt64-1", "-9223372036854775809", 0, strconv.ErrRange},
+		{"MinInt64-10", "-9223372036854775818", 0, strconv.ErrRange},
+
+		// Near boundary values
+		{"near MaxInt64", "9223372036854775806", math.MaxInt64 - 1, nil},
+		{"near MinInt64", "-9223372036854775807", math.MinInt64 + 1, nil},
+
+		// Edge case: 10-digit numbers near overflow threshold
+		{"threshold positive", "922337203685477580", 922337203685477580, nil},
+		{"threshold negative", "-922337203685477580", -922337203685477580, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := FastParseInt([]byte(tt.input))
+			if tt.expectError != nil {
+				if err != tt.expectError {
+					t.Errorf("expected error %v, got %v", tt.expectError, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				if result != tt.expected {
+					t.Errorf("expected %d, got %d", tt.expected, result)
+				}
+			}
+		})
 	}
 }
 
@@ -1058,11 +1112,11 @@ func TestFastMarshalToString(t *testing.T) {
 
 func TestGetStructEncoder(t *testing.T) {
 	type TestStruct struct {
-		Name    string `json:"name"`
-		Age     int    `json:"age"`
-		Hidden  string `json:"-"` // "-" keeps struct field name
-		private string // unexported, should be ignored
-		Omit    string `json:"omit,omitempty"`
+		Name   string `json:"name"`
+		Age    int    `json:"age"`
+		Hidden string `json:"-"` // "-" keeps struct field name
+		_      string // unexported, should be ignored (blank identifier to avoid unused warning)
+		Omit   string `json:"omit,omitempty"`
 	}
 
 	fields := GetStructEncoder(reflect.TypeOf(TestStruct{}))

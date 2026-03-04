@@ -428,7 +428,7 @@ func TestCacheManager_LargeKey(t *testing.T) {
 	config := &mockConfig{cacheEnabled: true, maxCacheSize: 100}
 	cm := NewCacheManager(config)
 
-	// Create a key longer than maxCacheKeyLength
+	// Create a key longer than MaxCacheKeyLength
 	largeKey := ""
 	for i := 0; i < 1500; i++ {
 		largeKey += "a"
@@ -574,18 +574,18 @@ func TestTruncateCacheKey(t *testing.T) {
 	})
 
 	t.Run("long key truncated", func(t *testing.T) {
-		// Create a key longer than maxCacheKeyLength
+		// Create a key longer than MaxCacheKeyLength
 		longKey := ""
 		for i := 0; i < 1500; i++ {
 			longKey += "a"
 		}
 
 		result := truncateCacheKey(longKey)
-		if len(result) > maxCacheKeyLength {
-			t.Errorf("Truncated key length %d > max %d", len(result), maxCacheKeyLength)
+		if len(result) > MaxCacheKeyLength {
+			t.Errorf("Truncated key length %d > max %d", len(result), MaxCacheKeyLength)
 		}
 		// Should contain "..." separator
-		if len(result) > 0 && len(longKey) > maxCacheKeyLength {
+		if len(result) > 0 && len(longKey) > MaxCacheKeyLength {
 			// Verify the key was modified
 			if result == longKey {
 				t.Error("Long key should be truncated")

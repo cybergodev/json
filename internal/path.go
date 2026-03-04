@@ -331,20 +331,31 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 
 // smartSplitPath splits path by dots while respecting extraction and array operation boundaries
 // Optimized version: uses byte index tracking instead of strings.Builder to reduce allocations
+// PERFORMANCE: Single-pass algorithm with pre-estimated capacity
 func smartSplitPath(path string) []string {
-	// Pre-estimate capacity: count dots outside brackets
+	pathLen := len(path)
+	if pathLen == 0 {
+		return nil
+	}
+
+	// Pre-estimate capacity: count dots outside brackets in single pass
 	dotCount := 0
 	braceDepth := 0
 	bracketDepth := 0
-	for i := 0; i < len(path); i++ {
+	hasBrackets := false
+	hasBraces := false
+
+	for i := 0; i < pathLen; i++ {
 		c := path[i]
 		switch c {
 		case '{':
 			braceDepth++
+			hasBraces = true
 		case '}':
 			braceDepth--
 		case '[':
 			bracketDepth++
+			hasBrackets = true
 		case ']':
 			bracketDepth--
 		case '.':
@@ -354,10 +365,15 @@ func smartSplitPath(path string) []string {
 		}
 	}
 
-	// Fast path for simple paths (no brackets or braces)
-	if braceDepth == 0 && bracketDepth == 0 && dotCount > 0 {
-		// Use strings.Split for simple paths - it's well optimized
+	// Fast path for simple paths (no brackets or braces) - use strings.Split
+	// PERFORMANCE: strings.Split is highly optimized for simple cases
+	if !hasBrackets && !hasBraces && dotCount > 0 {
 		return strings.Split(path, ".")
+	}
+
+	// Fast path for single segment (no dots outside brackets)
+	if dotCount == 0 {
+		return []string{path}
 	}
 
 	// Estimate capacity from dot count
@@ -366,7 +382,7 @@ func smartSplitPath(path string) []string {
 	braceDepth = 0
 	bracketDepth = 0
 
-	for i := 0; i < len(path); i++ {
+	for i := 0; i < pathLen; i++ {
 		c := path[i]
 		switch c {
 		case '{':
@@ -389,7 +405,7 @@ func smartSplitPath(path string) []string {
 	}
 
 	// Add the last part
-	if start < len(path) {
+	if start < pathLen {
 		parts = append(parts, path[start:])
 	}
 

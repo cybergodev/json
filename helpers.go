@@ -987,27 +987,6 @@ const (
 	IteratorBreak
 )
 
-// Internal path type checking functions - delegate to internal package
-func isJSONPointerPath(path string) bool {
-	return internal.IsJSONPointerPath(path)
-}
-
-func isDotNotationPath(path string) bool {
-	return internal.IsDotNotationPath(path)
-}
-
-func isArrayPath(path string) bool {
-	return internal.IsArrayPath(path)
-}
-
-func isSlicePath(path string) bool {
-	return internal.IsSlicePath(path)
-}
-
-func isExtractionPath(path string) bool {
-	return internal.IsExtractionPath(path)
-}
-
 // ============================================================================
 // HOT PATH OPTIMIZATIONS
 // PERFORMANCE: Fast paths for common operations without allocations

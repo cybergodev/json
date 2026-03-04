@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ type ParallelConfig struct {
 	Workers     int // Number of worker goroutines
 	BatchSize   int // Items per batch
 	MinParallel int // Minimum items to trigger parallel processing
+	MaxWorkers  int // Maximum number of workers (0 = no limit, default 64)
 }
 
 // DefaultParallelConfig returns the default parallel configuration
@@ -25,13 +27,16 @@ func DefaultParallelConfig() ParallelConfig {
 	if workers < 2 {
 		workers = 2
 	}
-	if workers > 16 {
-		workers = 16 // Cap at 16 workers
+	// Default max workers cap - can be overridden via MaxWorkers field
+	maxWorkers := 64
+	if workers > maxWorkers {
+		workers = maxWorkers
 	}
 	return ParallelConfig{
 		Workers:     workers,
 		BatchSize:   100,
 		MinParallel: 1000,
+		MaxWorkers:  maxWorkers,
 	}
 }
 
@@ -51,6 +56,10 @@ func NewParallelProcessor(config ParallelConfig) *ParallelProcessor {
 	}
 	if config.MinParallel <= 0 {
 		config.MinParallel = 1000
+	}
+	// Apply max workers limit if configured
+	if config.MaxWorkers > 0 && config.Workers > config.MaxWorkers {
+		config.Workers = config.MaxWorkers
 	}
 
 	return &ParallelProcessor{
@@ -374,18 +383,35 @@ func (wp *WorkerPool) worker() {
 }
 
 // Submit adds a task to the pool
-func (wp *WorkerPool) Submit(task func()) {
+// Returns true if task was submitted/executed, false if pool was stopped
+// SECURITY FIX: Returns status instead of silently dropping tasks
+func (wp *WorkerPool) Submit(task func()) bool {
 	// Don't accept new tasks if pool is stopped
 	if wp.stopped.Load() {
-		return
+		return false
 	}
 
 	// Increment task count before submitting
-	atomic.AddInt32(&wp.taskCount, 1)
+	// SECURITY FIX: Check for negative count (can happen if stopped between check and increment)
+	if newCount := atomic.AddInt32(&wp.taskCount, 1); newCount <= 0 {
+		// Pool was stopped between our check and increment, restore count
+		atomic.AddInt32(&wp.taskCount, -1)
+		return false
+	}
+
+	// Check again if stopped after incrementing counter
+	if wp.stopped.Load() {
+		// Pool stopped after we incremented, decrement and return
+		if atomic.AddInt32(&wp.taskCount, -1) == 0 {
+			wp.doneCond.Broadcast()
+		}
+		return false
+	}
 
 	select {
 	case wp.tasks <- task:
 		// Task submitted successfully
+		return true
 	default:
 		// Channel is full, run synchronously (only if not stopped)
 		if !wp.stopped.Load() {
@@ -394,13 +420,40 @@ func (wp *WorkerPool) Submit(task func()) {
 			if atomic.AddInt32(&wp.taskCount, -1) == 0 {
 				wp.doneCond.Broadcast()
 			}
+			return true
 		} else {
 			// Pool stopped, decrement the count we added
 			if atomic.AddInt32(&wp.taskCount, -1) == 0 {
 				wp.doneCond.Broadcast()
 			}
+			return false
 		}
 	}
+}
+
+// SubmitWait adds a task and blocks until submitted (but not necessarily completed)
+// Returns error if pool is stopped
+func (wp *WorkerPool) SubmitWait(task func()) error {
+	if wp.stopped.Load() {
+		return errors.New("worker pool is stopped")
+	}
+
+	// Increment task count
+	if newCount := atomic.AddInt32(&wp.taskCount, 1); newCount <= 0 {
+		atomic.AddInt32(&wp.taskCount, -1)
+		return errors.New("worker pool is stopped")
+	}
+
+	if wp.stopped.Load() {
+		if atomic.AddInt32(&wp.taskCount, -1) == 0 {
+			wp.doneCond.Broadcast()
+		}
+		return errors.New("worker pool is stopped")
+	}
+
+	// Block until task is queued
+	wp.tasks <- task
+	return nil
 }
 
 // Stop stops the worker pool
@@ -411,15 +464,13 @@ func (wp *WorkerPool) Stop() {
 }
 
 // Wait waits for all tasks to complete
+// SECURITY FIX: Always acquire lock to avoid race with Broadcast
 // PERFORMANCE: Uses condition variable instead of busy-wait for efficient CPU usage
 func (wp *WorkerPool) Wait() {
-	// Fast path: no tasks pending
-	if atomic.LoadInt32(&wp.taskCount) <= 0 {
-		return
-	}
-
-	// Wait for all tasks to complete using condition variable
+	// SECURITY FIX: Always acquire lock to synchronize with Broadcast
+	// The fast path check without lock can race with Submit and Broadcast
 	wp.doneCond.L.Lock()
+	// Check inside lock to ensure we don't miss Broadcast signals
 	for atomic.LoadInt32(&wp.taskCount) > 0 {
 		wp.doneCond.Wait()
 	}

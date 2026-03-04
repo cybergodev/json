@@ -2,6 +2,7 @@ package internal
 
 import (
 	"container/list"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"runtime"
@@ -9,9 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 )
-
-// maxCacheKeyLength limits the maximum length of cache keys to prevent memory issues
-const maxCacheKeyLength = 1024
 
 // CacheConfig provides the configuration needed by CacheManager
 // This minimal interface avoids circular dependencies with the main json package
@@ -46,6 +44,10 @@ type CacheManager struct {
 	shardCount  int
 	shardMask   uint64
 	entryPool   *sync.Pool // Pool for lruEntry structs
+	// Lifecycle management for cleanup goroutines
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // cacheShard represents a single cache shard with LRU eviction
@@ -93,6 +95,9 @@ func NewCacheManager(config CacheConfig) *CacheManager {
 		},
 	}
 
+	// Create context for lifecycle management
+	ctx, cancel := context.WithCancel(context.Background())
+
 	if config == nil || !config.IsCacheEnabled() {
 		// Return disabled cache manager
 		return &CacheManager{
@@ -101,6 +106,8 @@ func NewCacheManager(config CacheConfig) *CacheManager {
 			shardCount: 1,
 			shardMask:  0,
 			entryPool:  entryPool,
+			ctx:        ctx,
+			cancelFunc: cancel,
 		}
 	}
 
@@ -123,7 +130,18 @@ func NewCacheManager(config CacheConfig) *CacheManager {
 		shardCount: shardCount,
 		shardMask:  uint64(shardCount - 1),
 		entryPool:  entryPool,
+		ctx:        ctx,
+		cancelFunc: cancel,
 	}
+}
+
+// Close gracefully shuts down the cache manager, waiting for cleanup goroutines to complete
+func (cm *CacheManager) Close() {
+	if cm.cancelFunc != nil {
+		cm.cancelFunc()
+	}
+	// Wait for all cleanup goroutines to finish
+	cm.wg.Wait()
 }
 
 // newCacheShard creates a new cache shard
@@ -272,22 +290,13 @@ func (cm *CacheManager) Set(key string, value any) {
 
 	// SECURITY: Handle long cache keys safely to prevent collisions
 	// Instead of simple truncation, use hash-based truncation to avoid collisions
-	if len(key) > maxCacheKeyLength {
+	if len(key) > MaxCacheKeyLength {
 		key = truncateCacheKey(key)
 	}
 
 	shard := cm.getShard(key)
 	now := time.Now().UnixNano()
 	entrySize := cm.estimateSize(value)
-
-	// Get entry from pool
-	entry := cm.entryPool.Get().(*lruEntry)
-	entry.key = key
-	entry.value = value
-	entry.timestamp = now
-	entry.accessTime = now
-	entry.size = int32(entrySize)
-	entry.hits = 1
 
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
@@ -297,20 +306,34 @@ func (cm *CacheManager) Set(key string, value any) {
 		cm.evictLRU(shard)
 	}
 
-	// Store entry
+	// Store entry - OPTIMIZED: Update existing entry in-place to avoid pool churn
 	if oldElement, exists := shard.items[key]; exists {
 		oldEntry := oldElement.Value.(*lruEntry)
-		atomic.AddInt64(&cm.memoryUsage, int64(entry.size-oldEntry.size))
-		// SECURITY: Return old entry to pool to prevent memory leak
-		oldEntry.reset()
-		cm.entryPool.Put(oldEntry)
-		oldElement.Value = entry
+		atomic.AddInt64(&cm.memoryUsage, int64(entrySize)-int64(oldEntry.size))
+		// SECURITY FIX: Update existing entry in-place instead of pool swap
+		// This avoids potential race conditions with pool reuse
+		oldEntry.value = value
+		oldEntry.timestamp = now
+		oldEntry.accessTime = now
+		oldEntry.size = int32(entrySize)
+		oldEntry.hits = 1
+		oldEntry.freq = 0 // Reset frequency for new entry
 		shard.evictList.MoveToFront(oldElement)
 	} else {
+		// Only allocate new entry for new keys
+		entry := cm.entryPool.Get().(*lruEntry)
+		entry.key = key
+		entry.value = value
+		entry.timestamp = now
+		entry.accessTime = now
+		entry.size = int32(entrySize)
+		entry.hits = 1
+		entry.freq = 0
+
 		element := shard.evictList.PushFront(entry)
 		shard.items[key] = element
 		shard.size++
-		atomic.AddInt64(&cm.memoryUsage, int64(entry.size))
+		atomic.AddInt64(&cm.memoryUsage, int64(entrySize))
 	}
 
 	// Periodic cleanup - trigger if enough time has passed
@@ -324,9 +347,17 @@ func (cm *CacheManager) Set(key string, value any) {
 				sem := getCleanupSem()
 				select {
 				case sem <- struct{}{}:
+					cm.wg.Add(1)
 					go func(s *cacheShard) {
+						defer cm.wg.Done()
 						defer func() { <-sem }()
-						cm.cleanupShard(s)
+						// Check context before running cleanup
+						select {
+						case <-cm.ctx.Done():
+							return
+						default:
+							cm.cleanupShard(s)
+						}
 					}(shard)
 				default:
 					// Skip cleanup if semaphore is full (too many concurrent cleanups)
@@ -379,12 +410,23 @@ func (cm *CacheManager) CleanExpiredCache() {
 		return
 	}
 
+	// Check if context is already cancelled
+	select {
+	case <-cm.ctx.Done():
+		return
+	default:
+	}
+
 	sem := getCleanupSem()
 	for _, shard := range cm.shards {
 		s := shard
 		select {
+		case <-cm.ctx.Done():
+			return // Stop spawning new goroutines if context is cancelled
 		case sem <- struct{}{}:
+			cm.wg.Add(1)
 			go func() {
+				defer cm.wg.Done()
 				defer func() { <-sem }()
 				cm.cleanupShard(s)
 			}()
@@ -550,6 +592,7 @@ func (cm *CacheManager) cleanupShard(shard *cacheShard) {
 
 // estimateSize estimates the memory size of a value more accurately
 // Uses int64 for intermediate calculations to prevent overflow
+// SECURITY FIX: Pre-check multiplication overflow to prevent incorrect estimates
 func (cm *CacheManager) estimateSize(value any) int {
 	const maxEstimate = 1 << 30 // 1GB max estimate to prevent overflow
 
@@ -571,21 +614,36 @@ func (cm *CacheManager) estimateSize(value any) int {
 	case map[string]any:
 		// Map overhead + estimated per-entry cost
 		// Each entry: key (string) + value (interface) + hash table overhead
-		result := int64(48) + int64(len(v))*64
+		// SECURITY FIX: Check overflow before multiplication
+		mapLen := int64(len(v))
+		if mapLen > (maxEstimate-48)/64 {
+			return maxEstimate
+		}
+		result := int64(48) + mapLen*64
 		if result > maxEstimate {
 			return maxEstimate
 		}
 		return int(result)
 	case []any:
 		// Slice header + per-element interface overhead
-		result := int64(24) + int64(len(v))*16
+		// SECURITY FIX: Check overflow before multiplication
+		sliceLen := int64(len(v))
+		if sliceLen > (maxEstimate-24)/16 {
+			return maxEstimate
+		}
+		result := int64(24) + sliceLen*16
 		if result > maxEstimate {
 			return maxEstimate
 		}
 		return int(result)
 	case []PathSegment:
 		// Slice header + per-element struct size
-		result := int64(24) + int64(len(v))*128
+		// SECURITY FIX: Check overflow before multiplication
+		pathLen := int64(len(v))
+		if pathLen > (maxEstimate-24)/128 {
+			return maxEstimate
+		}
+		result := int64(24) + pathLen*128
 		if result > maxEstimate {
 			return maxEstimate
 		}
@@ -607,14 +665,14 @@ func (cm *CacheManager) estimateSize(value any) int {
 // truncateCacheKey safely truncates a long cache key using hash-based truncation
 // to prevent key collisions that could occur with simple truncation
 func truncateCacheKey(key string) string {
-	if len(key) <= maxCacheKeyLength {
+	if len(key) <= MaxCacheKeyLength {
 		return key
 	}
 
 	// Use SHA-256 hash of the excess portion to create a unique suffix
 	// This ensures different long keys produce different truncated keys
 	hashSuffixLen := 16                                // Length of hash suffix
-	prefixLen := maxCacheKeyLength - hashSuffixLen - 3 // 3 for "..." separator
+	prefixLen := MaxCacheKeyLength - hashSuffixLen - 3 // 3 for "..." separator
 
 	if prefixLen < 0 {
 		prefixLen = 0

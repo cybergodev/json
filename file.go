@@ -31,8 +31,8 @@ func (p *Processor) LoadFromFile(filePath string, opts ...*ProcessorOptions) (st
 	if err != nil {
 		return "", &JsonsError{
 			Op:      "load_from_file",
-			Message: fmt.Sprintf("failed to read file %s", filePath),
-			Err:     fmt.Errorf("read file error: %w", err),
+			Message: fmt.Sprintf("failed to read file %s: %v", filePath, err),
+			Err:     err,
 		}
 	}
 
@@ -55,8 +55,8 @@ func (p *Processor) LoadFromFileAsData(filePath string, opts ...*ProcessorOption
 	if err != nil {
 		return nil, &JsonsError{
 			Op:      "load_from_file_as_data",
-			Message: fmt.Sprintf("failed to read file %s", filePath),
-			Err:     fmt.Errorf("read file error: %w", err),
+			Message: fmt.Sprintf("failed to read file %s: %v", filePath, err),
+			Err:     err,
 		}
 	}
 
@@ -80,8 +80,8 @@ func (p *Processor) LoadFromReader(reader io.Reader, opts ...*ProcessorOptions) 
 	if err != nil {
 		return "", &JsonsError{
 			Op:      "load_from_reader",
-			Message: "failed to read from reader",
-			Err:     fmt.Errorf("reader error: %w", err),
+			Message: fmt.Sprintf("failed to read from reader: %v", err),
+			Err:     err,
 		}
 	}
 
@@ -111,8 +111,8 @@ func (p *Processor) LoadFromReaderAsData(reader io.Reader, opts ...*ProcessorOpt
 	if err != nil {
 		return nil, &JsonsError{
 			Op:      "load_from_reader_as_data",
-			Message: "failed to read from reader",
-			Err:     fmt.Errorf("reader error: %w", err),
+			Message: fmt.Sprintf("failed to read from reader: %v", err),
+			Err:     err,
 		}
 	}
 
@@ -377,7 +377,40 @@ func (p *Processor) UnmarshalFromFile(path string, v any, opts ...*ProcessorOpti
 }
 
 // validateFilePath provides enhanced security validation for file paths
+// REFACTORED: Uses smaller helper functions for better maintainability and testability
 func (p *Processor) validateFilePath(filePath string) error {
+	// Step 1: Basic validation
+	if err := validatePathBasic(filePath); err != nil {
+		return err
+	}
+
+	// Step 2: Security pattern validation
+	if err := validatePathSecurity(filePath); err != nil {
+		return err
+	}
+
+	// Step 3: Normalize and get absolute path
+	absPath, err := normalizeAndAbsPath(filePath)
+	if err != nil {
+		return err
+	}
+
+	// Step 4: Platform-specific validation on absolute path
+	if err := validatePathPlatform(absPath); err != nil {
+		return err
+	}
+
+	// Step 5: Symlink validation
+	if err := validatePathSymlinks(absPath); err != nil {
+		return err
+	}
+
+	// Step 6: File size validation
+	return p.validatePathFileSize(absPath)
+}
+
+// validatePathBasic performs basic path validation
+func validatePathBasic(filePath string) error {
 	if filePath == "" {
 		return newOperationError("validate_file_path", "file path cannot be empty", ErrOperationFailed)
 	}
@@ -387,6 +420,11 @@ func (p *Processor) validateFilePath(filePath string) error {
 		return newSecurityError("validate_file_path", "null byte in path")
 	}
 
+	return nil
+}
+
+// validatePathSecurity checks for path traversal and platform-specific security issues
+func validatePathSecurity(filePath string) error {
 	// SECURITY: Check for path traversal patterns BEFORE normalization
 	if containsPathTraversal(filePath) {
 		return newSecurityError("validate_file_path", "path traversal pattern detected")
@@ -399,12 +437,17 @@ func (p *Processor) validateFilePath(filePath string) error {
 		}
 	}
 
+	return nil
+}
+
+// normalizeAndAbsPath normalizes the path and returns its absolute form
+func normalizeAndAbsPath(filePath string) (string, error) {
 	// Normalize the path after security checks
 	cleanPath := filepath.Clean(filePath)
 
 	// Check path length after cleaning
 	if len(cleanPath) > MaxPathLength {
-		return newOperationError("validate_file_path",
+		return "", newOperationError("validate_file_path",
 			fmt.Sprintf("path too long: %d > %d", len(cleanPath), MaxPathLength),
 			ErrOperationFailed)
 	}
@@ -412,44 +455,58 @@ func (p *Processor) validateFilePath(filePath string) error {
 	// Convert to absolute path for further validation
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
-		return newOperationError("validate_file_path", "invalid path", err)
+		return "", newOperationError("validate_file_path", "invalid path", err)
 	}
 
-	// Platform-specific security checks on absolute path
+	return absPath, nil
+}
+
+// validatePathPlatform performs platform-specific security checks on absolute path
+func validatePathPlatform(absPath string) error {
 	if runtime.GOOS != "windows" {
 		if err := validateUnixPath(absPath); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	// Check symlinks with loop detection
-	if info, err := os.Lstat(absPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			realPath, err := filepath.EvalSymlinks(absPath)
-			if err != nil {
-				return newOperationError("validate_file_path", "cannot resolve symlink", err)
-			}
-
-			// Ensure symlink doesn't escape to restricted areas
-			if runtime.GOOS != "windows" {
-				if err := validateUnixPath(realPath); err != nil {
-					return err
-				}
-			} else {
-				if err := validateWindowsPath(realPath); err != nil {
-					return err
-				}
-			}
-		}
+// validatePathSymlinks checks for symlink security issues
+func validatePathSymlinks(absPath string) error {
+	info, err := os.Lstat(absPath)
+	if err != nil {
+		// File doesn't exist yet, no symlink check needed
+		return nil
 	}
 
-	// Check file size if exists
-	if info, err := os.Stat(absPath); err == nil {
-		if info.Size() > p.config.MaxJSONSize {
-			return newSizeLimitError("validate_file_path", info.Size(), p.config.MaxJSONSize)
-		}
+	if info.Mode()&os.ModeSymlink == 0 {
+		// Not a symlink, no check needed
+		return nil
 	}
 
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return newOperationError("validate_file_path", "cannot resolve symlink", err)
+	}
+
+	// Ensure symlink doesn't escape to restricted areas
+	if runtime.GOOS != "windows" {
+		return validateUnixPath(realPath)
+	}
+	return validateWindowsPath(realPath)
+}
+
+// validatePathFileSize checks if file size is within limits
+func (p *Processor) validatePathFileSize(absPath string) error {
+	info, err := os.Stat(absPath)
+	if err != nil {
+		// File doesn't exist yet, no size check needed
+		return nil
+	}
+
+	if info.Size() > p.config.MaxJSONSize {
+		return newSizeLimitError("validate_file_path", info.Size(), p.config.MaxJSONSize)
+	}
 	return nil
 }
 
@@ -950,10 +1007,10 @@ func (cr *ChunkedReader) ReadObject(fn func(key string, value any) bool) error {
 // Parses JSON on-demand, only parsing accessed paths
 // ============================================================================
 
-// LazyParser provides lazy JSON parsing
+// LazyParser provides lazy JSON parsing that supports both JSON objects and arrays
 type LazyParser struct {
 	raw      []byte
-	parsed   map[string]any
+	parsed   any // Supports map[string]any, []any, or primitive types
 	parseErr error
 	once     sync.Once
 }
@@ -979,26 +1036,41 @@ func (lp *LazyParser) Get(path string) (any, error) {
 		return nil, lp.parseErr
 	}
 
-	// Use internal path navigation for parsed map
-	return navigateParsed(lp.parsed, path)
-}
-
-// navigateParsed navigates a parsed map to find a value at the given path
-func navigateParsed(data map[string]any, path string) (any, error) {
+	// Empty path returns the root value
 	if path == "" || path == "." {
-		return data, nil
+		return lp.parsed, nil
 	}
 
+	// Use processor for path navigation
 	processor := getDefaultProcessor()
-	jsonBytes, err := processor.Marshal(data)
+	jsonBytes, err := processor.Marshal(lp.parsed)
 	if err != nil {
 		return nil, err
 	}
 	return processor.Get(string(jsonBytes), path)
 }
 
-// GetAll returns all parsed data
+// GetAll returns all parsed data as an interface
+// Deprecated: Use GetValue() for better type support
 func (lp *LazyParser) GetAll() (map[string]any, error) {
+	lp.parse()
+	if lp.parseErr != nil {
+		return nil, lp.parseErr
+	}
+
+	// Try to convert to map[string]any for backward compatibility
+	if m, ok := lp.parsed.(map[string]any); ok {
+		return m, nil
+	}
+	return nil, &JsonsError{
+		Op:      "lazy_parser_get_all",
+		Message: "parsed JSON is not an object",
+		Err:     ErrTypeMismatch,
+	}
+}
+
+// GetValue returns all parsed data as interface{} (supports any JSON type)
+func (lp *LazyParser) GetValue() (any, error) {
 	lp.parse()
 	if lp.parseErr != nil {
 		return nil, lp.parseErr
@@ -1014,6 +1086,20 @@ func (lp *LazyParser) Raw() []byte {
 // IsParsed returns whether the JSON has been parsed
 func (lp *LazyParser) IsParsed() bool {
 	return lp.parsed != nil
+}
+
+// IsObject returns true if the parsed JSON is an object
+func (lp *LazyParser) IsObject() bool {
+	lp.parse()
+	_, ok := lp.parsed.(map[string]any)
+	return ok
+}
+
+// IsArray returns true if the parsed JSON is an array
+func (lp *LazyParser) IsArray() bool {
+	lp.parse()
+	_, ok := lp.parsed.([]any)
+	return ok
 }
 
 // ============================================================================
