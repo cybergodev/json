@@ -126,11 +126,7 @@ func IsDistributedOperationPath(path string) bool {
 		}
 	}
 
-	if strings.Contains(path, "{flat:") {
-		return true
-	}
-
-	return false
+	return strings.Contains(path, "{flat:")
 }
 
 // IsDistributedOperationSegment checks if a segment triggers distributed operations

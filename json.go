@@ -5,7 +5,7 @@
 //   - 100% encoding/json compatibility - drop-in replacement
 //   - High-performance path operations with smart caching
 //   - Thread-safe concurrent operations
-//   - Type-safe generic operations with Go 1.24+ features
+//   - Type-safe generic operations with Go 1.22+ features
 //   - Memory-efficient resource pooling
 //   - Production-ready error handling and validation
 //
@@ -44,8 +44,6 @@ import (
 var (
 	defaultProcessor   atomic.Pointer[Processor]
 	defaultProcessorMu sync.Mutex
-	// defaultProcessorOnce provides thread-safe lazy initialization using Go 1.24+ sync.OnceValue
-	defaultProcessorOnce sync.Once
 )
 
 // getDefaultProcessorFn is a thread-safe function that returns the default processor
@@ -95,14 +93,13 @@ func ShutdownGlobalProcessor() {
 	}
 }
 
-// Package-level API functions have been refactored into separate files:
+// Package-level API functions are organized in the following files:
 //
-//   - api_get.go    : Get*, GetTyped*, GetString*, etc.
-//   - api_set.go    : Set, SetWithAdd, SetMultiple*, etc.
-//   - api_delete.go : Delete, DeleteWithCleanNull
-//   - api_encode.go : Marshal, Unmarshal, Encode, Format*, Print*, etc.
-//   - api_file.go   : LoadFromFile, SaveToFile, MarshalToFile, etc.
-//   - api_batch.go  : ProcessBatch, WarmupCache, ClearCache, GetStats, etc.
+//   - api.go       : All exported functions (Get*, Set*, Delete, Marshal, etc.)
+//   - encoding.go  : Encoding/decoding implementation details
+//   - file.go      : File I/O operations
+//   - helpers.go   : Type conversion and utility functions
+//   - processor.go : Core Processor implementation
 //
 // All functions remain in package json and maintain 100% API compatibility.
 

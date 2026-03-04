@@ -26,7 +26,6 @@ type pathSegmentCache struct {
 	shards     []*pathCacheShard
 	shardMask  uint64
 	maxEntries int
-	totalSize  int64
 	evictions  int64
 }
 
@@ -34,7 +33,6 @@ type pathCacheShard struct {
 	mu      sync.RWMutex
 	entries map[string][]internal.PathSegment
 	lru     []string // Simple LRU tracking
-	size    int
 }
 
 // globalPathCache is the global path segment cache
@@ -187,53 +185,6 @@ func WarmupPathCacheWithProcessor(processor *Processor, commonPaths []string) {
 
 		cache.Set(path, segments)
 	}
-}
-
-// ============================================================================
-// ITERATOR POOL - Reduces allocations for iterator operations
-// ============================================================================
-
-// iteratorPool manages pooled iterators for reduced allocations
-type iteratorPool struct {
-	pool sync.Pool
-}
-
-var globalIteratorPool = &iteratorPool{
-	pool: sync.Pool{
-		New: func() any {
-			return &Iterator{
-				keys: make([]string, 0, 16),
-			}
-		},
-	},
-}
-
-// Get retrieves an iterator from the pool
-func (ip *iteratorPool) Get(processor *Processor, data any, opts *ProcessorOptions) *Iterator {
-	it := ip.pool.Get().(*Iterator)
-	it.processor = processor
-	it.data = data
-	it.options = opts
-	it.position = 0
-	it.keys = it.keys[:0]
-	it.keysInit = false
-	return it
-}
-
-// Put returns an iterator to the pool
-func (ip *iteratorPool) Put(it *Iterator) {
-	if it == nil {
-		return
-	}
-	// Clear references to allow GC
-	it.processor = nil
-	it.data = nil
-	it.options = nil
-	// Keep keys slice for reuse but reset length
-	if cap(it.keys) > 256 {
-		it.keys = nil // Don't pool very large slices
-	}
-	ip.pool.Put(it)
 }
 
 // ============================================================================
@@ -496,12 +447,6 @@ func isSimplePropertyAccess(path string) bool {
 		}
 	}
 	return true
-}
-
-// fastGetSimple is optimized for simple single-level property access
-func fastGetSimple(data map[string]any, key string) (any, bool) {
-	val, exists := data[key]
-	return val, exists
 }
 
 // ============================================================================

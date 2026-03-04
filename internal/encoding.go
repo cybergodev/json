@@ -126,6 +126,7 @@ func IsValidNumberString(s string) bool {
 
 // ParseIntFast parses a string as an integer without using strconv
 // PERFORMANCE: Avoids strconv.Atoi allocation for common cases
+// SECURITY: Proper overflow detection for both 32-bit and 64-bit systems
 // Returns (value, true) if successful, (0, false) otherwise
 func ParseIntFast(s string) (int, bool) {
 	if len(s) == 0 {
@@ -155,18 +156,36 @@ func ParseIntFast(s string) (int, bool) {
 		return val, true
 	}
 
-	// Parse multi-digit number
+	// SECURITY: Use platform-independent overflow detection
+	// MaxInt = ^uint(0) >> 1 for both 32-bit and 64-bit
+	const maxInt = int(^uint(0) >> 1)
+	const minInt = -maxInt - 1
+	const cutoff = maxInt / 10
+
+	// Parse multi-digit number with proper overflow detection
 	var result int
 	for i := start; i < len(s); i++ {
 		c := s[i]
 		if c < '0' || c > '9' {
 			return 0, false
 		}
-		// Check for overflow
-		if result > (1<<31-1)/10 {
+		digit := int(c - '0')
+
+		// SECURITY: Check overflow before multiplication and addition
+		// For positive: result*10 + digit <= MaxInt
+		// For negative: result*10 + digit <= MaxInt+1 (because MinInt = -MaxInt-1)
+		if result > cutoff || (result == cutoff && digit > maxInt%10) {
+			// Would overflow
+			if negative {
+				// Check if this is exactly MinInt
+				if result == cutoff && digit == maxInt%10+1 {
+					// This is MinInt case
+					return minInt, true
+				}
+			}
 			return 0, false
 		}
-		result = result*10 + int(c-'0')
+		result = result*10 + digit
 	}
 
 	if negative {

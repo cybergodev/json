@@ -20,8 +20,8 @@ func TestDefaultParallelConfig_Extended(t *testing.T) {
 	if expectedWorkers < 2 {
 		expectedWorkers = 2
 	}
-	if expectedWorkers > 16 {
-		expectedWorkers = 16
+	if expectedWorkers > 64 {
+		expectedWorkers = 64
 	}
 
 	if config.Workers != expectedWorkers {
@@ -614,6 +614,113 @@ func TestWorkerPool_Wait(t *testing.T) {
 
 	// Wait should return when tasks are drained
 	wp.Wait()
+}
+
+// SECURITY FIX: Test for race condition in Wait()
+func TestWorkerPool_WaitRaceCondition(t *testing.T) {
+	wp := NewWorkerPool(4)
+	defer wp.Stop()
+
+	var completed atomic.Int64
+
+	// Submit tasks and wait concurrently
+	for round := 0; round < 10; round++ {
+		for i := 0; i < 20; i++ {
+			wp.Submit(func() {
+				completed.Add(1)
+			})
+		}
+		wp.Wait()
+	}
+
+	// All tasks should have completed
+	if completed.Load() != 200 {
+		t.Errorf("expected 200 completed tasks, got %d", completed.Load())
+	}
+}
+
+// SECURITY FIX: Test for race condition in Submit() during Stop
+func TestWorkerPool_SubmitStopRaceCondition(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		wp := NewWorkerPool(4)
+		var executed atomic.Int64
+
+		// Start goroutines that submit tasks
+		done := make(chan bool, 10)
+		for i := 0; i < 5; i++ {
+			go func() {
+				for j := 0; j < 100; j++ {
+					wp.Submit(func() {
+						executed.Add(1)
+					})
+				}
+				done <- true
+			}()
+		}
+
+		// Wait a bit then stop
+		time.Sleep(10 * time.Millisecond)
+		wp.Stop()
+
+		// Wait for all submit goroutines
+		for i := 0; i < 5; i++ {
+			<-done
+		}
+
+		// After stop, new submissions should be ignored
+		beforeStop := executed.Load()
+		wp.Submit(func() {
+			executed.Add(1000) // Should not execute
+		})
+		time.Sleep(10 * time.Millisecond)
+		afterStop := executed.Load()
+
+		// Value should not have changed by 1000
+		if afterStop-beforeStop >= 1000 {
+			t.Errorf("task executed after Stop: before=%d, after=%d", beforeStop, afterStop)
+		}
+	}
+}
+
+// SECURITY FIX: Test for concurrent Submit and Wait
+func TestWorkerPool_ConcurrentSubmitAndWait(t *testing.T) {
+	wp := NewWorkerPool(4)
+	defer wp.Stop()
+
+	var completed atomic.Int64
+	done := make(chan bool, 20)
+
+	// Concurrent submitters
+	for i := 0; i < 10; i++ {
+		go func() {
+			for j := 0; j < 50; j++ {
+				wp.Submit(func() {
+					completed.Add(1)
+				})
+			}
+			done <- true
+		}()
+	}
+
+	// Concurrent waiters
+	for i := 0; i < 10; i++ {
+		go func() {
+			wp.Wait()
+			done <- true
+		}()
+	}
+
+	// Wait for all submitters and waiters
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+
+	// Final wait to ensure all tasks complete
+	wp.Wait()
+
+	if completed.Load() != 500 {
+		t.Errorf("expected 500 completed tasks, got %d", completed.Load())
+	}
 }
 
 // ============================================================================

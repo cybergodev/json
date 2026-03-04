@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cybergodev/json/internal"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -32,8 +31,8 @@ func (p *Processor) LoadFromFile(filePath string, opts ...*ProcessorOptions) (st
 	if err != nil {
 		return "", &JsonsError{
 			Op:      "load_from_file",
-			Message: fmt.Sprintf("failed to read file %s", filePath),
-			Err:     fmt.Errorf("read file error: %w", err),
+			Message: fmt.Sprintf("failed to read file %s: %v", filePath, err),
+			Err:     err,
 		}
 	}
 
@@ -56,8 +55,8 @@ func (p *Processor) LoadFromFileAsData(filePath string, opts ...*ProcessorOption
 	if err != nil {
 		return nil, &JsonsError{
 			Op:      "load_from_file_as_data",
-			Message: fmt.Sprintf("failed to read file %s", filePath),
-			Err:     fmt.Errorf("read file error: %w", err),
+			Message: fmt.Sprintf("failed to read file %s: %v", filePath, err),
+			Err:     err,
 		}
 	}
 
@@ -81,8 +80,8 @@ func (p *Processor) LoadFromReader(reader io.Reader, opts ...*ProcessorOptions) 
 	if err != nil {
 		return "", &JsonsError{
 			Op:      "load_from_reader",
-			Message: "failed to read from reader",
-			Err:     fmt.Errorf("reader error: %w", err),
+			Message: fmt.Sprintf("failed to read from reader: %v", err),
+			Err:     err,
 		}
 	}
 
@@ -112,8 +111,8 @@ func (p *Processor) LoadFromReaderAsData(reader io.Reader, opts ...*ProcessorOpt
 	if err != nil {
 		return nil, &JsonsError{
 			Op:      "load_from_reader_as_data",
-			Message: "failed to read from reader",
-			Err:     fmt.Errorf("reader error: %w", err),
+			Message: fmt.Sprintf("failed to read from reader: %v", err),
+			Err:     err,
 		}
 	}
 
@@ -378,7 +377,40 @@ func (p *Processor) UnmarshalFromFile(path string, v any, opts ...*ProcessorOpti
 }
 
 // validateFilePath provides enhanced security validation for file paths
+// REFACTORED: Uses smaller helper functions for better maintainability and testability
 func (p *Processor) validateFilePath(filePath string) error {
+	// Step 1: Basic validation
+	if err := validatePathBasic(filePath); err != nil {
+		return err
+	}
+
+	// Step 2: Security pattern validation
+	if err := validatePathSecurity(filePath); err != nil {
+		return err
+	}
+
+	// Step 3: Normalize and get absolute path
+	absPath, err := normalizeAndAbsPath(filePath)
+	if err != nil {
+		return err
+	}
+
+	// Step 4: Platform-specific validation on absolute path
+	if err := validatePathPlatform(absPath); err != nil {
+		return err
+	}
+
+	// Step 5: Symlink validation
+	if err := validatePathSymlinks(absPath); err != nil {
+		return err
+	}
+
+	// Step 6: File size validation
+	return p.validatePathFileSize(absPath)
+}
+
+// validatePathBasic performs basic path validation
+func validatePathBasic(filePath string) error {
 	if filePath == "" {
 		return newOperationError("validate_file_path", "file path cannot be empty", ErrOperationFailed)
 	}
@@ -388,6 +420,11 @@ func (p *Processor) validateFilePath(filePath string) error {
 		return newSecurityError("validate_file_path", "null byte in path")
 	}
 
+	return nil
+}
+
+// validatePathSecurity checks for path traversal and platform-specific security issues
+func validatePathSecurity(filePath string) error {
 	// SECURITY: Check for path traversal patterns BEFORE normalization
 	if containsPathTraversal(filePath) {
 		return newSecurityError("validate_file_path", "path traversal pattern detected")
@@ -400,12 +437,17 @@ func (p *Processor) validateFilePath(filePath string) error {
 		}
 	}
 
+	return nil
+}
+
+// normalizeAndAbsPath normalizes the path and returns its absolute form
+func normalizeAndAbsPath(filePath string) (string, error) {
 	// Normalize the path after security checks
 	cleanPath := filepath.Clean(filePath)
 
 	// Check path length after cleaning
 	if len(cleanPath) > MaxPathLength {
-		return newOperationError("validate_file_path",
+		return "", newOperationError("validate_file_path",
 			fmt.Sprintf("path too long: %d > %d", len(cleanPath), MaxPathLength),
 			ErrOperationFailed)
 	}
@@ -413,130 +455,85 @@ func (p *Processor) validateFilePath(filePath string) error {
 	// Convert to absolute path for further validation
 	absPath, err := filepath.Abs(cleanPath)
 	if err != nil {
-		return newOperationError("validate_file_path", "invalid path", err)
+		return "", newOperationError("validate_file_path", "invalid path", err)
 	}
 
-	// Platform-specific security checks on absolute path
+	return absPath, nil
+}
+
+// validatePathPlatform performs platform-specific security checks on absolute path
+func validatePathPlatform(absPath string) error {
 	if runtime.GOOS != "windows" {
 		if err := validateUnixPath(absPath); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	// Check symlinks with loop detection
-	if info, err := os.Lstat(absPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			realPath, err := filepath.EvalSymlinks(absPath)
-			if err != nil {
-				return newOperationError("validate_file_path", "cannot resolve symlink", err)
-			}
-
-			// Ensure symlink doesn't escape to restricted areas
-			if runtime.GOOS != "windows" {
-				if err := validateUnixPath(realPath); err != nil {
-					return err
-				}
-			} else {
-				if err := validateWindowsPath(realPath); err != nil {
-					return err
-				}
-			}
-		}
+// validatePathSymlinks checks for symlink security issues
+func validatePathSymlinks(absPath string) error {
+	info, err := os.Lstat(absPath)
+	if err != nil {
+		// File doesn't exist yet, no symlink check needed
+		return nil
 	}
 
-	// Check file size if exists
-	if info, err := os.Stat(absPath); err == nil {
-		if info.Size() > p.config.MaxJSONSize {
-			return newSizeLimitError("validate_file_path", info.Size(), p.config.MaxJSONSize)
-		}
+	if info.Mode()&os.ModeSymlink == 0 {
+		// Not a symlink, no check needed
+		return nil
 	}
 
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return newOperationError("validate_file_path", "cannot resolve symlink", err)
+	}
+
+	// Ensure symlink doesn't escape to restricted areas
+	if runtime.GOOS != "windows" {
+		return validateUnixPath(realPath)
+	}
+	return validateWindowsPath(realPath)
+}
+
+// validatePathFileSize checks if file size is within limits
+func (p *Processor) validatePathFileSize(absPath string) error {
+	info, err := os.Stat(absPath)
+	if err != nil {
+		// File doesn't exist yet, no size check needed
+		return nil
+	}
+
+	if info.Size() > p.config.MaxJSONSize {
+		return newSizeLimitError("validate_file_path", info.Size(), p.config.MaxJSONSize)
+	}
 	return nil
 }
 
 // containsPathTraversal checks for path traversal patterns comprehensively
 // Uses case-insensitive matching without allocation for better performance
 // Includes Unicode normalization and recursive URL decoding for enhanced security
+// REFACTORED: Split into smaller helper functions for better maintainability
 func containsPathTraversal(path string) bool {
 	// SECURITY: First apply Unicode NFC normalization to detect homograph attacks
-	// This ensures that visually similar characters are normalized before checking
 	normalized := norm.NFC.String(path)
 
 	// SECURITY: Recursively decode URL encoding to catch multi-layered obfuscation
-	// Decode up to 3 levels to handle double/triple encoding
 	decoded := recursiveURLDecode(normalized)
 
-	// Fast path: check for standard traversal first (most common case)
-	if strings.Contains(decoded, "..") {
+	// Fast path: check for standard traversal patterns
+	if containsBasicTraversal(decoded, path) {
 		return true
 	}
 
-	// Also check original path for patterns that might be hidden by encoding
-	if strings.Contains(path, "..") {
+	// Check for encoded traversal patterns
+	if containsEncodedTraversal(decoded, path) {
 		return true
 	}
 
-	// Check for various path traversal patterns including bypass attempts
-	// Using case-insensitive matching without allocation
-	patterns := []string{
-		"%2e%2e",         // URL encoded
-		"%252e%252e",     // Double URL encoded
-		"%25252e%25252e", // Triple URL encoded
-		"..%2f",          // Mixed encoding
-		"..%5c",          // Windows backslash encoded
-		"..%c0%af",       // UTF-8 overlong encoding
-		"..%c1%9c",       // UTF-8 overlong encoding variant
-		".%2e",           // Partial encoding
-		"%2e.",           // Partial encoding variant
-		"%2e%2e%2f",      // Full URL encoded traversal
-		"%2e%2e%5c",      // Windows variant
-		"..\\",           // Windows backslash
-		"..\\/",          // Mixed separators
-		"..%00",          // Null byte injection
-		"..%0a",          // Newline injection
-		"..%0d",          // Carriage return injection
-		"..%09",          // Tab injection
-		"..%20",          // Space injection
-		"....//",         // Double dot with double slash
-		"....\\\\",       // Double dot with double backslash
-		".....",          // Five consecutive dots
-		"......",         // Six consecutive dots (defense in depth)
-		// Additional patterns for comprehensive security
-		"%2E%2E",       // Mixed case URL encoded
-		"%2E%2e",       // Mixed case variant
-		"%2e%2E",       // Mixed case variant
-		"..%2F",        // Mixed case encoding
-		"..%5C",        // Mixed case Windows variant
-		"%c0%ae",       // UTF-8 overlong encoding for dot
-		"%c1%1c",       // UTF-8 overlong encoding variant
-		"%c1%9c",       // UTF-8 overlong encoding variant
-		"..%255c",      // Double encoded backslash
-		"..%c0%af",     // UTF-8 overlong encoded slash
-		"..%c1%9c",     // UTF-8 overlong encoded backslash
-		"%uff0e%uff0e", // Fullwidth dot encoding
-		"..%ef%bc%8f",  // Fullwidth slash encoding
-	}
-
-	// Check both original and decoded paths
-	for _, pattern := range patterns {
-		if indexIgnoreCaseFile(decoded, pattern) != -1 ||
-			indexIgnoreCaseFile(path, pattern) != -1 {
-			return true
-		}
-	}
-
-	// Additional check: consecutive dots in any form (3 or more)
-	if containsConsecutiveDots(decoded, 3) || containsConsecutiveDots(path, 3) {
+	// Check for encoded null bytes and control characters
+	if containsEncodedControlChars(decoded, path) {
 		return true
-	}
-
-	// Check for encoded null bytes and control characters (case-insensitive)
-	encodedNulls := []string{"%00", "%0a", "%0d", "%09", "%20"}
-	for _, encoded := range encodedNulls {
-		if indexIgnoreCaseFile(decoded, encoded) != -1 ||
-			indexIgnoreCaseFile(path, encoded) != -1 {
-			return true
-		}
 	}
 
 	// Check for partial double encoding bypass attempts
@@ -545,11 +542,74 @@ func containsPathTraversal(path string) bool {
 		return true
 	}
 
-	// SECURITY: Check for Unicode lookalike characters that could be used for bypass
+	// SECURITY: Check for Unicode lookalike characters
 	if containsUnicodeLookalikes(decoded) {
 		return true
 	}
 
+	return false
+}
+
+// containsBasicTraversal checks for standard path traversal patterns
+func containsBasicTraversal(decoded, original string) bool {
+	// Check for standard traversal (most common case)
+	if strings.Contains(decoded, "..") || strings.Contains(original, "..") {
+		return true
+	}
+
+	// Check for consecutive dots (3 or more)
+	if containsConsecutiveDots(decoded, 3) || containsConsecutiveDots(original, 3) {
+		return true
+	}
+
+	return false
+}
+
+// pathTraversalPatterns contains known traversal attack patterns
+// REFACTORED: Extracted to package-level variable for maintainability
+var pathTraversalPatterns = []string{
+	// URL encoded patterns
+	"%2e%2e", "%252e%252e", "%25252e%25252e",
+	// Mixed encoding patterns
+	"..%2f", "..%5c", "..%c0%af", "..%c1%9c",
+	// Partial encoding patterns
+	".%2e", "%2e.", "%2e%2e%2f", "%2e%2e%5c",
+	// Windows patterns
+	"..\\", "..\\/",
+	// Injection patterns
+	"..%00", "..%0a", "..%0d", "..%09", "..%20",
+	// Double patterns
+	"....//", "....\\\\", ".....", "......",
+	// Mixed case patterns
+	"%2E%2E", "%2E%2e", "%2e%2E", "..%2F", "..%5C",
+	// UTF-8 overlong encoding
+	"%c0%ae", "%c1%1c", "%c1%9c", "..%255c",
+	// Fullwidth encoding
+	"%uff0e%uff0e", "..%ef%bc%8f",
+}
+
+// containsEncodedTraversal checks for encoded path traversal patterns
+func containsEncodedTraversal(decoded, original string) bool {
+	for _, pattern := range pathTraversalPatterns {
+		if fastIndexIgnoreCase(decoded, pattern) != -1 ||
+			fastIndexIgnoreCase(original, pattern) != -1 {
+			return true
+		}
+	}
+	return false
+}
+
+// encodedControlCharPatterns contains encoded control character patterns
+var encodedControlCharPatterns = []string{"%00", "%0a", "%0d", "%09", "%20"}
+
+// containsEncodedControlChars checks for encoded null bytes and control characters
+func containsEncodedControlChars(decoded, original string) bool {
+	for _, encoded := range encodedControlCharPatterns {
+		if fastIndexIgnoreCase(decoded, encoded) != -1 ||
+			fastIndexIgnoreCase(original, encoded) != -1 {
+			return true
+		}
+	}
 	return false
 }
 
@@ -608,17 +668,11 @@ func containsUnicodeLookalikes(s string) bool {
 	return false
 }
 
-// indexIgnoreCaseFile finds pattern case-insensitively without allocation
-// Delegates to shared implementation in internal package
-func indexIgnoreCaseFile(s, pattern string) int {
-	return internal.IndexIgnoreCase(s, pattern)
-}
-
 // containsPartialDoubleEncodingIgnoreCase checks for partial double encoding bypass attempts (case-insensitive)
 func containsPartialDoubleEncodingIgnoreCase(path string) bool {
 	patterns := []string{"%2e%2", "%25%2e", "%2f%2", "%5c%2"}
 	for _, pattern := range patterns {
-		if indexIgnoreCaseFile(path, pattern) != -1 {
+		if fastIndexIgnoreCase(path, pattern) != -1 {
 			return true
 		}
 	}
@@ -953,10 +1007,10 @@ func (cr *ChunkedReader) ReadObject(fn func(key string, value any) bool) error {
 // Parses JSON on-demand, only parsing accessed paths
 // ============================================================================
 
-// LazyParser provides lazy JSON parsing
+// LazyParser provides lazy JSON parsing that supports both JSON objects and arrays
 type LazyParser struct {
 	raw      []byte
-	parsed   map[string]any
+	parsed   any // Supports map[string]any, []any, or primitive types
 	parseErr error
 	once     sync.Once
 }
@@ -982,26 +1036,41 @@ func (lp *LazyParser) Get(path string) (any, error) {
 		return nil, lp.parseErr
 	}
 
-	// Use internal path navigation for parsed map
-	return navigateParsed(lp.parsed, path)
-}
-
-// navigateParsed navigates a parsed map to find a value at the given path
-func navigateParsed(data map[string]any, path string) (any, error) {
+	// Empty path returns the root value
 	if path == "" || path == "." {
-		return data, nil
+		return lp.parsed, nil
 	}
 
+	// Use processor for path navigation
 	processor := getDefaultProcessor()
-	jsonBytes, err := processor.Marshal(data)
+	jsonBytes, err := processor.Marshal(lp.parsed)
 	if err != nil {
 		return nil, err
 	}
 	return processor.Get(string(jsonBytes), path)
 }
 
-// GetAll returns all parsed data
+// GetAll returns all parsed data as an interface
+// Deprecated: Use GetValue() for better type support
 func (lp *LazyParser) GetAll() (map[string]any, error) {
+	lp.parse()
+	if lp.parseErr != nil {
+		return nil, lp.parseErr
+	}
+
+	// Try to convert to map[string]any for backward compatibility
+	if m, ok := lp.parsed.(map[string]any); ok {
+		return m, nil
+	}
+	return nil, &JsonsError{
+		Op:      "lazy_parser_get_all",
+		Message: "parsed JSON is not an object",
+		Err:     ErrTypeMismatch,
+	}
+}
+
+// GetValue returns all parsed data as interface{} (supports any JSON type)
+func (lp *LazyParser) GetValue() (any, error) {
 	lp.parse()
 	if lp.parseErr != nil {
 		return nil, lp.parseErr
@@ -1017,6 +1086,20 @@ func (lp *LazyParser) Raw() []byte {
 // IsParsed returns whether the JSON has been parsed
 func (lp *LazyParser) IsParsed() bool {
 	return lp.parsed != nil
+}
+
+// IsObject returns true if the parsed JSON is an object
+func (lp *LazyParser) IsObject() bool {
+	lp.parse()
+	_, ok := lp.parsed.(map[string]any)
+	return ok
+}
+
+// IsArray returns true if the parsed JSON is an array
+func (lp *LazyParser) IsArray() bool {
+	lp.parse()
+	_, ok := lp.parsed.([]any)
+	return ok
 }
 
 // ============================================================================

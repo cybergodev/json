@@ -136,37 +136,62 @@ func ParseArrayIndexGlobal(indexStr string) int {
 	return globalArrayHelper.ParseArrayIndex(indexStr)
 }
 
-// ConvertToInt converts any value to int with comprehensive type support
-func ConvertToInt(value any) (int, bool) {
+// ============================================================================
+// TYPE CONVERSION HELPERS
+// PERFORMANCE: Internal helpers to reduce code duplication while maintaining
+// zero-allocation type switches for performance-critical paths.
+// ============================================================================
+
+// int64Result holds the result of integer conversion to avoid multiple returns
+type int64Result struct {
+	value int64
+	ok    bool
+}
+
+// convertToInt64Core is the internal core function for integer conversion
+// PERFORMANCE: Single type switch with all integer types to minimize branching
+func convertToInt64Core(value any) int64Result {
 	switch v := value.(type) {
 	case int:
-		return v, true
+		return int64Result{int64(v), true}
 	case int8:
-		return int(v), true
+		return int64Result{int64(v), true}
 	case int16:
-		return int(v), true
+		return int64Result{int64(v), true}
 	case int32:
-		return int(v), true
+		return int64Result{int64(v), true}
 	case int64:
-		if v >= -2147483648 && v <= 2147483647 {
-			return int(v), true
-		}
+		return int64Result{v, true}
 	case uint:
-		if v <= 2147483647 {
-			return int(v), true
-		}
+		return int64Result{int64(v), true}
 	case uint8:
-		return int(v), true
+		return int64Result{int64(v), true}
 	case uint16:
-		return int(v), true
+		return int64Result{int64(v), true}
 	case uint32:
-		if v <= 2147483647 {
-			return int(v), true
-		}
+		return int64Result{int64(v), true}
 	case uint64:
-		if v <= 2147483647 {
-			return int(v), true
+		if v <= 9223372036854775807 {
+			return int64Result{int64(v), true}
 		}
+		return int64Result{0, false}
+	}
+	return int64Result{0, false}
+}
+
+// ConvertToInt converts any value to int with comprehensive type support
+// REFACTORED: Uses internal core function to reduce code duplication
+func ConvertToInt(value any) (int, bool) {
+	// Fast path: use core integer conversion
+	if result := convertToInt64Core(value); result.ok {
+		if result.value >= -2147483648 && result.value <= 2147483647 {
+			return int(result.value), true
+		}
+		return 0, false
+	}
+
+	// Handle non-integer types
+	switch v := value.(type) {
 	case float32:
 		if v == float32(int(v)) && v >= -2147483648 && v <= 2147483647 {
 			return int(v), true
@@ -193,30 +218,15 @@ func ConvertToInt(value any) (int, bool) {
 }
 
 // ConvertToInt64 converts any value to int64
+// REFACTORED: Uses internal core function to reduce code duplication
 func ConvertToInt64(value any) (int64, bool) {
+	// Fast path: use core integer conversion
+	if result := convertToInt64Core(value); result.ok {
+		return result.value, true
+	}
+
+	// Handle non-integer types
 	switch v := value.(type) {
-	case int:
-		return int64(v), true
-	case int8:
-		return int64(v), true
-	case int16:
-		return int64(v), true
-	case int32:
-		return int64(v), true
-	case int64:
-		return v, true
-	case uint:
-		return int64(v), true
-	case uint8:
-		return int64(v), true
-	case uint16:
-		return int64(v), true
-	case uint32:
-		return int64(v), true
-	case uint64:
-		if v <= 9223372036854775807 {
-			return int64(v), true
-		}
 	case float32:
 		if v == float32(int64(v)) {
 			return int64(v), true
@@ -243,38 +253,23 @@ func ConvertToInt64(value any) (int64, bool) {
 }
 
 // ConvertToUint64 converts any value to uint64
+// REFACTORED: Uses internal core function to reduce code duplication
 func ConvertToUint64(value any) (uint64, bool) {
+	// Special case: uint64 needs direct handling for values > int64 max
 	switch v := value.(type) {
-	case uint:
-		return uint64(v), true
-	case uint8:
-		return uint64(v), true
-	case uint16:
-		return uint64(v), true
-	case uint32:
-		return uint64(v), true
 	case uint64:
 		return v, true
-	case int:
-		if v >= 0 {
-			return uint64(v), true
-		}
-	case int8:
-		if v >= 0 {
-			return uint64(v), true
-		}
-	case int16:
-		if v >= 0 {
-			return uint64(v), true
-		}
-	case int32:
-		if v >= 0 {
-			return uint64(v), true
-		}
-	case int64:
-		if v >= 0 {
-			return uint64(v), true
-		}
+	case uint:
+		return uint64(v), true
+	}
+
+	// Fast path: use core integer conversion for other signed types
+	if result := convertToInt64Core(value); result.ok && result.value >= 0 {
+		return uint64(result.value), true
+	}
+
+	// Handle non-integer types
+	switch v := value.(type) {
 	case float32:
 		if v >= 0 && v == float32(uint64(v)) {
 			return uint64(v), true
@@ -301,32 +296,19 @@ func ConvertToUint64(value any) (uint64, bool) {
 }
 
 // ConvertToFloat64 converts any value to float64
+// REFACTORED: Uses internal core function to reduce code duplication
 func ConvertToFloat64(value any) (float64, bool) {
+	// Fast path: use core integer conversion
+	if result := convertToInt64Core(value); result.ok {
+		return float64(result.value), true
+	}
+
+	// Handle non-integer types
 	switch v := value.(type) {
-	case float64:
-		return v, true
 	case float32:
 		return float64(v), true
-	case int:
-		return float64(v), true
-	case int8:
-		return float64(v), true
-	case int16:
-		return float64(v), true
-	case int32:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case uint:
-		return float64(v), true
-	case uint8:
-		return float64(v), true
-	case uint16:
-		return float64(v), true
-	case uint32:
-		return float64(v), true
-	case uint64:
-		return float64(v), true
+	case float64:
+		return v, true
 	case string:
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f, true
@@ -348,30 +330,17 @@ func ConvertToFloat64(value any) (float64, bool) {
 // String conversion supports both standard formats and user-friendly formats:
 // Standard: "1", "t", "T", "TRUE", "true", "True", "0", "f", "F", "FALSE", "false", "False"
 // Extended: "yes", "on" -> true, "no", "off", "" -> false
+// REFACTORED: Uses internal core function to reduce code duplication
 func ConvertToBool(value any) (bool, bool) {
+	// Fast path: use core integer conversion for numeric types
+	if result := convertToInt64Core(value); result.ok {
+		return result.value != 0, true
+	}
+
+	// Handle non-integer types
 	switch v := value.(type) {
 	case bool:
 		return v, true
-	case int:
-		return v != 0, true
-	case int8:
-		return v != 0, true
-	case int16:
-		return v != 0, true
-	case int32:
-		return v != 0, true
-	case int64:
-		return v != 0, true
-	case uint:
-		return v != 0, true
-	case uint8:
-		return v != 0, true
-	case uint16:
-		return v != 0, true
-	case uint32:
-		return v != 0, true
-	case uint64:
-		return v != 0, true
 	case float32:
 		return v != 0.0, true
 	case float64:
@@ -1017,27 +986,6 @@ const (
 	IteratorContinue
 	IteratorBreak
 )
-
-// Internal path type checking functions - delegate to internal package
-func isJSONPointerPath(path string) bool {
-	return internal.IsJSONPointerPath(path)
-}
-
-func isDotNotationPath(path string) bool {
-	return internal.IsDotNotationPath(path)
-}
-
-func isArrayPath(path string) bool {
-	return internal.IsArrayPath(path)
-}
-
-func isSlicePath(path string) bool {
-	return internal.IsSlicePath(path)
-}
-
-func isExtractionPath(path string) bool {
-	return internal.IsExtractionPath(path)
-}
 
 // ============================================================================
 // HOT PATH OPTIMIZATIONS

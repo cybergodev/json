@@ -47,7 +47,7 @@
 //   - 100% encoding/json compatibility - drop-in replacement
 //   - High-performance path operations with smart caching
 //   - Thread-safe concurrent operations
-//   - Type-safe generic operations with Go 1.24+ features
+//   - Type-safe generic operations with Go 1.22+ features
 //   - Memory-efficient resource pooling
 //   - Production-ready error handling and validation
 //

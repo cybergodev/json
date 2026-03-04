@@ -80,10 +80,6 @@ func main() {
 	demonstrateCompatibility()
 
 	fmt.Println("\nBasic usage complete!")
-	fmt.Println("Next steps:")
-	fmt.Println("   - Check 2_advanced_features.go for complex operations")
-	fmt.Println("   - Check 3_production_ready.go for production best practices")
-	fmt.Println("   - Check 12_advanced_delete.go for advanced delete operations")
 }
 
 func demonstrateGet(data string) {
