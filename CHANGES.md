@@ -4,6 +4,59 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.4.1 - Performance, Security & Quality Improvements (2026-05-08)
+
+### Breaking Changes
+
+- `Config.Context` field removed — use `GetWithContext(ctx, jsonStr, path)` for context cancellation
+
+### Added
+
+- `GetWithContext(ctx, jsonStr, path)` — context-aware Get with cancellation support
+- `ParsedJSON.Release()` — prevents resource leak when ParsedJSON no longer needed
+- `processor_cache.go` — cache management extracted from processor.go for separation of concerns
+- Security and coverage tests for depth limits, schema regex caching, JSONL memory enforcement
+
+### Fixed
+
+- `MaxDepth=0` now correctly means "no limit" instead of blocking all nested encoding
+- `StreamJSONLChunked` returns IterableValue objects to pool after chunk processing (allocation pressure)
+- `ParallelIterator.Close()` signals goroutines to stop via done channel (goroutine leak fix)
+- `StreamJSONL` methods now respect `Config.JSONLBufferSize` and `Config.JSONLMaxLineSize` settings
+- `GetMultiple()` returns first error from failed paths instead of silently swallowing errors
+- `Encoder.Encode()` fast path checks output size against `MaxJSONSize`
+- `validateNestingDepth` fast path returns properly wrapped `ErrDepthLimit` for `errors.Is()` matching
+- Nil pointer dereference in `logError()` when `EnableMetrics=false`
+- `configPool` reference leaks — reference-type fields cleared before pool return
+- Decoder pool `useNumber`/`disallowUnknownFields` leakage between pooled decoders
+
+### Changed
+
+- Schema regex lazily compiled and cached on first validation (prevents ReDoS)
+- Validation cache uses SHA-256 for all JSON sizes (eliminates FNV-1a collision bypass)
+- Deep copy functions enforce depth limit of 200 (prevents stack overflow DoS)
+- `StreamJSONL`/`StreamJSONLChunked` enforce `Config.JSONLMaxMemory` limit
+- `IsValidJSONNumber()` enforces leading-zero rule consistently across all paths
+- `fastSet`/`fastDelete`/`batchSetOptimized`/`batchDeleteOptimized`/`fastGetMultiple` marked EXPERIMENTAL
+- Removed duplicate `isValidJSONNumber()` from fast_encoder.go (70 lines deduplicated)
+- `fastParseInt()` and `ParseArrayIndex()` delegate to `ParseIntFast()` (eliminates ~50 lines duplication)
+
+### Performance
+
+- `navigateDotNotation` hot path: direct Type enum replaces `TypeString()` string comparison
+- `Set()`/`Delete()`/`SetMultiple()`: `FastMarshalToString` replaces `json.Marshal` output serialization
+- `preservingUnmarshal`: `bytes.NewReader` replaces `strings.NewReader(string(data))` allocation
+- Array index parsing: `ParseArrayIndex` replaces `strconv.Atoi` in deletion hot paths
+- Path building in iteration: byte append pattern replaces string concatenation per iteration
+
+### Removed
+
+- `internal.MergeObjects()` — duplicates `DeepMerge` functionality
+- `internal.DetectConsecutiveExtractions()` / `ExtractionGroup` — dead code
+- `Processor.compactBuffer()` — dead method
+
+---
+
 ## v1.4.0 - API Unification & Security Hardening (2026-04-13)
 
 > Major release: unified Config pattern, reduced API surface, production security hardening

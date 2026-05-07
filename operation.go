@@ -458,12 +458,13 @@ func (p *Processor) navigateArrayIndexForDeletion(current any, indexStr string) 
 		return nil, fmt.Errorf("cannot access array index on type %T", current)
 	}
 
-	index, err := strconv.Atoi(indexStr)
-	if err != nil {
+	// PERFORMANCE: Use fastParseInt instead of strconv.Atoi to avoid error allocation overhead
+	index, ok := internal.ParseArrayIndex(indexStr)
+	if !ok {
 		return nil, fmt.Errorf("invalid array index: %s", indexStr)
 	}
 
-	index, err = normalizeNegativeIndex(index, len(arr))
+	index, err := normalizeNegativeIndex(index, len(arr))
 	if err != nil {
 		return nil, err
 	}
@@ -506,8 +507,9 @@ func (p *Processor) deletePropertyFromContainer(current any, property string) er
 }
 
 func (p *Processor) deleteArrayElement(current any, indexStr string) error {
-	index, err := strconv.Atoi(indexStr)
-	if err != nil {
+	// PERFORMANCE: Use fastParseInt instead of strconv.Atoi
+	index, ok := internal.ParseArrayIndex(indexStr)
+	if !ok {
 		return fmt.Errorf("invalid array index: %s", indexStr)
 	}
 	return p.deleteArrayElementByIndex(current, index)
@@ -2228,8 +2230,9 @@ func putResultBuffer(buf *[]byte) {
 	}
 }
 
-// fastSet is an optimized Set operation for simple paths
-// Uses pooled resources and optimized marshaling
+// fastSet is an optimized Set operation for simple paths.
+// EXPERIMENTAL: Not yet integrated into production Set path; used by benchmarks.
+// Uses pooled resources and optimized marshaling.
 func (p *Processor) fastSet(jsonStr, path string, value any) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return jsonStr, err
@@ -2276,7 +2279,8 @@ func (p *Processor) fastSetSimple(jsonStr, key string, value any) (string, error
 	return result, nil
 }
 
-// fastDelete is an optimized Delete operation for simple paths
+// fastDelete is an optimized Delete operation for simple paths.
+// EXPERIMENTAL: Not yet integrated into production Delete path; used by benchmarks.
 func (p *Processor) fastDelete(jsonStr, path string) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return jsonStr, err
@@ -2323,7 +2327,8 @@ func (p *Processor) fastDeleteSimple(jsonStr, key string) (string, error) {
 	return result, nil
 }
 
-// batchSetOptimized performs multiple Set operations efficiently
+// batchSetOptimized performs multiple Set operations efficiently.
+// EXPERIMENTAL: Not yet integrated into production SetMultiple path; used by benchmarks.
 // PERFORMANCE: Uses pooled encoder and single-parse optimization
 func (p *Processor) batchSetOptimized(jsonStr string, updates map[string]any) (string, error) {
 	if err := p.checkClosed(); err != nil {
@@ -2364,7 +2369,8 @@ func (p *Processor) batchSetOptimized(jsonStr string, updates map[string]any) (s
 	return result, nil
 }
 
-// batchDeleteOptimized performs multiple Delete operations efficiently
+// batchDeleteOptimized performs multiple Delete operations efficiently.
+// EXPERIMENTAL: Not yet integrated into production path; used by benchmarks.
 // PERFORMANCE: Uses pooled encoder and single-parse optimization
 func (p *Processor) batchDeleteOptimized(jsonStr string, paths []string) (string, error) {
 	if err := p.checkClosed(); err != nil {
@@ -2413,7 +2419,8 @@ func (p *Processor) batchDeleteOptimized(jsonStr string, paths []string) (string
 // BULK GET OPERATIONS
 // ============================================================================
 
-// fastGetMultiple performs multiple Get operations with single parse
+// fastGetMultiple performs multiple Get operations with single parse.
+// EXPERIMENTAL: Not yet integrated into production GetMultiple path; used by benchmarks.
 // PERFORMANCE v3: Direct allocation with pre-sized map — avoids pool overhead and double-copy
 func (p *Processor) fastGetMultiple(jsonStr string, paths []string) (map[string]any, error) {
 	if err := p.checkClosed(); err != nil {

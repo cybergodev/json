@@ -148,59 +148,7 @@ func evictPathCacheEntries() {
 // PERFORMANCE: Avoids strconv.Atoi's error allocation for invalid inputs.
 // SECURITY: Properly handles overflow for both positive and negative numbers.
 func fastParseInt(s string) (int, bool) {
-	if len(s) == 0 {
-		return 0, false
-	}
-
-	neg := false
-	i := 0
-	if s[0] == '-' {
-		neg = true
-		i = 1
-		if len(s) == 1 {
-			return 0, false
-		}
-	}
-
-	// Overflow bounds - use int64 for intermediate calculations
-	// Correct threshold: math.MaxInt64 / 10 = 922337203685477580
-	// Last valid digit for positive: 7 (MaxInt64 % 10 = 7)
-	// Last valid digit for negative: 8 (|MinInt64| last digit)
-	const overflowThreshold = int64(922337203685477580)
-	const overflowDigitPositive = int64(7)
-	const overflowDigitNegative = int64(8)
-
-	var n int64
-	for ; i < len(s); i++ {
-		c := s[i]
-		if c < '0' || c > '9' {
-			return 0, false
-		}
-		digit := int64(c - '0')
-		if neg {
-			if n > overflowThreshold || (n == overflowThreshold && digit > overflowDigitNegative) {
-				return 0, false
-			}
-		} else {
-			if n > overflowThreshold || (n == overflowThreshold && digit > overflowDigitPositive) {
-				return 0, false
-			}
-		}
-		n = n*10 + digit
-	}
-
-	if neg {
-		n = -n
-	}
-
-	// Platform-specific int size check
-	const maxInt = int64(int(^uint(0) >> 1))
-	const minInt = int64(-maxInt - 1)
-	if n > maxInt || n < minInt {
-		return 0, false
-	}
-
-	return int(n), true
+	return ParseIntFast(s)
 }
 
 // EscapeJSONPointer escapes special characters for JSON Pointer
@@ -1099,9 +1047,8 @@ func parseSliceAccess(slicePart string) (PathSegment, error) {
 	if colon2 == -1 {
 		// Two-part slice (start:end)
 		colon2 = len(slicePart) // Mark as no second colon
-	} else if colon2-colon1 == 1 {
-		// Could be ::step or :: (check if there's more after second colon)
 	}
+	// colon2-colon1 == 1 means adjacent colons (::step), handled below by parsing between colons as empty
 
 	var start, end, step int
 	var flags PathSegmentFlags
@@ -1208,8 +1155,8 @@ func ValidatePath(path string) error {
 	for i := range pathLen {
 		c := path[i]
 		// Check for simple characters only
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '_' || c == '.') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') &&
+			(c < '0' || c > '9') && c != '_' && c != '.' {
 			isSimple = false
 			break
 		}
@@ -1375,13 +1322,13 @@ func isValidFieldName(name string) bool {
 	}
 	// First character must be letter, underscore, or digit
 	c := name[0]
-	if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (c >= '0' && c <= '9')) {
+	if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && c != '_' && (c < '0' || c > '9') {
 		return false
 	}
 	// Check remaining characters
 	for i := 1; i < len(name); i++ {
 		c := name[i]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' {
 			return false
 		}
 	}

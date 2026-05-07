@@ -765,9 +765,15 @@ func deepCopySliceWithDepth(s []any, depth int) ([]any, error) {
 //   - Tier 2: map[string]any / []any → specialized inline copy without error wrapping
 //   - Tier 3: Fallback for non-JSON types
 func deepCopySubtree(data any) (any, error) {
+	return deepCopySubtreeWithDepth(data, 0)
+}
+
+func deepCopySubtreeWithDepth(data any, depth int) (any, error) {
+	if depth > deepCopyMaxDepth {
+		return nil, fmt.Errorf("deep copy depth limit exceeded: maximum depth is %d", deepCopyMaxDepth)
+	}
+
 	// Tier 1: JSON primitives — immutable, return as-is.
-	// PERFORMANCE: Only check types that appear in json.Unmarshal(*any) results.
-	// This avoids checking int8–uint64, float32, etc. which never occur in parsed JSON.
 	switch v := data.(type) {
 	case nil:
 		return nil, nil
@@ -784,9 +790,9 @@ func deepCopySubtree(data any) (any, error) {
 	// Tier 2: JSON containers — specialized inline copy
 	switch v := data.(type) {
 	case map[string]any:
-		return deepCopyJSONMap(v)
+		return deepCopyJSONMapWithDepth(v, depth+1)
 	case []any:
-		return deepCopyJSONSlice(v)
+		return deepCopyJSONSliceWithDepth(v, depth+1)
 	}
 
 	// Tier 3: Fallback for non-JSON types (int slices, custom types, etc.)
@@ -796,10 +802,13 @@ func deepCopySubtree(data any) (any, error) {
 // deepCopyJSONMap copies a map[string]any that contains only JSON-compatible values.
 // PERFORMANCE: Inlined primitive check avoids the overhead of deepCopyValueWithDepth's
 // 16-case type switch. No fmt.Errorf wrapping — errors propagate directly.
-func deepCopyJSONMap(m map[string]any) (map[string]any, error) {
+func deepCopyJSONMapWithDepth(m map[string]any, depth int) (map[string]any, error) {
+	if depth > deepCopyMaxDepth {
+		return nil, fmt.Errorf("deep copy depth limit exceeded: maximum depth is %d", deepCopyMaxDepth)
+	}
 	result := make(map[string]any, len(m))
 	for k, v := range m {
-		copied, err := deepCopyJSONValue(v)
+		copied, err := deepCopyJSONValueWithDepth(v, depth)
 		if err != nil {
 			return nil, err
 		}
@@ -810,10 +819,13 @@ func deepCopyJSONMap(m map[string]any) (map[string]any, error) {
 
 // deepCopyJSONSlice copies a []any that contains only JSON-compatible values.
 // PERFORMANCE: Same optimization as deepCopyJSONMap — inline JSON-only type handling.
-func deepCopyJSONSlice(s []any) ([]any, error) {
+func deepCopyJSONSliceWithDepth(s []any, depth int) ([]any, error) {
+	if depth > deepCopyMaxDepth {
+		return nil, fmt.Errorf("deep copy depth limit exceeded: maximum depth is %d", deepCopyMaxDepth)
+	}
 	result := make([]any, len(s))
 	for i, v := range s {
-		copied, err := deepCopyJSONValue(v)
+		copied, err := deepCopyJSONValueWithDepth(v, depth)
 		if err != nil {
 			return nil, err
 		}
@@ -826,7 +838,7 @@ func deepCopyJSONSlice(s []any) ([]any, error) {
 // PERFORMANCE: Tight type switch covering only types produced by json.Unmarshal into any:
 // nil, bool, float64, string, json.Number, map[string]any, []any.
 // No error wrapping (no fmt.Errorf) — the deepest error propagates directly.
-func deepCopyJSONValue(v any) (any, error) {
+func deepCopyJSONValueWithDepth(v any, depth int) (any, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -841,9 +853,9 @@ func deepCopyJSONValue(v any) (any, error) {
 	case json.Number:
 		return val, nil
 	case map[string]any:
-		return deepCopyJSONMap(val)
+		return deepCopyJSONMapWithDepth(val, depth+1)
 	case []any:
-		return deepCopyJSONSlice(val)
+		return deepCopyJSONSliceWithDepth(val, depth+1)
 	}
 
 	// Non-standard JSON type — fall back to generic deep copy

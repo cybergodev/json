@@ -9,7 +9,7 @@
 > 一个高性能、线程安全的 Go JSON 处理库，100% 兼容 `encoding/json`。
 > 强大的路径语法、类型安全、流式处理、生产级性能。
 
-**[English Documentation](README.md)**
+**[English Documentation](README.md)** | **[www.cybergo.dev/json](https://www.cybergo.dev/json)**
 
 ---
 

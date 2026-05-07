@@ -1,7 +1,6 @@
 package json
 
 import (
-	"context"
 	"reflect"
 	"testing"
 	"time"
@@ -95,18 +94,6 @@ func TestConfigFieldsEqual(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "different Context",
-			a:        Config{Context: context.Background()},
-			b:        Config{Context: nil},
-			expected: false,
-		},
-		{
-			name:     "both with Context",
-			a:        Config{Context: context.Background()},
-			b:        Config{Context: context.TODO()},
-			expected: false, // Different context pointers are not equal
-		},
-		{
 			name:     "different CustomEscapes",
 			a:        Config{CustomEscapes: map[rune]string{'<': "\\u003c"}},
 			b:        Config{CustomEscapes: nil},
@@ -144,7 +131,6 @@ func TestIsDefaultConfig(t *testing.T) {
 		{"default config", DefaultConfig(), true},
 		{"modified MaxJSONSize", func() Config { c := DefaultConfig(); c.MaxJSONSize = 999; return c }(), false},
 		{"modified EnableCache", func() Config { c := DefaultConfig(); c.EnableCache = !c.EnableCache; return c }(), false},
-		{"with Context", func() Config { c := DefaultConfig(); c.Context = context.Background(); return c }(), false},
 		{"with CustomEscapes", func() Config { c := DefaultConfig(); c.CustomEscapes = map[rune]string{'<': "\\u003c"}; return c }(), false},
 		{"zero config", Config{}, false},
 	}
@@ -194,16 +180,6 @@ func TestHashConfig(t *testing.T) {
 		h := hashConfig(c)
 		if h == 0 {
 			t.Error("hashConfig with CustomEscapes should not be 0")
-		}
-	})
-
-	t.Run("with context", func(t *testing.T) {
-		c := DefaultConfig()
-		c.Context = context.Background()
-
-		h := hashConfig(c)
-		if h == 0 {
-			t.Error("hashConfig with Context should not be 0")
 		}
 	})
 }
@@ -383,9 +359,6 @@ func TestConfigFieldSync(t *testing.T) {
 
 		// CustomEscapes
 		{"CustomEscapes", func(c *Config) { c.CustomEscapes = map[rune]string{'<': "\\u003c"} }},
-
-		// Context
-		{"Context", func(c *Config) { c.Context = context.Background() }},
 	}
 
 	defaultHash := hashConfig(defaultCfg)
@@ -488,7 +461,6 @@ func TestReleaseConfigCoversAllReferenceFields(t *testing.T) {
 
 	// Known reference-type fields that are cleared in releaseConfig/prepareOptions
 	knownRefFields := map[string]bool{
-		"Context":                     true,
 		"CustomEncoder":               true,
 		"CustomPathParser":            true,
 		"CustomEscapes":               true,

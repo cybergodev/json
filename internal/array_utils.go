@@ -7,6 +7,9 @@ import (
 	"strings"
 )
 
+// NormalizeIndex converts a negative index to a positive one using Python-style wrapping.
+// Returns the normalized index, which may be negative if the negative index exceeds the length.
+// Callers MUST validate the result is within [0, length) before using it as an array index.
 func NormalizeIndex(index, length int) int {
 	if index < 0 {
 		return length + index
@@ -15,15 +18,7 @@ func NormalizeIndex(index, length int) int {
 }
 
 func ParseArrayIndex(property string) (int, bool) {
-	if len(property) == 1 && property[0] >= '0' && property[0] <= '9' {
-		return int(property[0] - '0'), true
-	}
-
-	if index, err := strconv.Atoi(property); err == nil {
-		return index, true
-	}
-
-	return 0, false
+	return ParseIntFast(property)
 }
 
 func ParseSliceComponents(slicePart string) (start, end, step *int, err error) {
@@ -66,6 +61,10 @@ func ParseSliceComponents(slicePart string) (start, end, step *int, err error) {
 	return start, end, step, nil
 }
 
+// NormalizeSlice normalizes slice bounds using Python-style semantics.
+// Negative indices wrap from the end. Out-of-bounds values are clamped.
+// If start > end after normalization, start is set to end (produces empty range).
+// This matches Python slice behavior where [5:3] returns an empty slice.
 func NormalizeSlice(start, end, length int) (int, int) {
 	if start < 0 {
 		start = length + start

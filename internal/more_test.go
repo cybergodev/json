@@ -586,44 +586,6 @@ func TestIsDigit(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// DATA OPERATIONS TESTS
-// ============================================================================
-
-// TestMergeObjects tests the MergeObjects function
-func TestMergeObjects(t *testing.T) {
-	t.Run("merge two objects", func(t *testing.T) {
-		obj1 := map[string]any{"a": 1, "b": 2}
-		obj2 := map[string]any{"b": 3, "c": 4}
-
-		result := MergeObjects(obj1, obj2)
-
-		if result["a"] != 1 {
-			t.Errorf("a = %v, want 1", result["a"])
-		}
-		if result["b"] != 3 {
-			t.Errorf("b = %v, want 3 (should be overwritten)", result["b"])
-		}
-		if result["c"] != 4 {
-			t.Errorf("c = %v, want 4", result["c"])
-		}
-	})
-
-	t.Run("merge with nil", func(t *testing.T) {
-		obj := map[string]any{"a": 1}
-
-		result := MergeObjects(nil, obj)
-		if result["a"] != 1 {
-			t.Errorf("a = %v, want 1", result["a"])
-		}
-
-		result2 := MergeObjects(obj, nil)
-		if result2["a"] != 1 {
-			t.Errorf("a = %v, want 1", result2["a"])
-		}
-	})
-}
-
 // TestDeepMerge tests the DeepMerge function
 func TestDeepMerge(t *testing.T) {
 	t.Run("merge non-overlapping", func(t *testing.T) {
@@ -681,45 +643,6 @@ func TestDeepMerge(t *testing.T) {
 // ============================================================================
 // EXTRACTION TESTS
 // ============================================================================
-
-// TestDetectConsecutiveExtractions tests DetectConsecutiveExtractions function
-func TestDetectConsecutiveExtractions(t *testing.T) {
-	t.Run("consecutive extractions", func(t *testing.T) {
-		segments := []PathSegment{
-			NewExtractSegment("email"),
-			NewExtractSegment("name"),
-		}
-
-		groups := DetectConsecutiveExtractions(segments)
-		if len(groups) == 0 {
-			t.Error("expected at least one extraction group")
-		}
-	})
-
-	t.Run("mixed segments", func(t *testing.T) {
-		segments := []PathSegment{
-			NewPropertySegment("user"),
-			NewExtractSegment("email"),
-			NewExtractSegment("name"),
-		}
-
-		groups := DetectConsecutiveExtractions(segments)
-		if len(groups) == 0 {
-			t.Error("expected at least one extraction group")
-		}
-	})
-
-	t.Run("no extractions", func(t *testing.T) {
-		segments := []PathSegment{
-			NewPropertySegment("user"),
-		}
-
-		groups := DetectConsecutiveExtractions(segments)
-		if len(groups) != 0 {
-			t.Errorf("expected no extraction groups, got %d", len(groups))
-		}
-	})
-}
 
 // ============================================================================
 // FLATTEN ARRAY OPTIMIZED TESTS

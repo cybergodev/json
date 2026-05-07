@@ -181,51 +181,6 @@ func newSecurityError(operation, message string) error {
 	return &JsonsError{Op: operation, Message: message, Err: ErrSecurityViolation}
 }
 
-// IsRetryable determines if an error is retryable
-func isRetryable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrOperationTimeout) || errors.Is(err, ErrConcurrencyLimit) {
-		return true
-	}
-	var jsErr *JsonsError
-	if errors.As(err, &jsErr) {
-		switch jsErr.Op {
-		case "cache_operation", "concurrent_operation":
-			return true
-		}
-	}
-	return false
-}
-
-// IsSecurityRelated determines if an error is security-related
-func isSecurityRelated(err error) bool {
-	if err == nil {
-		return false
-	}
-	return errors.Is(err, ErrSecurityViolation)
-}
-
-// userErrorSentinels is the fixed list of user-caused errors, pre-allocated to avoid per-call allocation.
-var userErrorSentinels = []error{
-	ErrInvalidJSON, ErrPathNotFound, ErrTypeMismatch,
-	ErrInvalidPath, ErrUnsupportedPath,
-}
-
-// IsUserError determines if an error is caused by user input
-func isUserError(err error) bool {
-	if err == nil {
-		return false
-	}
-	for _, userErr := range userErrorSentinels {
-		if errors.Is(err, userErr) {
-			return true
-		}
-	}
-	return false
-}
-
 // RedactedPath returns a redacted version of a path for safe inclusion in error messages.
 // SECURITY: Prevents path content from leaking into logs or error responses.
 func RedactedPath(path string) string {
@@ -268,4 +223,49 @@ func getErrorSuggestion(err error) string {
 		return "Input contains potentially dangerous patterns - review and sanitize"
 	}
 	return "Check the error message for specific details"
+}
+
+// isRetryable determines if an error is retryable
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrOperationTimeout) || errors.Is(err, ErrConcurrencyLimit) {
+		return true
+	}
+	var jsErr *JsonsError
+	if errors.As(err, &jsErr) {
+		switch jsErr.Op {
+		case "cache_operation", "concurrent_operation":
+			return true
+		}
+	}
+	return false
+}
+
+// isSecurityRelated determines if an error is security-related
+func isSecurityRelated(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, ErrSecurityViolation)
+}
+
+// userErrorSentinels is the fixed list of user-caused errors, pre-allocated to avoid per-call allocation.
+var userErrorSentinels = []error{
+	ErrInvalidJSON, ErrPathNotFound, ErrTypeMismatch,
+	ErrInvalidPath, ErrUnsupportedPath,
+}
+
+// isUserError determines if an error is caused by user input
+func isUserError(err error) bool {
+	if err == nil {
+		return false
+	}
+	for _, userErr := range userErrorSentinels {
+		if errors.Is(err, userErr) {
+			return true
+		}
+	}
+	return false
 }

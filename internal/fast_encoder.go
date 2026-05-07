@@ -204,7 +204,7 @@ func (e *FastEncoder) EncodeValue(v any) error {
 	case json.Number:
 		// SECURITY: Validate json.Number content before appending
 		// json.Number should only contain valid JSON number characters
-		if !isValidJSONNumber(string(val)) {
+		if !IsValidJSONNumber(string(val)) {
 			return fmt.Errorf("invalid json.Number: %s", string(val))
 		}
 		e.buf = append(e.buf, val...)
@@ -1050,7 +1050,6 @@ func (e *FastEncoder) EncodeTime(t time.Time) {
 }
 
 // EncodeBase64 encodes a []byte as base64 string
-// EncodeBase64 encodes a []byte as base64 string
 // PERFORMANCE: Encodes directly into buffer to avoid intermediate string allocation
 func (e *FastEncoder) EncodeBase64(b []byte) {
 	encLen := base64.StdEncoding.EncodedLen(len(b))
@@ -1291,76 +1290,6 @@ func FastMarshalToString(v any) (string, error) {
 // ============================================================================
 // SECURITY VALIDATION HELPERS
 // ============================================================================
-
-// isValidJSONNumber validates that a string is a valid JSON number
-// SECURITY: Prevents malformed numbers from corrupting JSON output
-// PERFORMANCE: Single-pass validation without allocations
-func isValidJSONNumber(s string) bool {
-	if len(s) == 0 {
-		return false
-	}
-
-	i := 0
-
-	// Optional leading minus
-	if s[i] == '-' {
-		i++
-		if i >= len(s) {
-			return false
-		}
-	}
-
-	// Integer part
-	if s[i] == '0' {
-		i++
-		// Leading zero must be followed by . or end
-		if i < len(s) && s[i] != '.' && s[i] != 'e' && s[i] != 'E' {
-			return false
-		}
-	} else if s[i] >= '1' && s[i] <= '9' {
-		i++
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-	} else {
-		return false
-	}
-
-	// Optional fractional part
-	if i < len(s) && s[i] == '.' {
-		i++
-		if i >= len(s) || s[i] < '0' || s[i] > '9' {
-			return false // Must have at least one digit after .
-		}
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-	}
-
-	// Optional exponent
-	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
-		i++
-		if i >= len(s) {
-			return false
-		}
-		// Optional sign
-		if s[i] == '+' || s[i] == '-' {
-			i++
-			if i >= len(s) {
-				return false
-			}
-		}
-		// Must have at least one digit
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-	}
-
-	return i == len(s)
-}
 
 // ============================================================================
 // STRUCT ENCODER CACHE
