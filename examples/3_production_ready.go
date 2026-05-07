@@ -246,11 +246,10 @@ func demonstrateResourceManagement(testData string) {
 
 	// Using unified Config for operation
 	cfg := json.DefaultConfig()
-	cfg.Context = ctx
 	cfg.CacheResults = true
 	cfg.StrictMode = false
 
-	result, err := processor.Get(testData, "config.features", cfg)
+	result, err := processor.GetWithContext(ctx, testData, "config.features", cfg)
 	if err != nil {
 		fmt.Printf("   ✗ Operation failed: %v\n", err)
 	} else {

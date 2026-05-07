@@ -430,47 +430,17 @@ func (sv *securityValidator) ValidateJSONInput(jsonStr string) error {
 	return nil
 }
 
-// validationCacheHashThreshold is the size threshold for hash-based cache keys
-// SECURITY: Reduced from 64KB to 4KB to prevent memory exhaustion from storing many small JSON strings
-const validationCacheHashThreshold = 4096
 
 // getValidationCacheKey computes and returns the cache key for a JSON string
 // PERFORMANCE: Returns the key for reuse to avoid double hash computation
-// SECURITY FIX: Uses SHA-256 for larger strings to prevent collision attacks
+// SECURITY: Uses SHA-256 for all string sizes to prevent collision attacks
 // OPTIMIZED: Uses manual buffer building to avoid fmt.Sprintf allocations
 func (sv *securityValidator) getValidationCacheKey(jsonStr string) string {
 	strLen := len(jsonStr)
 
-	// SECURITY FIX: Use SHA-256 for better collision resistance on larger strings
-	// For small strings (< 4KB), use secure FNV-1a (full scan, no sampling)
-	if strLen <= validationCacheHashThreshold {
-		// SECURITY: Use HashStringFNV1aSecure to prevent collision attacks
-		// where an attacker crafts strings with identical sampled regions
-		h := internal.HashStringFNV1aSecure(jsonStr)
-		// Include length in hash to prevent length extension issues
-		h ^= uint64(strLen)
-
-		// Build key manually: "len:hash" format
-		// Use strconv.AppendInt for the length part
-		var buf [32]byte
-		lenBytes := strconv.AppendInt(buf[:0], int64(strLen), 10)
-		buf[len(lenBytes)] = ':'
-
-		// Write 16 hex characters for the hash (avoid fmt.Sprintf)
-		const hexChars = "0123456789abcdef"
-		start := len(lenBytes) + 1
-		for i := 15; i >= 0; i-- {
-			buf[start+i] = hexChars[h&0xF]
-			h >>= 4
-		}
-		return string(buf[:start+16])
-	}
-
-	// SECURITY FIX: For larger strings, use SHA-256 for strong collision resistance
-	// Use FULL 32 bytes (64 hex chars) of SHA-256 to prevent birthday attacks
-	// A 128-bit truncation would only require 2^64 operations for collision
-	// Full 256-bit requires 2^128 operations which is computationally infeasible
-	// PERFORMANCE: Use internal.StringToBytes to avoid heap allocation for string->[]byte conversion
+	// SECURITY: Use SHA-256 for all sizes to prevent collision attacks.
+	// SHA-256 provides strong collision resistance (2^128 birthday bound)
+	// and the computational overhead on small strings is negligible.
 	hash := sha256.Sum256(internal.StringToBytes(jsonStr))
 
 	// Build key manually: "len:hash" format
@@ -1221,7 +1191,8 @@ func (sv *securityValidator) validateNestingDepth(jsonStr string) error {
 			case '{', '[':
 				depth++
 				if depth > maxCheckDepth {
-					return fmt.Errorf("nesting depth %d exceeds maximum %d", depth, maxCheckDepth)
+					return newOperationError("validate_nesting_depth",
+						fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, maxCheckDepth), ErrDepthLimit)
 				}
 			case '}', ']':
 				depth--

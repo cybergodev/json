@@ -49,6 +49,10 @@ func IsValidJSONNumber(s string) bool {
 	// Integer part
 	if s[i] == '0' {
 		i++
+		// Leading zero must be followed by . or exponent or end
+		if i < len(s) && s[i] != '.' && s[i] != 'e' && s[i] != 'E' {
+			return false
+		}
 	} else if s[i] >= '1' && s[i] <= '9' {
 		i++
 		for i < len(s) && IsDigit(s[i]) {

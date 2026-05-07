@@ -9,7 +9,7 @@
 > A high-performance, thread-safe Go JSON processing library with 100% `encoding/json` compatibility.
 > Powerful path syntax, type safety, streaming processing, production-grade performance.
 
-**[中文文档](README_zh-CN.md)**
+**[中文文档](README_zh-CN.md)** | **[www.cybergo.dev/json](https://www.cybergo.dev/json)**
 
 ---
 

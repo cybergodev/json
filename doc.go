@@ -77,11 +77,18 @@
 // Core types are organized in the following files:
 //
 //   - types.go: All type definitions (Config, Stats, Schema, Result[T], etc.)
-//   - processor.go: Processor struct and all methods
+//   - processor.go: Processor struct, constructor, lifecycle, typed getters
+//   - operation.go: Set/Delete implementations, array operations, fast paths
+//   - recursive.go: Unified recursive processing, segment handlers
 //   - path.go: Path parsing and navigation
-//   - encoding.go: JSON encoding/decoding
-//   - api.go: Package-level API functions
-//   - file.go: File operations
-//   - iterator.go: Iteration utilities
-//   - recursive.go: Recursive processing
+//   - encoding.go: JSON encoding/decoding, streaming, schema validation
+//   - api.go: Package-level API functions and delegation helpers
+//   - file.go: File operations and NDJSON processing
+//   - iterator.go: Iteration utilities and streaming iterators
+//   - security.go: Security validation and dangerous pattern detection
+//   - helpers.go: Type conversion, deep copy, merge, compare utilities
+//   - errors.go: Error types, sentinels, and classification
+//   - interfaces.go: Extension interfaces (hooks, custom encoders, validators)
+//   - processor_streamjsonl.go: JSONL streaming operations
+//   - performance.go: Path cache warmup, decoder pool, bulk operations
 package json

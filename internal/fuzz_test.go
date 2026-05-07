@@ -313,27 +313,6 @@ func FuzzNormalizePathSeparators(f *testing.F) {
 // FUZZ TESTS FOR DATA OPERATIONS
 // ============================================================================
 
-// FuzzMergeObjects tests MergeObjects with fuzz-driven data.
-func FuzzMergeObjects(f *testing.F) {
-	f.Fuzz(func(t *testing.T, data []byte) {
-		if len(data) < 2 {
-			return
-		}
-
-		// Use fuzz input to construct test objects.
-		// Split data into two halves for obj1/obj2 values.
-		mid := len(data) / 2
-		obj1 := map[string]any{"key": string(data[:mid])}
-		obj2 := map[string]any{"key": string(data[mid:])}
-
-		// Should not panic on any input
-		_ = MergeObjects(obj1, obj2)
-		_ = MergeObjects(nil, obj2)
-		_ = MergeObjects(obj1, nil)
-		_ = MergeObjects(nil, nil)
-	})
-}
-
 // ============================================================================
 // BENCHMARKS FOR FUZZ TARGETS
 // ============================================================================

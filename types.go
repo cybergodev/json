@@ -1,7 +1,6 @@
 package json
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -162,9 +161,6 @@ type Config struct {
 	// Default: MergeUnion (combine all keys/elements)
 	MergeMode MergeMode `json:"merge_mode"`
 
-	// ===== Context =====
-	Context context.Context `json:"-"` // Operation context
-
 	// ===== Extension Points =====
 
 	// CustomEncoder replaces the default encoder entirely.
@@ -255,6 +251,17 @@ func (p *ParsedJSON) Data() any {
 		return nil
 	}
 	return p.data
+}
+
+// Release releases resources held by ParsedJSON.
+// After calling Release, Data() returns nil and the processor reference is cleared.
+// Call this when finished with a pre-parsed JSON document to allow GC of the processor.
+func (p *ParsedJSON) Release() {
+	if p == nil {
+		return
+	}
+	p.data = nil
+	p.processor = nil
 }
 
 // Stats provides processor performance statistics
@@ -746,6 +753,11 @@ type Schema struct {
 	hasMaximum   bool
 	hasMinItems  bool
 	hasMaxItems  bool
+
+	// compiledPattern is the lazily pre-compiled regex for Pattern.
+	// Prevents recompilation on every validateString call (ReDoS mitigation).
+	compiledPattern any
+	patternCompiled bool
 }
 
 // ValidationError represents a schema validation error.

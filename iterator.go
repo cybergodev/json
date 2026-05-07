@@ -1020,7 +1020,12 @@ func foreachWithPathIterableValue(data any, currentPath string, fn func(key any,
 		}
 	case map[string]any:
 		for key, val := range v {
-			path := currentPath + "." + key
+			// PERFORMANCE: Build path using append instead of string concatenation
+			var buf []byte
+			buf = append(buf, currentPath...)
+			buf = append(buf, '.')
+			buf = append(buf, key...)
+			path := string(buf)
 			iv := iterableValuePool.Get().(*IterableValue)
 			iv.data = val
 			ctrl := fn(key, iv, path)
@@ -1746,6 +1751,7 @@ type ParallelIterator struct {
 	data    []any
 	workers int
 	sem     chan struct{}
+	done    chan struct{}
 }
 
 // NewParallelIterator creates a new parallel iterator.
@@ -1786,6 +1792,7 @@ func NewParallelIterator(data []any, cfg ...Config) *ParallelIterator {
 		data:    data,
 		workers: workers,
 		sem:     make(chan struct{}, workers),
+		done:    make(chan struct{}),
 	}
 }
 
@@ -1806,12 +1813,14 @@ func (it *ParallelIterator) ForEachWithContext(ctx context.Context, fn func(int,
 	var hasError int32
 
 	for i, item := range it.data {
-		// Check context cancellation
+		// Check context cancellation and close signal
 		select {
 		case <-ctx.Done():
-			// Wait for already-started goroutines to finish
 			wg.Wait()
 			return ctx.Err()
+		case <-it.done:
+			wg.Wait()
+			return nil
 		default:
 		}
 
@@ -1820,23 +1829,25 @@ func (it *ParallelIterator) ForEachWithContext(ctx context.Context, fn func(int,
 			break
 		}
 
-		// RESOURCE FIX: Select on ctx.Done() during semaphore acquire to prevent
-		// goroutine leak when all workers are busy and context is cancelled.
 		select {
 		case it.sem <- struct{}{}: // Acquire semaphore
 		case <-ctx.Done():
 			wg.Wait()
 			return ctx.Err()
+		case <-it.done:
+			wg.Wait()
+			return nil
 		}
 		wg.Add(1)
 
 		go func(idx int, val any) {
 			defer wg.Done()
-			defer func() { <-it.sem }() // Release semaphore
+			defer func() { <-it.sem }()
 
-			// Check context and error state
 			select {
 			case <-ctx.Done():
+				return
+			case <-it.done:
 				return
 			default:
 			}
@@ -1895,11 +1906,14 @@ func (it *ParallelIterator) ForEachBatchWithContext(ctx context.Context, batchSi
 	var hasError int32
 
 	for batchIdx, batch := range batches {
-		// Check context cancellation
+		// Check context cancellation and close signal
 		select {
 		case <-ctx.Done():
 			wg.Wait()
 			return ctx.Err()
+		case <-it.done:
+			wg.Wait()
+			return nil
 		default:
 		}
 
@@ -1907,13 +1921,14 @@ func (it *ParallelIterator) ForEachBatchWithContext(ctx context.Context, batchSi
 			break
 		}
 
-		// RESOURCE FIX: Select on ctx.Done() during semaphore acquire to prevent
-		// goroutine leak when all workers are busy and context is cancelled.
 		select {
 		case it.sem <- struct{}{}: // Acquire semaphore
 		case <-ctx.Done():
 			wg.Wait()
 			return ctx.Err()
+		case <-it.done:
+			wg.Wait()
+			return nil
 		}
 		wg.Add(1)
 
@@ -1921,9 +1936,10 @@ func (it *ParallelIterator) ForEachBatchWithContext(ctx context.Context, batchSi
 			defer wg.Done()
 			defer func() { <-it.sem }()
 
-			// Check context and error state
 			select {
 			case <-ctx.Done():
+				return
+			case <-it.done:
 				return
 			default:
 			}
@@ -1998,13 +2014,14 @@ func (it *ParallelIterator) Filter(predicate func(int, any) bool) []any {
 }
 
 // Close releases resources associated with the ParallelIterator.
-// RESOURCE FIX: Added for API consistency and to document proper cleanup patterns.
-// The semaphore channel is automatically garbage collected when the iterator
-// is no longer referenced.
+// Signals any running goroutines to stop and waits for them to finish.
 func (it *ParallelIterator) Close() {
-	// Semaphore channel will be garbage collected with the iterator
-	// No explicit close needed as it could cause panics in concurrent use
-	// This method exists for API consistency and future extensibility
+	select {
+	case <-it.done:
+		return // Already closed
+	default:
+		close(it.done)
+	}
 }
 
 // Release returns the IterableValue to the pool

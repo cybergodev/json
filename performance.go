@@ -101,6 +101,8 @@ func (dec *Decoder) reset(r io.Reader) {
 		dec.buf.Reset(r)
 	}
 	dec.offset = 0
+	dec.useNumber = false
+	dec.disallowUnknownFields = false
 }
 
 // clear clears all references in the decoder
@@ -111,6 +113,8 @@ func (dec *Decoder) clear() {
 		dec.buf.Reset(bytes.NewReader(nil))
 	}
 	dec.offset = 0
+	dec.useNumber = false
+	dec.disallowUnknownFields = false
 }
 
 // getPooledDecoder gets a decoder from the global pool

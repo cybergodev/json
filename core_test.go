@@ -861,7 +861,7 @@ func TestCompactBuffer(t *testing.T) {
 	}`
 
 	var buf bytes.Buffer
-	err := compactBuffer(&buf, []byte(prettyJSON))
+	err := Compact(&buf, []byte(prettyJSON))
 	if err != nil {
 		t.Fatalf("CompactBuffer error: %v", err)
 	}
@@ -2335,7 +2335,7 @@ func TestGetMultiple(t *testing.T) {
 			name:        "mixed valid and invalid",
 			paths:       []string{"user.name", "invalid.path", "settings.theme"},
 			expectedLen: 3, // GetMultiple returns entries for all paths, including nil for invalid ones
-			expectError: false,
+			expectError: true,
 		},
 	}
 

@@ -42,11 +42,26 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 		return err
 	}
 
-	// Use default config values
+	// Determine effective memory limit for JSONL processing
+	memLimit := p.config.JSONLMaxMemory
+	if memLimit <= 0 && p.config.MaxMemory > 0 {
+		memLimit = p.config.MaxMemory
+	}
+
+	bufSize := p.config.JSONLBufferSize
+	if bufSize <= 0 {
+		bufSize = defaultScannerBufSize
+	}
+	maxLine := p.config.JSONLMaxLineSize
+	if maxLine <= 0 {
+		maxLine = defaultMaxLineSize
+	}
+
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, defaultScannerBufSize), defaultMaxLineSize)
+	scanner.Buffer(make([]byte, bufSize), maxLine)
 
 	lineNum := 0
+	var totalBytes int64
 
 	for scanner.Scan() {
 		lineNum++
@@ -56,6 +71,14 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 		// Skip lines based on config (empty lines, comments)
 		if shouldSkipJSONLLineFromConfig(line, &p.config) {
 			continue
+		}
+
+		// Track memory usage if limit is configured
+		if memLimit > 0 {
+			totalBytes += int64(len(line))
+			if totalBytes > memLimit {
+				return fmt.Errorf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum)
+			}
 		}
 
 		// Parse JSON line
@@ -159,8 +182,16 @@ func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader i
 
 	// Feed jobs — respect context cancellation during scan
 	lineNum := 0
+	parBufSize := p.config.JSONLBufferSize
+	if parBufSize <= 0 {
+		parBufSize = defaultScannerBufSize
+	}
+	parMaxLine := p.config.JSONLMaxLineSize
+	if parMaxLine <= 0 {
+		parMaxLine = defaultMaxLineSize
+	}
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, defaultScannerBufSize), defaultMaxLineSize)
+	scanner.Buffer(make([]byte, parBufSize), parMaxLine)
 
 feedLoop:
 	for scanner.Scan() {
@@ -241,12 +272,27 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		chunkSize = 1000
 	}
 
+	// Determine effective memory limit for JSONL processing
+	memLimit := p.config.JSONLMaxMemory
+	if memLimit <= 0 && p.config.MaxMemory > 0 {
+		memLimit = p.config.MaxMemory
+	}
+
 	var chunk []*IterableValue
 
+	chunkBufSize := p.config.JSONLBufferSize
+	if chunkBufSize <= 0 {
+		chunkBufSize = defaultScannerBufSize
+	}
+	chunkMaxLine := p.config.JSONLMaxLineSize
+	if chunkMaxLine <= 0 {
+		chunkMaxLine = defaultMaxLineSize
+	}
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, defaultScannerBufSize), defaultMaxLineSize)
+	scanner.Buffer(make([]byte, chunkBufSize), chunkMaxLine)
 
 	lineNum := 0
+	var totalBytes int64
 
 	for scanner.Scan() {
 		lineNum++
@@ -256,6 +302,14 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		// Skip lines based on config (empty lines, comments)
 		if shouldSkipJSONLLineFromConfig(line, &p.config) {
 			continue
+		}
+
+		// Track memory usage if limit is configured
+		if memLimit > 0 {
+			totalBytes += int64(len(line))
+			if totalBytes > memLimit {
+				return fmt.Errorf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum)
+			}
 		}
 
 		// Parse JSON line
@@ -269,9 +323,15 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 
 		if len(chunk) >= chunkSize {
 			if err := fn(chunk); err != nil {
+				for i := range chunk {
+					iterableValuePool.Put(chunk[i])
+				}
 				return err
 			}
-			chunk = chunk[:0] // Reset chunk
+			for i := range chunk {
+				iterableValuePool.Put(chunk[i])
+			}
+			chunk = chunk[:0]
 		}
 	}
 
@@ -282,7 +342,13 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 	// Process remaining chunk
 	if len(chunk) > 0 {
 		if err := fn(chunk); err != nil {
+			for i := range chunk {
+				iterableValuePool.Put(chunk[i])
+			}
 			return err
+		}
+		for i := range chunk {
+			iterableValuePool.Put(chunk[i])
 		}
 	}
 
@@ -595,6 +661,8 @@ func MapJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) (any, 
 //		return acc.(int64) + int64(item.GetInt("age"))
 //	})
 func ReduceJSONL(reader io.Reader, initial any, fn func(acc any, item *IterableValue) any) (any, error) {
+	// Note: Cannot use withProcessor because it returns zero-value on error,
+	// but ReduceJSONL must return the initial accumulator on error.
 	p, err := getProcessorOrFail()
 	if err != nil {
 		return initial, err
@@ -651,6 +719,8 @@ func CollectJSONL(reader io.Reader) ([]*IterableValue, error) {
 //		return item.GetString("name") == "Alice"
 //	})
 func FirstJSONL(reader io.Reader, predicate func(item *IterableValue) bool) (*IterableValue, bool, error) {
+	// Note: Cannot use withProcessor because it only supports (T, error) return,
+	// but FirstJSONL returns (*IterableValue, bool, error).
 	p, err := getProcessorOrFail()
 	if err != nil {
 		return nil, false, err

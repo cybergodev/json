@@ -567,11 +567,6 @@ func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) 
 	return err
 }
 
-// compactBuffer is an unexported alias kept for backward compatibility with internal callers.
-func (p *Processor) compactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) error {
-	return p.CompactBuffer(dst, src, cfg...)
-}
-
 // Indent appends to dst an indented form of the JSON-encoded src.
 // Compatible with encoding/json.Indent with optional Config support.
 //
@@ -633,29 +628,29 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 			return p.handleDistributedOperation(current, segments[i:])
 		}
 
-		switch segment.TypeString() {
-		case "property":
+		switch segment.Type {
+		case internal.PropertySegment:
 			result := p.handlePropertyAccess(current, segment.Key)
 			if !result.exists {
 				return nil, ErrPathNotFound
 			}
 			current = result.value
 
-		case "array":
+		case internal.ArrayIndexSegment:
 			result := p.handleArrayAccess(current, segment)
 			if !result.exists {
 				return nil, ErrPathNotFound
 			}
 			current = result.value
 
-		case "slice":
+		case internal.ArraySliceSegment:
 			result := p.handleArraySlice(current, segment)
 			if !result.exists {
 				return nil, ErrPathNotFound
 			}
 			current = result.value
 
-		case "extract":
+		case internal.ExtractSegment:
 			extractResult, err := p.handleExtraction(current, segment)
 			if err != nil {
 				return nil, err
@@ -664,9 +659,9 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 
 			if i+1 < len(segments) {
 				nextSegment := segments[i+1]
-				if nextSegment.TypeString() == "array" || nextSegment.TypeString() == "slice" {
+				if nextSegment.Type == internal.ArrayIndexSegment || nextSegment.Type == internal.ArraySliceSegment {
 					if segment.IsFlatExtract() {
-						if nextSegment.TypeString() == "slice" {
+						if nextSegment.Type == internal.ArraySliceSegment {
 							result := p.handleArraySlice(current, nextSegment)
 							if result.exists {
 								current = result.value
@@ -990,7 +985,8 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
 	}
 
 	// Use json.Number for preservation
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	// PERFORMANCE: Use bytes.NewReader to avoid string(data) allocation
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 
 	// OPTIMIZED: Try direct decoding for *any type to avoid double conversion

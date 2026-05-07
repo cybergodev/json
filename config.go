@@ -169,9 +169,6 @@ func DefaultConfig() Config {
 
 		// Merge Options
 		MergeMode: MergeUnion, // Default: union merge
-
-		// Context
-		Context: nil,
 	}
 }
 
@@ -189,7 +186,7 @@ func getConfigOrDefault(cfg ...Config) Config {
 // Performs a deep copy of reference types (maps, slices).
 // Returns a pointer to avoid unnecessary copying of the large Config struct.
 //
-// NOTE: Interface fields (CustomEncoder, CustomPathParser, Context) are shallow-copied
+// NOTE: Interface fields (CustomEncoder, CustomPathParser) are shallow-copied
 // as they typically contain stateless or singleton implementations.
 // CustomTypeEncoders, CustomValidators, AdditionalDangerousPatterns, and Hooks are
 // deep-copied as they may be modified independently.
@@ -373,8 +370,7 @@ func (c *Config) ValidateWithWarnings() []ConfigWarning {
 	}
 
 	// Encoding options
-	// SEMANTIC: MaxDepth uses < 0 check because 0 is valid (means "no limit" in some contexts)
-	// and positive values are meaningful depth limits
+	// MaxDepth=0 means no limit, positive values set a hard cap, negative is invalid
 	if c.MaxDepth < 0 || c.MaxDepth > 1000 {
 		warnings = append(warnings, ConfigWarning{
 			Field:    "MaxDepth",

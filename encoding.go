@@ -161,6 +161,11 @@ func (enc *Encoder) Encode(v any) error {
 		err := encoder.EncodeValue(v)
 		if err == nil {
 			data := encoder.Bytes()
+			// SECURITY: Check output size against configured limit
+			if int64(len(data)) > processor.config.MaxJSONSize {
+				internal.PutEncoder(encoder)
+				return newSizeLimitError("encode", int64(len(data)), processor.config.MaxJSONSize)
+			}
 			// Apply HTML escaping if needed
 			if enc.escapeHTML && internal.NeedsHTMLEscapeBytes(data) {
 				escaped := internal.HTMLEscapeBytes(data)
@@ -1252,7 +1257,7 @@ func (e *customEncoder) EncodeToBytes(value any) ([]byte, error) {
 
 // encodeValue encodes any value recursively
 func (e *customEncoder) encodeValue(value any) error {
-	if e.depth > e.config.MaxDepth {
+	if e.config.MaxDepth > 0 && e.depth > e.config.MaxDepth {
 		return &JsonsError{
 			Op:      "custom_encode",
 			Message: fmt.Sprintf("encoding depth %d exceeds maximum %d", e.depth, e.config.MaxDepth),
@@ -2021,18 +2026,27 @@ func (p *Processor) validateString(str string, schema *Schema, path string, erro
 	}
 
 	// Pattern validation (regular expression)
+	// Lazily compile and cache the regex to prevent recompilation on every call
 	if schema.Pattern != "" {
-		matched, err := regexp.MatchString(schema.Pattern, str)
-		if err != nil {
-			*errors = append(*errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("invalid pattern '%s': %v", schema.Pattern, err),
-			})
-		} else if !matched {
-			*errors = append(*errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("string '%s' does not match pattern '%s'", str, schema.Pattern),
-			})
+		if !schema.patternCompiled {
+			re, err := regexp.Compile(schema.Pattern)
+			if err != nil {
+				*errors = append(*errors, ValidationError{
+					Path:    path,
+					Message: fmt.Sprintf("invalid pattern '%s': %v", schema.Pattern, err),
+				})
+				return
+			}
+			schema.compiledPattern = re
+			schema.patternCompiled = true
+		}
+		if re, ok := schema.compiledPattern.(*regexp.Regexp); ok && re != nil {
+			if !re.MatchString(str) {
+				*errors = append(*errors, ValidationError{
+					Path:    path,
+					Message: fmt.Sprintf("string '%s' does not match pattern '%s'", str, schema.Pattern),
+				})
+			}
 		}
 	}
 

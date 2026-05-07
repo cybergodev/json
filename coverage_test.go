@@ -1473,7 +1473,7 @@ func TestProcessorBufferMethods(t *testing.T) {
 	t.Run("CompactBuffer", func(t *testing.T) {
 		var dst bytes.Buffer
 		src := []byte(`{"key": "value"}`)
-		err := processor.compactBuffer(&dst, src)
+		err := processor.CompactBuffer(&dst, src)
 		if err != nil {
 			t.Errorf("CompactBuffer failed: %v", err)
 		}

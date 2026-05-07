@@ -140,6 +140,9 @@ func UniqueArrayOptimized(arr []any) []any {
 	return final
 }
 
+// maxFlattenDepth limits recursion depth for flatten operations to prevent stack overflow
+const maxFlattenDepth = 200
+
 // FlattenArrayOptimized flattens nested arrays with pooling
 func FlattenArrayOptimized(arr []any) []any {
 	if len(arr) == 0 {
@@ -147,18 +150,21 @@ func FlattenArrayOptimized(arr []any) []any {
 	}
 
 	// Estimate final size
-	estimatedSize := estimateFlatSize(arr)
+	estimatedSize := estimateFlatSize(arr, 0)
 	result := make([]any, 0, estimatedSize)
 
-	flattenInto(arr, &result)
+	flattenInto(arr, &result, 0)
 	return result
 }
 
-func estimateFlatSize(arr []any) int {
+func estimateFlatSize(arr []any, depth int) int {
+	if depth >= maxFlattenDepth {
+		return len(arr)
+	}
 	size := 0
 	for _, item := range arr {
 		if nested, ok := item.([]any); ok {
-			size += estimateFlatSize(nested)
+			size += estimateFlatSize(nested, depth+1)
 		} else {
 			size++
 		}
@@ -166,10 +172,14 @@ func estimateFlatSize(arr []any) int {
 	return size
 }
 
-func flattenInto(arr []any, result *[]any) {
+func flattenInto(arr []any, result *[]any, depth int) {
+	if depth >= maxFlattenDepth {
+		*result = append(*result, arr...)
+		return
+	}
 	for _, item := range arr {
 		if nested, ok := item.([]any); ok {
-			flattenInto(nested, result)
+			flattenInto(nested, result, depth+1)
 		} else {
 			*result = append(*result, item)
 		}

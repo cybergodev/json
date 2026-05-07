@@ -2,6 +2,7 @@ package json
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -122,8 +123,7 @@ func withConfigProcessorError(cfg []Config, fn func(*Processor, Config) error) e
 
 // hashConfig generates a cache key for Config for processor caching.
 //
-// ROBUSTNESS: Uses field-by-field hashing to include ALL Config fields,
-// including Context (which is excluded from JSON serialization).
+// ROBUSTNESS: Uses field-by-field hashing to include ALL Config fields.
 // This ensures accurate cache keys and prevents collisions.
 //
 // PERFORMANCE: For the common case of default configs, uses a fast path that
@@ -135,7 +135,6 @@ func hashConfig(cfg Config) uint64 {
 	}
 
 	// Slow path: hash all fields explicitly
-	// This is more reliable than JSON serialization which ignores Context
 	return hashConfigFields(cfg)
 }
 
@@ -154,8 +153,7 @@ func isDefaultConfig(cfg Config) bool {
 		cfg.StrictMode ||
 		!cfg.CreatePaths ||
 		!cfg.EnableCache ||
-		!cfg.EnableValidation ||
-		cfg.Context != nil {
+		!cfg.EnableValidation {
 		return false
 	}
 
@@ -358,15 +356,6 @@ var configFieldList = []configFieldAccessor{
 	{"JSONLMaxMemory",
 		func(a, b Config) bool { return a.JSONLMaxMemory == b.JSONLMaxMemory },
 		func(h uint64, c Config) uint64 { return internal.HashInt64(h, c.JSONLMaxMemory) }},
-	// Context - direct pointer comparison (different context instances are not equal)
-	{"Context",
-		func(a, b Config) bool { return a.Context == b.Context },
-		func(h uint64, c Config) uint64 {
-			if c.Context != nil {
-				return internal.HashBool(h, true)
-			}
-			return h
-		}},
 	// Extension fields
 	{"CustomEscapes",
 		func(a, b Config) bool { return customEscapesEqual(a.CustomEscapes, b.CustomEscapes) },
@@ -442,8 +431,24 @@ var configFieldList = []configFieldAccessor{
 		func(a, b Config) bool { return a.DisableDefaultPatterns == b.DisableDefaultPatterns },
 		func(h uint64, c Config) uint64 { return internal.HashBool(h, c.DisableDefaultPatterns) }},
 	{"Hooks",
-		func(a, b Config) bool { return len(a.Hooks) == len(b.Hooks) },
-		func(h uint64, c Config) uint64 { return internal.HashInt(h, len(c.Hooks)) }},
+		func(a, b Config) bool {
+			if len(a.Hooks) != len(b.Hooks) {
+				return false
+			}
+			for i := range a.Hooks {
+				if a.Hooks[i] != b.Hooks[i] {
+					return false
+				}
+			}
+			return true
+		},
+		func(h uint64, c Config) uint64 {
+			h = internal.HashInt(h, len(c.Hooks))
+			for _, hook := range c.Hooks {
+				h = internal.HashString(h, fmt.Sprintf("%T", hook))
+			}
+			return h
+		}},
 	{"CustomPathParser",
 		func(a, b Config) bool { return (a.CustomPathParser == nil) == (b.CustomPathParser == nil) },
 		func(h uint64, c Config) uint64 {
@@ -531,6 +536,21 @@ func hashCustomEscapes(h uint64, m map[rune]string) uint64 {
 func Get(jsonStr, path string, cfg ...Config) (any, error) {
 	return withProcessor(func(p *Processor) (any, error) {
 		return p.Get(jsonStr, path, cfg...)
+	})
+}
+
+// GetWithContext retrieves a value from JSON with context support for cancellation.
+// This is the context-aware version of Get() that respects context cancellation
+// and timeout deadlines.
+//
+// Example:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+//	defer cancel()
+//	value, err := json.GetWithContext(ctx, `{"user":{"name":"Alice"}}`, "user.name")
+func GetWithContext(ctx context.Context, jsonStr, path string, cfg ...Config) (any, error) {
+	return withProcessor(func(p *Processor) (any, error) {
+		return p.GetWithContext(ctx, jsonStr, path, cfg...)
 	})
 }
 
@@ -778,14 +798,6 @@ func HTMLEscape(dst *bytes.Buffer, src []byte, cfg ...Config) {
 		return
 	}
 	p.HTMLEscape(dst, src, cfg...)
-}
-
-// compactBuffer compacts JSON data and writes the result to dst.
-// Delegates to Processor.CompactBuffer for consistent behavior.
-func compactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) error {
-	return withProcessorError(func(p *Processor) error {
-		return p.CompactBuffer(dst, src, cfg...)
-	})
 }
 
 // Encode converts any Go value to JSON string.
