@@ -95,14 +95,23 @@ func (hc *HealthChecker) checkMetrics() CheckResult {
 
 // checkMemoryUsage checks if memory usage is within acceptable limits
 func (hc *HealthChecker) checkMemoryUsage() CheckResult {
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
+	// Use cached memory stats from MetricsCollector to avoid STW pause.
+	// Stats are refreshed lazily at most once every 5 seconds.
+	var alloc uint64
+	if hc.metrics != nil {
+		alloc = hc.metrics.GetMetrics().RuntimeMemStats.Alloc
+	} else {
+		// Fallback: direct read when no metrics collector available
+		var memStats runtime.MemStats
+		runtime.ReadMemStats(&memStats)
+		alloc = memStats.Alloc
+	}
 
 	const mbDivisor = 1024 * 1024
-	allocMB := float64(memStats.Alloc) / mbDivisor
+	allocMB := float64(alloc) / mbDivisor
 	limitMB := float64(hc.maxMemoryBytes) / mbDivisor
 
-	if memStats.Alloc > hc.maxMemoryBytes {
+	if alloc > hc.maxMemoryBytes {
 		return CheckResult{
 			Healthy: false,
 			Message: fmt.Sprintf("High memory usage: %.2f MB (limit: %.2f MB)", allocMB, limitMB),

@@ -32,7 +32,6 @@ package json
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -55,8 +54,36 @@ func init() {
 	// errors.Is(err, json.ErrPathNotFound) works across package boundaries.
 	internal.SetErrorSentinels(ErrPathNotFound, ErrTypeMismatch, ErrInvalidPath)
 
-	// Single attempt with default config - should always succeed
-	p, err := New()
+	// Use minimal config for fallback processor to reduce memory footprint.
+	// The fallback is only used when default processor creation fails,
+	// so it doesn't need caching, metrics, or other heavy features.
+	fallbackCfg := Config{
+		MaxJSONSize:          DefaultMaxJSONSize,
+		MaxPathDepth:         DefaultMaxPathDepth,
+		MaxNestingDepthSecurity: DefaultMaxNestingDepth,
+		MaxConcurrency:       DefaultMaxConcurrency,
+		EnableCache:          false,
+		CacheResults:         false,
+		EnableValidation:     true,
+		ValidateInput:        true,
+		CreatePaths:          true,
+		EscapeHTML:           true,
+		Indent:               "  ",
+		ValidateUTF8:         true,
+		MaxDepth:             100,
+		IncludeNulls:         true,
+		EscapeNewlines:       true,
+		EscapeTabs:           true,
+		ValidateFilePath:     true,
+		CacheTTL:             DefaultCacheTTL,
+		MaxBatchSize:         DefaultMaxBatchSize,
+		MaxSecurityValidationSize: DefaultMaxSecuritySize,
+		MaxObjectKeys:        DefaultMaxObjectKeys,
+		MaxArrayElements:     DefaultMaxArrayElements,
+		ParallelThreshold:    DefaultParallelThreshold,
+		MergeMode:            MergeUnion,
+	}
+	p, err := New(fallbackCfg)
 	if err != nil {
 		// This should never happen with DefaultConfig (all defaults are validated).
 		// Log warning and continue - callers must handle nil processor gracefully.
@@ -68,9 +95,7 @@ func init() {
 
 // getDefaultProcessor returns the default processor in a panic-safe manner.
 // SAFETY: Never panics - returns fallback processor on error.
-// Uses sync.OnceValue pattern for efficient lazy initialization.
 // IMPORTANT: Callers MUST check for nil return value and handle appropriately.
-// FIX: Removed redundant New() call that could cause infinite loop on repeated failures.
 func getDefaultProcessor() *Processor {
 	// Fast path: check if processor exists and is not closed
 	if p := defaultProcessor.Load(); p != nil && !p.IsClosed() {
@@ -94,7 +119,6 @@ func getDefaultProcessor() *Processor {
 		if fb := fallbackProcessor.Load(); fb != nil && !fb.IsClosed() {
 			return fb
 		}
-		// FIX: Return nil instead of retrying New() which already failed
 		// Callers must handle nil processor gracefully
 		return nil
 	}
@@ -144,6 +168,11 @@ func ShutdownGlobalProcessor() {
 
 	if old := defaultProcessor.Swap(nil); old != nil {
 		old.Close()
+	}
+
+	// Close fallback processor created in init() to release its cache goroutines.
+	if fb := fallbackProcessor.Swap(nil); fb != nil {
+		_ = fb.Close() // best-effort cleanup
 	}
 
 	// Clear global caches that accumulate across processor instances.
@@ -233,6 +262,12 @@ func StreamLinesInto[T any](reader io.Reader, fn func(lineNum int, data T) error
 		maxLineSize = 1024 * 1024
 	}
 
+	// Use processor for security-validated unmarshaling
+	p, err := getProcessorWithConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, bufSize), maxLineSize)
 
@@ -249,7 +284,7 @@ func StreamLinesInto[T any](reader io.Reader, fn func(lineNum int, data T) error
 		}
 
 		var data T
-		if err := json.Unmarshal(line, &data); err != nil {
+		if err := p.Unmarshal(line, &data); err != nil {
 			if configPtr.JSONLContinueOnErr {
 				continue
 			}
@@ -341,15 +376,24 @@ func (w *JSONLWriter) Write(data any) error {
 		return w.err
 	}
 
-	// Marshal to bytes first so we can track exact byte count
-	encoded, err := json.Marshal(data)
+	// Use pooled encoder for performance; apply HTML escaping if configured
+	encoded, err := internal.FastMarshalToString(data)
 	if err != nil {
 		w.err = err
 		return err
 	}
 
+	if w.escapeHTML {
+		encodedBytes := internal.StringToBytes(encoded)
+		if internal.NeedsHTMLEscapeBytes(encodedBytes) {
+			escaped := internal.HTMLEscapeBytes(encodedBytes)
+			encoded = string(escaped)
+			internal.PutHTMLEscapeBytes(escaped)
+		}
+	}
+
 	// Write encoded JSON + newline
-	n, err := w.writer.Write(encoded)
+	n, err := w.writer.Write(internal.StringToBytes(encoded))
 	if err != nil {
 		w.err = err
 		return err

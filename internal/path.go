@@ -143,14 +143,6 @@ func evictPathCacheEntries() {
 	atomic.AddInt64(&pathCacheSize, -int64(evictCount))
 }
 
-// fastParseInt parses a string as an integer without allocation.
-// Returns the parsed integer and true if successful, 0 and false otherwise.
-// PERFORMANCE: Avoids strconv.Atoi's error allocation for invalid inputs.
-// SECURITY: Properly handles overflow for both positive and negative numbers.
-func fastParseInt(s string) (int, bool) {
-	return ParseIntFast(s)
-}
-
 // EscapeJSONPointer escapes special characters for JSON Pointer
 // Uses single-pass algorithm to avoid multiple allocations
 func EscapeJSONPointer(s string) string {
@@ -582,7 +574,7 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 			if i == pathLen || path[i] == '.' {
 				part := path[start:i]
 				// Check if this is a numeric array index (supports negative indices)
-				if index, ok := fastParseInt(part); ok {
+				if index, ok := ParseIntFast(part); ok {
 					var flags PathSegmentFlags
 					if index < 0 {
 						flags |= FlagIsNegative
@@ -679,7 +671,7 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 			segments = append(segments, propSegments...)
 		} else {
 			// Use fast parser to avoid strconv.Atoi error allocations
-			if index, ok := fastParseInt(part); ok {
+			if index, ok := ParseIntFast(part); ok {
 				var flags PathSegmentFlags
 				if index < 0 {
 					flags |= FlagIsNegative
@@ -1007,7 +999,7 @@ func parseArrayAccess(arrayPart string) (PathSegment, error) {
 	}
 
 	// Simple index access - use fast parser to avoid strconv error allocations
-	index, ok := fastParseInt(arrayPart)
+	index, ok := ParseIntFast(arrayPart)
 	if !ok {
 		return PathSegment{}, fmt.Errorf("invalid array index '%s'", arrayPart)
 	}
@@ -1055,7 +1047,7 @@ func parseSliceAccess(slicePart string) (PathSegment, error) {
 
 	// Parse start (before first colon) - use fast parser to avoid strconv error allocations
 	if colon1 > 0 {
-		startVal, ok := fastParseInt(slicePart[:colon1])
+		startVal, ok := ParseIntFast(slicePart[:colon1])
 		if !ok {
 			return PathSegment{}, fmt.Errorf("invalid slice start '%s'", slicePart[:colon1])
 		}
@@ -1067,7 +1059,7 @@ func parseSliceAccess(slicePart string) (PathSegment, error) {
 	if colon2 > colon1+1 {
 		// There's content between colons
 		endStr := slicePart[colon1+1 : colon2]
-		endVal, ok := fastParseInt(endStr)
+		endVal, ok := ParseIntFast(endStr)
 		if !ok {
 			return PathSegment{}, fmt.Errorf("invalid slice end '%s'", endStr)
 		}
@@ -1080,7 +1072,7 @@ func parseSliceAccess(slicePart string) (PathSegment, error) {
 		// We have a second colon, check for step
 		stepStr := slicePart[colon2+1:]
 		if stepStr != "" {
-			stepVal, ok := fastParseInt(stepStr)
+			stepVal, ok := ParseIntFast(stepStr)
 			if !ok {
 				return PathSegment{}, fmt.Errorf("invalid slice step '%s'", stepStr)
 			}
@@ -1116,7 +1108,7 @@ func parseJSONPointer(path string) ([]PathSegment, error) {
 		part = UnescapeJSONPointer(part)
 
 		// Try to parse as numeric index using fast parser
-		if index, ok := fastParseInt(part); ok {
+		if index, ok := ParseIntFast(part); ok {
 			var flags PathSegmentFlags
 			if index < 0 {
 				flags |= FlagIsNegative

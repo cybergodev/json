@@ -890,197 +890,158 @@ func TestProcessor_JSONLEdgeCases(t *testing.T) {
 }
 
 // ============================================================================
-// Package-level JSONL wrapper tests
+// Package-level JSONL delegation tests — consolidated from 10+ duplicates.
+// Each TestPackageLevel_* previously duplicated the corresponding
+// TestProcessor_* test. Now we verify delegation with a single table.
 // ============================================================================
 
-// TestPackageLevel_StreamJSONL tests the package-level StreamJSONL wrapper
-func TestPackageLevel_StreamJSONL(t *testing.T) {
+func TestPackageLevel_JSONLDelegation(t *testing.T) {
 	input := `{"name":"Alice","age":30}
 {"name":"Bob","age":25}`
-	var count int
-	err := StreamJSONL(strings.NewReader(input), func(lineNum int, item *IterableValue) error {
-		count++
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("StreamJSONL error: %v", err)
-	}
-	if count != 2 {
-		t.Errorf("count = %d, want 2", count)
-	}
-}
 
-func TestPackageLevel_StreamJSONLParallel(t *testing.T) {
-	input := `{"name":"Alice","age":30}
-{"name":"Bob","age":25}
-{"name":"Charlie","age":35}`
-	var mu sync.Mutex
-	var count int
-	err := StreamJSONLParallel(strings.NewReader(input), 2, func(lineNum int, item *IterableValue) error {
-		mu.Lock()
-		count++
-		mu.Unlock()
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("StreamJSONLParallel error: %v", err)
-	}
-	if count != 3 {
-		t.Errorf("count = %d, want 3", count)
-	}
-}
-
-func TestPackageLevel_StreamJSONLParallelWithContext(t *testing.T) {
-	input := `{"name":"Alice","age":30}
-{"name":"Bob","age":25}`
-	ctx := context.Background()
-	var count atomic.Int32
-	err := StreamJSONLParallelWithContext(ctx, strings.NewReader(input), 2, func(lineNum int, item *IterableValue) error {
-		count.Add(1)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("StreamJSONLParallelWithContext error: %v", err)
-	}
-	if count.Load() != 2 {
-		t.Errorf("count = %d, want 2", count.Load())
-	}
-}
-
-func TestPackageLevel_StreamJSONLChunked(t *testing.T) {
-	input := `{"a":1}
-{"b":2}
-{"c":3}
-{"d":4}`
-	var chunks [][]string
-	err := StreamJSONLChunked(strings.NewReader(input), 2, func(chunk []*IterableValue) error {
-		var items []string
-		for _, v := range chunk {
-			m := v.GetData().(map[string]any)
-			for k := range m {
-				items = append(items, k)
-				break
-			}
+	t.Run("StreamJSONL", func(t *testing.T) {
+		var count int
+		err := StreamJSONL(strings.NewReader(input), func(lineNum int, item *IterableValue) error {
+			count++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("StreamJSONL error: %v", err)
 		}
-		chunks = append(chunks, items)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("StreamJSONLChunked error: %v", err)
-	}
-	if len(chunks) != 2 {
-		t.Fatalf("chunks = %d, want 2", len(chunks))
-	}
-}
-
-func TestPackageLevel_ForeachJSONL(t *testing.T) {
-	input := `{"x":1}
-{"x":2}`
-	var names []string
-	err := ForeachJSONL(strings.NewReader(input), func(lineNum int, item *IterableValue) error {
-		m := item.GetData().(map[string]any)
-		for k := range m {
-			names = append(names, k)
-			break
+		if count != 2 {
+			t.Errorf("count = %d, want 2", count)
 		}
-		return nil
 	})
-	if err != nil {
-		t.Fatalf("ForeachJSONL error: %v", err)
-	}
-	if len(names) != 2 {
-		t.Errorf("names = %d, want 2", len(names))
-	}
-}
 
-func TestPackageLevel_MapJSONL(t *testing.T) {
-	input := `{"name":"Alice"}
-{"name":"Bob"}`
-	results, err := MapJSONL(strings.NewReader(input), func(lineNum int, item *IterableValue) (any, error) {
-		return item.GetData(), nil
+	t.Run("ForeachJSONL", func(t *testing.T) {
+		var count int
+		err := ForeachJSONL(strings.NewReader(input), func(lineNum int, item *IterableValue) error {
+			count++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("ForeachJSONL error: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("count = %d, want 2", count)
+		}
 	})
-	if err != nil {
-		t.Fatalf("MapJSONL error: %v", err)
-	}
-	if len(results) != 2 {
-		t.Errorf("results = %d, want 2", len(results))
-	}
-}
 
-func TestPackageLevel_ReduceJSONL(t *testing.T) {
-	input := `{"val":10}
-{"val":20}
-{"val":30}`
-	result, err := ReduceJSONL(strings.NewReader(input), 0, func(acc any, item *IterableValue) any {
-		return acc.(int) + item.GetInt("val")
+	t.Run("CollectJSONL", func(t *testing.T) {
+		results, err := CollectJSONL(strings.NewReader(input))
+		if err != nil {
+			t.Fatalf("CollectJSONL error: %v", err)
+		}
+		if len(results) != 2 {
+			t.Errorf("results = %d, want 2", len(results))
+		}
 	})
-	if err != nil {
-		t.Fatalf("ReduceJSONL error: %v", err)
-	}
-	if result != 60 {
-		t.Errorf("result = %v, want 60", result)
-	}
-}
 
-func TestPackageLevel_FilterJSONL(t *testing.T) {
-	input := `{"name":"Alice","active":true}
-{"name":"Bob","active":false}
-{"name":"Charlie","active":true}`
-	results, err := FilterJSONL(strings.NewReader(input), func(item *IterableValue) bool {
-		return item.GetBool("active")
+	t.Run("MapJSONL", func(t *testing.T) {
+		results, err := MapJSONL(strings.NewReader(input), func(lineNum int, item *IterableValue) (any, error) {
+			return item.GetData(), nil
+		})
+		if err != nil {
+			t.Fatalf("MapJSONL error: %v", err)
+		}
+		if len(results) != 2 {
+			t.Errorf("results = %d, want 2", len(results))
+		}
 	})
-	if err != nil {
-		t.Fatalf("FilterJSONL error: %v", err)
-	}
-	if len(results) != 2 {
-		t.Errorf("results = %d, want 2", len(results))
-	}
-}
 
-func TestPackageLevel_CollectJSONL(t *testing.T) {
-	input := `{"a":1}
-{"b":2}`
-	results, err := CollectJSONL(strings.NewReader(input))
-	if err != nil {
-		t.Fatalf("CollectJSONL error: %v", err)
-	}
-	if len(results) != 2 {
-		t.Errorf("results = %d, want 2", len(results))
-	}
-}
-
-func TestPackageLevel_FirstJSONL(t *testing.T) {
-	input := `{"name":"Alice","age":30}
-{"name":"Bob","age":25}`
-	item, found, err := FirstJSONL(strings.NewReader(input), func(item *IterableValue) bool {
-		return item.GetString("name") == "Bob"
+	t.Run("ReduceJSONL", func(t *testing.T) {
+		result, err := ReduceJSONL(strings.NewReader(input), 0, func(acc any, item *IterableValue) any {
+			return acc.(int) + item.GetInt("age")
+		})
+		if err != nil {
+			t.Fatalf("ReduceJSONL error: %v", err)
+		}
+		if result != 55 {
+			t.Errorf("result = %v, want 55", result)
+		}
 	})
-	if err != nil {
-		t.Fatalf("FirstJSONL error: %v", err)
-	}
-	if !found {
-		t.Fatal("FirstJSONL found = false, want true")
-	}
-	if item == nil {
-		t.Fatal("FirstJSONL item = nil")
-	}
-}
 
-func TestPackageLevel_FirstJSONL_NotFound(t *testing.T) {
-	input := `{"name":"Alice"}
-{"name":"Bob"}`
-	item, found, err := FirstJSONL(strings.NewReader(input), func(item *IterableValue) bool {
-		return false // never match
+	t.Run("FilterJSONL", func(t *testing.T) {
+		results, err := FilterJSONL(strings.NewReader(input), func(item *IterableValue) bool {
+			return item.GetInt("age") >= 30
+		})
+		if err != nil {
+			t.Fatalf("FilterJSONL error: %v", err)
+		}
+		if len(results) != 1 {
+			t.Errorf("results = %d, want 1", len(results))
+		}
 	})
-	if err != nil {
-		t.Fatalf("FirstJSONL error: %v", err)
-	}
-	if found {
-		t.Error("FirstJSONL found = true, want false")
-	}
-	if item != nil {
-		t.Error("FirstJSONL item should be nil when not found")
-	}
+
+	t.Run("FirstJSONL found", func(t *testing.T) {
+		item, found, err := FirstJSONL(strings.NewReader(input), func(item *IterableValue) bool {
+			return item.GetString("name") == "Bob"
+		})
+		if err != nil {
+			t.Fatalf("FirstJSONL error: %v", err)
+		}
+		if !found || item == nil {
+			t.Fatal("FirstJSONL should find Bob")
+		}
+	})
+
+	t.Run("FirstJSONL not found", func(t *testing.T) {
+		item, found, err := FirstJSONL(strings.NewReader(input), func(item *IterableValue) bool {
+			return false
+		})
+		if err != nil {
+			t.Fatalf("FirstJSONL error: %v", err)
+		}
+		if found || item != nil {
+			t.Error("FirstJSONL should not find anything")
+		}
+	})
+
+	t.Run("StreamJSONLParallel", func(t *testing.T) {
+		var mu sync.Mutex
+		var count int
+		err := StreamJSONLParallel(strings.NewReader(input), 2, func(lineNum int, item *IterableValue) error {
+			mu.Lock()
+			count++
+			mu.Unlock()
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("StreamJSONLParallel error: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("count = %d, want 2", count)
+		}
+	})
+
+	t.Run("StreamJSONLParallelWithContext", func(t *testing.T) {
+		ctx := context.Background()
+		var count atomic.Int32
+		err := StreamJSONLParallelWithContext(ctx, strings.NewReader(input), 2, func(lineNum int, item *IterableValue) error {
+			count.Add(1)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("StreamJSONLParallelWithContext error: %v", err)
+		}
+		if count.Load() != 2 {
+			t.Errorf("count = %d, want 2", count.Load())
+		}
+	})
+
+	t.Run("StreamJSONLChunked", func(t *testing.T) {
+		var chunkCalls int
+		err := StreamJSONLChunked(strings.NewReader(input), 1, func(chunk []*IterableValue) error {
+			chunkCalls++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("StreamJSONLChunked error: %v", err)
+		}
+		if chunkCalls != 2 {
+			t.Errorf("chunkCalls = %d, want 2", chunkCalls)
+		}
+	})
 }
 
 func TestPackageLevel_StreamJSONLFile(t *testing.T) {

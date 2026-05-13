@@ -1570,7 +1570,7 @@ func GetFastBuffer() *bytes.Buffer {
 
 // PutFastBuffer returns a buffer to the pool
 func PutFastBuffer(buf *bytes.Buffer) {
-	if buf.Cap() <= 8192 { // Don't pool very large buffers
+	if buf.Cap() <= MaxPoolBufferSize/4 { // Don't pool very large buffers
 		FastBufferPool.Put(buf)
 	}
 }

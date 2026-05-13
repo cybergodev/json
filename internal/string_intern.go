@@ -466,13 +466,19 @@ type PathIntern struct {
 	maxMemory int64 // Max memory in bytes (10MB default)
 }
 
-// GlobalPathIntern is the global path interner
-var GlobalPathIntern = NewPathIntern(50000)
+// GlobalPathIntern is the global path interner.
+// Deprecated: use internal.ParsePath caching instead. Kept for existing test usage.
+// Lazy-initialized with zero initial capacity to avoid wasting memory when unused.
+var GlobalPathIntern = NewPathIntern(0)
 
 // NewPathIntern creates a new path interner
 func NewPathIntern(maxSize int) *PathIntern {
+	initialCap := maxSize / 2
+	if initialCap < 0 {
+		initialCap = 0
+	}
 	return &PathIntern{
-		paths:     make(map[string][]PathSegment, maxSize/2),
+		paths:     make(map[string][]PathSegment, initialCap),
 		maxSize:   maxSize,
 		maxMemory: 10 * 1024 * 1024, // 10MB default memory limit
 	}

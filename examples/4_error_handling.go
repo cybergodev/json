@@ -24,8 +24,8 @@ import (
 // Run: go run -tags=example examples/4_error_handling.go
 
 func main() {
-	fmt.Println("🚨 JSON Library - Error Handling")
-	fmt.Println("================================\n ")
+	fmt.Println("JSON Library - Error Handling")
+	fmt.Println("================================")
 
 	// 1. STRUCTURED ERRORS
 	demonstrateStructuredErrors()
@@ -42,12 +42,12 @@ func main() {
 	// 5. ERROR WRAPPING
 	demonstrateErrorWrapping()
 
-	fmt.Println("\n✅ Error handling complete!")
+	fmt.Println("\nError handling complete!")
 }
 
 func demonstrateStructuredErrors() {
-	fmt.Println("1️. Structured Errors (JsonsError)")
-	fmt.Println("──────────────────────────────────")
+	fmt.Println("1. Structured Errors (JsonsError)")
+	fmt.Println("----------------------------------")
 
 	// Invalid JSON example
 	invalidJSON := `{"name": "John", "age": }`
@@ -79,8 +79,8 @@ func demonstrateStructuredErrors() {
 }
 
 func demonstrateErrorClassification() {
-	fmt.Println("\n2️. Error Classification")
-	fmt.Println("─────────────────────────")
+	fmt.Println("\n2. Error Classification")
+	fmt.Println("-------------------------")
 
 	testCases := []struct {
 		name string
@@ -110,7 +110,7 @@ func demonstrateErrorClassification() {
 
 func demonstrateErrorSuggestions() {
 	fmt.Println("\n3. Error Suggestions")
-	fmt.Println("──────────────────────")
+	fmt.Println("----------------------")
 
 	// Simulate various errors
 	errs := []error{
@@ -137,8 +137,8 @@ func demonstrateErrorSuggestions() {
 }
 
 func demonstrateRetryLogic() {
-	fmt.Println("\n4️. Retry Logic")
-	fmt.Println("───────────────")
+	fmt.Println("\n4. Retry Logic")
+	fmt.Println("---------------")
 
 	// Simulate errors and check retry ability
 	testErrors := []struct {
@@ -163,8 +163,8 @@ func demonstrateRetryLogic() {
 }
 
 func demonstrateErrorWrapping() {
-	fmt.Println("\n5️. Error Wrapping")
-	fmt.Println("─────────────────")
+	fmt.Println("\n5. Error Wrapping")
+	fmt.Println("-----------------")
 
 	// Wrap errors with additional context
 	baseErr := json.ErrPathNotFound

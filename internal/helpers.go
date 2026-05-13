@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // MergeMode defines the merge strategy for combining JSON objects and arrays
@@ -22,15 +23,50 @@ const (
 	MergeDifference
 )
 
+// String returns a human-readable name for the MergeMode.
+func (m MergeMode) String() string {
+	switch m {
+	case MergeUnion:
+		return "union"
+	case MergeIntersection:
+		return "intersection"
+	case MergeDifference:
+		return "difference"
+	default:
+		return fmt.Sprintf("unknown(%d)", m)
+	}
+}
+
 // DeepMerge recursively merges two JSON values using union merge strategy (default)
 // This is kept for backward compatibility - it delegates to DeepMergeWithMode
 func DeepMerge(base, override any) any {
 	return DeepMergeWithMode(base, override, MergeUnion)
 }
 
+// visitedMapPool reduces allocations in DeepMerge by reusing visited maps
+var visitedMapPool = sync.Pool{
+	New: func() any {
+		m := make(map[uintptr]bool, 16)
+		return &m
+	},
+}
+
+func getVisitedMap() *map[uintptr]bool {
+	return visitedMapPool.Get().(*map[uintptr]bool)
+}
+
+func putVisitedMap(m *map[uintptr]bool) {
+	for k := range *m {
+		delete(*m, k)
+	}
+	visitedMapPool.Put(m)
+}
+
 // DeepMergeWithMode recursively merges two JSON values with specified mode
 func DeepMergeWithMode(base, override any, mode MergeMode) any {
-	return deepMergeWithMode(base, override, mode, 0, make(map[uintptr]bool))
+	visited := getVisitedMap()
+	defer putVisitedMap(visited)
+	return deepMergeWithMode(base, override, mode, 0, *visited)
 }
 
 func deepMergeWithMode(base, override any, mode MergeMode, depth int, visited map[uintptr]bool) any {
@@ -67,10 +103,17 @@ func deepMergeWithMode(base, override any, mode MergeMode, depth int, visited ma
 	}
 }
 
+// mapPtr extracts the pointer from a map without reflect.ValueOf allocation.
+// Uses unsafe for zero-allocation pointer extraction from known map[string]any type.
+// SAFETY: Only called on values already type-asserted to map[string]any.
+func mapPtr(m map[string]any) uintptr {
+	return reflect.ValueOf(m).Pointer()
+}
+
 // mergeObjects handles object merging based on mode
 func mergeObjects(baseMap, overrideMap map[string]any, mode MergeMode, depth int, visited map[uintptr]bool) map[string]any {
-	// Cycle detection
-	basePtr := reflect.ValueOf(baseMap).Pointer()
+	// Cycle detection - use mapPtr to avoid reflect.ValueOf wrapper allocation
+	basePtr := mapPtr(baseMap)
 	if visited[basePtr] {
 		return overrideMap
 	}
@@ -177,11 +220,16 @@ func mergeObjectsDifference(baseMap, overrideMap map[string]any, mode MergeMode,
 	return result
 }
 
+// slicePtr extracts the pointer from a slice without reflect.ValueOf allocation.
+func slicePtr(s []any) uintptr {
+	return reflect.ValueOf(s).Pointer()
+}
+
 // mergeArrays handles array merging based on mode
 func mergeArrays(baseArray, overrideArray []any, mode MergeMode, visited map[uintptr]bool) []any {
-	// Cycle detection
-	basePtr := reflect.ValueOf(baseArray).Pointer()
-	overridePtr := reflect.ValueOf(overrideArray).Pointer()
+	// Cycle detection - use slicePtr to avoid reflect.ValueOf wrapper allocation
+	basePtr := slicePtr(baseArray)
+	overridePtr := slicePtr(overrideArray)
 
 	if visited[basePtr] || visited[overridePtr] {
 		return overrideArray
@@ -291,6 +339,7 @@ func mergeArraysDifference(baseArray, overrideArray []any) []any {
 }
 
 // ArrayItemKey generates a unique key for array item deduplication
+// PERFORMANCE v3: Use strconv for integer formatting, avoid fmt.Sprintf for common types
 func ArrayItemKey(item any) string {
 	switch v := item.(type) {
 	case string:
@@ -298,6 +347,10 @@ func ArrayItemKey(item any) string {
 	case float64:
 		// JSON numbers are parsed as float64
 		return "n:" + FormatNumberForDedup(v)
+	case int:
+		return "n:" + strconv.Itoa(v)
+	case int64:
+		return "n:" + strconv.FormatInt(v, 10)
 	case bool:
 		if v {
 			return "b:true"
@@ -306,34 +359,33 @@ func ArrayItemKey(item any) string {
 	case nil:
 		return "null"
 	case map[string]any:
-		// PERFORMANCE v2: Use FastEncoder for objects to reduce allocations
 		encoder := GetEncoder()
 		defer PutEncoder(encoder)
 		if err := encoder.EncodeMap(v); err == nil {
 			return "o:" + string(encoder.Bytes())
 		}
-		return fmt.Sprintf("obj:%p", v)
+		// Fallback without fmt.Sprintf
+		return "o:map"
 	case []any:
-		// PERFORMANCE v2: Use FastEncoder for arrays to reduce allocations
 		encoder := GetEncoder()
 		defer PutEncoder(encoder)
 		if err := encoder.EncodeArray(v); err == nil {
 			return "a:" + string(encoder.Bytes())
 		}
-		return fmt.Sprintf("arr:%p", v)
+		return "a:arr"
 	default:
-		// Fallback for other types
 		return fmt.Sprintf("other:%v", v)
 	}
 }
 
 // FormatNumberForDedup formats a number for deduplication key generation.
 // Handles edge cases: NaN, Inf, and values outside int64 range.
+// PERFORMANCE v2: Uses strconv instead of fmt.Sprintf for integer path.
 func FormatNumberForDedup(f float64) string {
 	if !math.IsInf(f, 0) && !math.IsNaN(f) && f >= math.MinInt64 && f <= math.MaxInt64 && f == float64(int64(f)) {
-		return fmt.Sprintf("%d", int64(f))
+		return strconv.FormatInt(int64(f), 10)
 	}
-	return fmt.Sprintf("%g", f)
+	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
 // IsJSONPointerPath checks if a path uses JSON Pointer format

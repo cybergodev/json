@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 
@@ -29,7 +30,7 @@ import (
 
 func main() {
 	fmt.Println("Basic Usage - JSON Library")
-	fmt.Println("===========================\n ")
+	fmt.Println("===========================")
 
 	// Sample JSON data
 	sampleData := `{
@@ -66,6 +67,9 @@ func main() {
 
 	// 6. ENCODING/JSON COMPATIBILITY
 	demonstrateCompatibility()
+
+	// 7. STREAMING ENCODER/DECODER
+	demonstrateStreaming()
 
 	fmt.Println("\nBasic usage complete!")
 }
@@ -153,7 +157,6 @@ func demonstrateSet(data string) {
 	updated5, _ := json.Set(data, "user.tags[+]", "Testers")
 	lastTag := json.GetString(updated5, "user.tags[-1]", "")
 	fmt.Printf("   Append tag: %s\n", lastTag)
-
 }
 
 func demonstrateArrays(data string) {
@@ -256,4 +259,43 @@ func demonstrateCompatibility() {
 	// Valid (same as encoding/json)
 	valid := json.Valid(jsonBytes)
 	fmt.Printf("   JSON valid: %t\n", valid)
+}
+
+func demonstrateStreaming() {
+	fmt.Println("\n7. Streaming Encoder/Decoder")
+	fmt.Println("----------------------------")
+
+	type Item struct {
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	}
+
+	items := []Item{
+		{Name: "Laptop", Price: 999.99},
+		{Name: "Mouse", Price: 29.99},
+	}
+
+	// Encode multiple objects to a buffer
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	for _, item := range items {
+		if err := encoder.Encode(item); err != nil {
+			log.Printf("Encode error: %v", err)
+		}
+	}
+	fmt.Printf("   Encoded %d objects:\n%s", len(items), buf.String())
+
+	// Decode multiple objects from a buffer
+	decoder := json.NewDecoder(&buf)
+	count := 0
+	for decoder.More() {
+		var item Item
+		if err := decoder.Decode(&item); err != nil {
+			log.Printf("Decode error: %v", err)
+			break
+		}
+		fmt.Printf("   Decoded: %+v\n", item)
+		count++
+	}
+	fmt.Printf("   Decoded %d objects\n", count)
 }

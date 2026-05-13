@@ -28,7 +28,7 @@ import (
 
 func main() {
 	fmt.Println("Advanced Features - JSON Library")
-	fmt.Println("=================================\n ")
+	fmt.Println("=================================")
 
 	// Complex nested data structure
 	complexData := `{

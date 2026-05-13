@@ -23,8 +23,8 @@ import (
 // Run: go run -tags=example examples/9_iterator_functions.go
 
 func main() {
-	fmt.Println("🔁 JSON Library - Iterator Functions")
-	fmt.Println("===================================\n ")
+	fmt.Println("JSON Library - Iterator Functions")
+	fmt.Println("===================================")
 
 	// Sample data
 	sampleData := `{
@@ -73,12 +73,12 @@ func main() {
 	// 5. TRANSFORMATION
 	demonstrateTransformation(sampleData)
 
-	fmt.Println("\n✅ Iterator functions examples complete!")
+	fmt.Println("\nIterator functions examples complete!")
 }
 
 func demonstrateSimpleIteration(data string) {
 	fmt.Println("1. Simple Iteration (Foreach)")
-	fmt.Println("────────────────────────────────")
+	fmt.Println("--------------------------------")
 
 	fmt.Println("   Iterating over entire JSON:")
 
@@ -90,7 +90,7 @@ func demonstrateSimpleIteration(data string) {
 
 func demonstrateIterationWithPath(data string) {
 	fmt.Println("\n2. Iteration with Path (ForeachWithPath)")
-	fmt.Println("──────────────────────────────────────────")
+	fmt.Println("------------------------------------------")
 
 	fmt.Println("   Iterating over users array:")
 
@@ -128,7 +128,7 @@ func demonstrateIterationWithPath(data string) {
 
 func demonstrateNestedIteration(data string) {
 	fmt.Println("\n3. Nested Iteration (ForeachNested)")
-	fmt.Println("───────────────────────────────────────")
+	fmt.Println("---------------------------------------")
 
 	fmt.Println("   Recursively iterating all values:")
 
@@ -163,7 +163,7 @@ func demonstrateNestedIteration(data string) {
 
 func demonstrateIterableValueAPI(data string) {
 	fmt.Println("\n4. IterableValue API")
-	fmt.Println("──────────────────────")
+	fmt.Println("----------------------")
 
 	fmt.Println("   IterableValue convenience methods:")
 
@@ -222,7 +222,7 @@ func demonstrateIterableValueAPI(data string) {
 
 func demonstrateTransformation(data string) {
 	fmt.Println("\n5. Data Transformation with Iteration")
-	fmt.Println("────────────────────────────────────────")
+	fmt.Println("----------------------------------------")
 
 	fmt.Println("   Building summary using iteration:")
 

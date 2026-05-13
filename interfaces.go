@@ -3,6 +3,8 @@
 package json
 
 import (
+	"fmt"
+	"log/slog"
 	"reflect"
 	"time"
 
@@ -362,19 +364,43 @@ func ErrorHook(handler func(ctx HookContext, err error) error) Hook {
 type hookChain []Hook
 
 // executeBefore runs all Before hooks in order, stopping at first error.
+// Recovers from panics to prevent a misbehaving hook from crashing the processor.
 func (hc hookChain) executeBefore(ctx HookContext) error {
 	for _, h := range hc {
-		if err := h.Before(ctx); err != nil {
-			return err
+		var hookErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					hookErr = fmt.Errorf("hook panicked: %v", r)
+				}
+			}()
+			hookErr = h.Before(ctx)
+		}()
+		if hookErr != nil {
+			return hookErr
 		}
 	}
 	return nil
 }
 
 // executeAfter runs all After hooks in reverse order.
+// Recovers from panics to prevent a misbehaving hook from crashing the processor.
+// Logs recovered panics so they are not silently lost.
 func (hc hookChain) executeAfter(ctx HookContext, result any, err error) (any, error) {
 	for i := len(hc) - 1; i >= 0; i-- {
-		result, err = hc[i].After(ctx, result, err)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("hook panicked in After",
+						slog.String("operation", ctx.Operation),
+						slog.String("path", ctx.Path),
+						slog.Int("hook_index", i),
+						slog.Any("panic", r),
+					)
+				}
+			}()
+			result, err = hc[i].After(ctx, result, err)
+		}()
 	}
 	return result, err
 }
@@ -388,15 +414,6 @@ func (hc hookChain) executeAfter(ctx HookContext, result any, err error) (any, e
 type PathParser interface {
 	// ParsePath parses a path string into segments.
 	ParsePath(path string) ([]PathSegment, error)
-}
-
-// cachedPathParser provides path parsing with caching.
-type cachedPathParser interface {
-	PathParser
-	// ParsePathCached parses with caching for repeated paths.
-	ParsePathCached(path string) ([]PathSegment, error)
-	// ClearPathCache clears the path segment cache.
-	ClearPathCache()
 }
 
 // =============================================================================

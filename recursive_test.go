@@ -3,8 +3,6 @@ package json
 import (
 	"errors"
 	"testing"
-
-	"github.com/cybergodev/json/internal"
 )
 
 // helperRP creates a Processor and its recursiveProcessor, returning both.
@@ -1091,10 +1089,11 @@ func TestRecursiveProcessor_ErrorPaths(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "validate operation on missing path",
-			data:    map[string]any{},
-			path:    "missing.key",
-			op:      opValidate,
+			name:    "set operation on existing path",
+			data:    map[string]any{"key": "val"},
+			path:    "key",
+			op:      opSet,
+			value:   "newval",
 			wantErr: false,
 		},
 	}
@@ -1288,7 +1287,7 @@ func TestRecursiveProcessor_CombineErrors(t *testing.T) {
 }
 
 // ============================================================================
-// shouldUseDistributedArrayop
+// shouldUseDistributedArrayOp
 // ============================================================================
 
 func TestRecursiveProcessor_ShouldUseDistributedArrayOp(t *testing.T) {
@@ -1339,16 +1338,16 @@ func TestRecursiveProcessor_ShouldUseDistributedArrayOp(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rp.shouldUseDistributedArrayop(tt.container)
+			got := rp.shouldUseDistributedArrayOp(tt.container)
 			if got != tt.want {
-				t.Errorf("shouldUseDistributedArrayop() = %v, want %v", got, tt.want)
+				t.Errorf("shouldUseDistributedArrayOp() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
 // ============================================================================
-// findTargetArrayForDistributedop
+// findTargetArrayForDistributedOp
 // ============================================================================
 
 func TestRecursiveProcessor_FindTargetArray(t *testing.T) {
@@ -1394,7 +1393,7 @@ func TestRecursiveProcessor_FindTargetArray(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := rp.findTargetArrayForDistributedop(tt.input)
+			result := rp.findTargetArrayForDistributedOp(tt.input)
 			if tt.want == -1 {
 				if result != nil {
 					t.Errorf("expected nil, got %v", result)
@@ -1655,50 +1654,6 @@ func TestRecursiveProcessor_ExtractMultipleFieldsFromMap_EdgeCases(t *testing.T)
 			t.Errorf("expected nil for all-empty field names, got %v", result)
 		}
 	})
-}
-
-// ============================================================================
-// Internal segment type access — using internal.PathSegment directly
-// ============================================================================
-
-func TestRecursiveProcessor_InternalSegmentHandling(t *testing.T) {
-	processor, rp := helperRP(t)
-	defer processor.Close()
-
-	t.Run("unsupported segment type returns error", func(t *testing.T) {
-		// This tests the default branch in processRecursivelyAtSegmentsWithOptions
-		// by creating a mock provider that returns an unknown segment type.
-		// We verify via the public API that unknown path patterns are handled.
-		data := map[string]any{"key": "value"}
-
-		// Paths that parse to known types should work
-		_, err := rp.ProcessRecursively(data, "key", opGet, nil)
-		if err != nil {
-			t.Errorf("normal path should not error: %v", err)
-		}
-	})
-}
-
-// ============================================================================
-// Verify internal types are accessible (compile-time check)
-// ============================================================================
-
-func TestRecursiveProcessor_InternalTypeAccess(t *testing.T) {
-	// Verify that internal.PathSegment fields are accessible from test code
-	seg := internal.PathSegment{
-		Type:  internal.PropertySegment,
-		Key:   "test",
-		Index: 0,
-		End:   0,
-		Step:  0,
-	}
-
-	if seg.Type != internal.PropertySegment {
-		t.Errorf("segment type = %v, want PropertySegment", seg.Type)
-	}
-	if seg.Key != "test" {
-		t.Errorf("segment key = %v, want test", seg.Key)
-	}
 }
 
 // ============================================================================

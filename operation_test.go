@@ -1958,3 +1958,160 @@ func mustParseArray(t *testing.T, jsonStr string) []any {
 	}
 	return arr
 }
+
+// --- Distributed and extraction operations ---
+
+func TestDistributedGetOperations(t *testing.T) {
+	jsonStr := `{
+		"items": [
+			{"name": "a", "tags": ["x", "y"]},
+			{"name": "b", "tags": ["z"]}
+		]
+	}`
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "extract name from all items", path: "items{name}", want: `["a","b"]`},
+		{name: "extract tags from all items", path: "items{tags}", want: `[["x","y"],["z"]]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Get(jsonStr, tt.path)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			gotJSON, _ := json.Marshal(result)
+			assertJSONEqual(t, tt.want, string(gotJSON))
+		})
+	}
+}
+
+func TestDistributedOperationArrayPostProcess(t *testing.T) {
+	jsonStr := `{
+		"matrix": [
+			{"row": [1, 2, 3]},
+			{"row": [4, 5, 6]}
+		]
+	}`
+
+	t.Run("extract row arrays", func(t *testing.T) {
+		result, err := Get(jsonStr, "matrix{row}")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		arr, ok := result.([]any)
+		if !ok {
+			t.Fatalf("expected array, got %T", result)
+		}
+		if len(arr) != 2 {
+			t.Errorf("expected 2 arrays, got %d", len(arr))
+		}
+	})
+
+	t.Run("extract and index into arrays", func(t *testing.T) {
+		result, err := Get(jsonStr, "matrix{row}[0]")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if result == nil {
+			t.Error("expected non-nil result")
+		}
+	})
+}
+
+func TestExtractSetOperations(t *testing.T) {
+	tests := []struct {
+		name    string
+		jsonStr string
+		path    string
+		value   any
+		want    string
+		cfg     Config
+	}{
+		{
+			name:    "set extracted field on all objects",
+			jsonStr: `{"items":[{"name":"a"},{"name":"b"}]}`,
+			path:    "items{name}",
+			value:   "new",
+			cfg:     Config{CreatePaths: true},
+			want:    `{"items":[{"name":"new"},{"name":"new"}]}`,
+		},
+		{
+			name:    "set new field on extracted objects",
+			jsonStr: `{"items":[{"name":"a"},{"name":"b"}]}`,
+			path:    "items{active}",
+			value:   true,
+			cfg:     Config{CreatePaths: true},
+			want:    `{"items":[{"name":"a","active":true},{"name":"b","active":true}]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Set(tt.jsonStr, tt.path, tt.value, tt.cfg)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertJSONEqual(t, tt.want, result)
+		})
+	}
+}
+
+func TestFlatExtraction(t *testing.T) {
+	jsonStr := `{
+		"items": [
+			{"tags": ["a", "b"]},
+			{"tags": ["c"]}
+		]
+	}`
+
+	result, err := Get(jsonStr, "items{flat:tags}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	arr, ok := result.([]any)
+	if !ok {
+		t.Fatalf("expected array, got %T", result)
+	}
+	if len(arr) != 3 {
+		t.Errorf("expected 3 flattened items, got %d: %v", len(arr), arr)
+	}
+}
+
+func TestDeleteIntermediateArrayIndex(t *testing.T) {
+	t.Run("delete property via JSON Pointer with array", func(t *testing.T) {
+		result, err := Delete(
+			`{"users":[{"name":"A"},{"name":"B"}]}`,
+			"/users/0/name",
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		assertJSONEqual(t, `{"users":[{},{"name":"B"}]}`, result)
+	})
+}
+
+func TestArraySetSliceEdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		jsonStr string
+		path    string
+		value   any
+		want    string
+	}{
+		{name: "set slice with step", jsonStr: `{"arr":[1,2,3,4,5]}`, path: "arr[0:5:2]", value: 0, want: `{"arr":[0,2,0,4,0]}`},
+		{name: "set slice negative indices", jsonStr: `{"arr":[1,2,3,4,5]}`, path: "arr[-3:-1]", value: 0, want: `{"arr":[1,2,0,0,5]}`},
+		{name: "negative index set", jsonStr: `{"arr":[1,2,3]}`, path: "arr[-1]", value: 99, want: `{"arr":[1,2,99]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Set(tt.jsonStr, tt.path, tt.value)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertJSONEqual(t, tt.want, result)
+		})
+	}
+}

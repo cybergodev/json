@@ -26,7 +26,7 @@ import (
 
 func main() {
 	fmt.Println("JSON Library - Advanced Patterns")
-	fmt.Println("=================================\n ")
+	fmt.Println("=================================")
 
 	// 1. SAFEGET AND ACCESSRESULT
 	demonstrateSafeGet()
@@ -84,6 +84,24 @@ func demonstrateSafeGet() {
 
 	result = processor.SafeGet(testJSON, "user.age")
 	fmt.Printf("\n   Processor.SafeGet('user.age'): exists=%t, value=%v\n", result.Exists, result.Value)
+
+	// AccessResult type conversion methods
+	ageResult := json.SafeGet(testJSON, "user.age")
+	if age, err := ageResult.AsInt(); err == nil {
+		fmt.Printf("   AsInt(): %d\n", age)
+	}
+	if age, err := ageResult.AsFloat64(); err == nil {
+		fmt.Printf("   AsFloat64(): %.1f\n", age)
+	}
+
+	nameResult := json.SafeGet(testJSON, "user.name")
+	if name, err := nameResult.AsString(); err == nil {
+		fmt.Printf("   AsString(): %s\n", name)
+	}
+
+	missingResult := json.SafeGet(testJSON, "user.missing")
+	fmt.Printf("   missing.Ok(): %t, UnwrapOr('default'): %v\n",
+		missingResult.Ok(), missingResult.UnwrapOr("default"))
 }
 
 func demonstratePreParse() {

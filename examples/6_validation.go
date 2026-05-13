@@ -14,7 +14,7 @@ import (
 // security validation, and path validation.
 //
 // Topics covered:
-// - JSON format validation with ValidString
+// - JSON format validation with json.Valid
 // - Path validation via Processor
 // - Schema validation
 // - Security validation
@@ -24,7 +24,7 @@ import (
 
 func main() {
 	fmt.Println("JSON Library - Validation")
-	fmt.Println("=========================\n ")
+	fmt.Println("=========================")
 
 	// 1. JSON FORMAT VALIDATION
 	demonstrateFormatValidation()

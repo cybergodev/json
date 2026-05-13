@@ -157,7 +157,7 @@ json.ForeachWithPath(data, "users", func(key any, user *json.IterableValue) {
 ### Iterate and Modify
 
 ```go
-// Note: ForeachReturn is read-only - use json.Set for modifications
+// Note: ForeachReturn iterates for reading. Use json.Set() for modifications.
 // Collect paths that need modification during iteration
 var pathsToUpdate []string
 json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
@@ -205,10 +205,11 @@ err = processor.ForeachFile("data.json", func(key any, item *json.IterableValue)
 
 ```go
 // Use ForeachWithPathAndIterator for automatic path tracking
-json.ForeachWithPathAndIterator(data, "users", func(key any, item *json.IterableValue, currentPath string) json.IteratorControl {
+err := json.ForeachWithPathAndIterator(data, "users", func(key any, item *json.IterableValue, currentPath string) json.IteratorControl {
     name := item.GetString("name")
     fmt.Printf("User at %s: %s\n", currentPath, name)
-    return json.IteratorNormal
+    return json.IteratorContinue // continue (same as IteratorNormal)
+    // return json.IteratorBreak   // stop iteration early
 })
 
 // Or use manual path tracking with ForeachWithPath
@@ -229,7 +230,7 @@ json.ForeachWithPath(data, basePath, func(key any, item *json.IterableValue) {
 | `ForeachWithPath(data, path, callback)` | Path-specific iteration | Specific JSON subset |
 | `ForeachWithPathAndControl(data, path, callback)` | With flow control | Early termination |
 | `ForeachWithPathAndIterator(data, path, callback)` | With path tracking | Path-aware iteration |
-| `ForeachReturn(data, callback)` | Read-only, returns original JSON | Iteration with error handling |
+| `ForeachReturn(data, callback)` | Returns original JSON string | Read-only iteration |
 | `ForeachWithError(data, path, callback)` | Error-returning callback | Error-aware iteration |
 | `ForeachNestedWithError(data, callback)` | Recursive with errors | Nested error-aware iteration |
 | `ForeachFile(path, callback)` | File-based iteration | Large file processing |
@@ -238,7 +239,7 @@ json.ForeachWithPath(data, basePath, func(key any, item *json.IterableValue) {
 | `ForeachFileNested(path, callback)` | Nested file iteration | Nested file traversal |
 | `ForeachJSONL(reader, callback)` | JSONL stream iteration | JSONL/NDJSON processing |
 
-**Note:** ForeachReturn is read-only - it returns the original JSON string unchanged. Use `json.Set()` for modifications.
+**Note:** ForeachReturn iterates over data and returns the JSON string. Use `json.Set()` for modifications.
 
 ---
 
@@ -353,7 +354,7 @@ processor, err = json.New(json.PrettyConfig())     // For pretty output
 ```go
 // Start with defaults and modify as needed
 config := json.DefaultConfig()
-config.EnableCache = true
+config.EnableCache = true // Already true by default; shown for clarity
 config.MaxCacheSize = 128
 config.CacheTTL = 5 * time.Minute
 config.MaxJSONSize = 100 * 1024 * 1024   // 100MB
@@ -489,8 +490,8 @@ if errors.As(err, &jsonsErr) {
     fmt.Printf("Operation: %s, Path: %s\n", jsonsErr.Op, jsonsErr.Path)
 }
 
-// 5. Type-safe result handling
-result := json.Result[string]{}
+// 5. Type-safe result handling (construct manually with Value and Exists)
+result := json.Result[string]{Value: "hello", Exists: true}
 if result.Ok() {
     fmt.Println(result.Value)
 }
@@ -577,7 +578,10 @@ users, err := json.StreamLinesInto[User](reader, func(lineNum int, user User) er
 
 // Write JSONL output
 writer := json.NewJSONLWriter(outputWriter)
-writer.Write(map[string]any{"event": "login", "user": "alice"})
+err = writer.Write(map[string]any{"event": "login", "user": "alice"})
+if err != nil {
+    log.Fatal(err)
+}
 
 // Convert slice to JSONL
 data := []any{

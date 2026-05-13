@@ -2,13 +2,11 @@ package json
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -44,6 +42,29 @@ import (
 //	var data any
 //	err := processor.Parse(`{"price":19.99}`, &data, cfg)
 func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
+	// PERFORMANCE v2: Fast path for the most common case — no config,
+	// target is *any, not preserving numbers. Avoids config allocation
+	// and uses streamlined error wrapping.
+	if len(cfg) == 0 {
+		if p == nil || atomic.LoadInt32(&p.state) != processorStateActive {
+			return &JsonsError{Op: "parse", Message: "processor is closed", Err: ErrProcessorClosed}
+		}
+		if _, ok := target.(*any); ok && !p.config.PreserveNumbers {
+			// SECURITY: Full input validation is required (size, depth, security patterns)
+			if err := p.validateInput(jsonStr); err != nil {
+				return err
+			}
+			if err := json.Unmarshal(stringToBytes(jsonStr), target); err != nil {
+				return &JsonsError{
+					Op:      "parse",
+					Message: err.Error(),
+					Err:     ErrInvalidJSON,
+				}
+			}
+			return nil
+		}
+	}
+
 	if err := p.checkClosed(); err != nil {
 		return err
 	}
@@ -276,10 +297,10 @@ func (p *Processor) parsePath(path string) ([]string, error) {
 	segments := p.getPathSegments()
 	defer p.putPathSegments(segments)
 
-	segments = p.splitPath(path, segments)
+	*segments = p.splitPath(path, *segments)
 
-	result := make([]string, len(segments))
-	for i, segment := range segments {
+	result := make([]string, len(*segments))
+	for i, segment := range *segments {
 		result[i] = segment.String()
 	}
 
@@ -304,304 +325,6 @@ func (p *Processor) parseExtractionSegment(part string, segments []internal.Path
 	return internal.ParseExtractionSegment(part, segments)
 }
 
-// Prettify formats JSON string with indentation.
-// This is the recommended method for formatting JSON strings.
-// Uses default indentation of 2 spaces, configurable via Config.Indent and Config.Prefix.
-//
-// Errors:
-//   - ErrProcessorClosed: processor has been closed
-//   - ErrInvalidJSON: jsonStr is not valid JSON
-//   - ErrSizeLimit: JSON exceeds MaxJSONSize
-//
-// Example:
-//
-//	pretty, err := processor.Prettify(`{"name":"Alice","age":30}`)
-//	// Output:
-//	// {
-//	//   "name": "Alice",
-//	//   "age": 30
-//	// }
-//
-//	// Custom indentation
-//	cfg := json.DefaultConfig()
-//	cfg.Indent = "    " // 4 spaces
-//	pretty, err := processor.Prettify(jsonStr, cfg)
-func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
-	if err := p.checkClosed(); err != nil {
-		return "", err
-	}
-
-	options, err := p.prepareOptions(cfg...)
-	if err != nil {
-		return "", err
-	}
-	defer releaseConfig(options)
-
-	if err := p.validateInput(jsonStr); err != nil {
-		return "", err
-	}
-
-	// Check cache first
-	cacheKey := p.createCacheKey("pretty", jsonStr, "", options)
-	if cached, ok := p.getCachedResult(cacheKey); ok {
-		if val, typeOk := cached.(string); typeOk {
-			return val, nil
-		}
-		// Cache type mismatch - evict corrupted entry
-		p.invalidateCachedResult(cacheKey)
-	}
-
-	// Parse with number preservation to maintain original number types
-	decoder := newNumberPreservingDecoder(options.PreserveNumbers)
-	data, err := decoder.DecodeToAny(jsonStr)
-	if err != nil {
-		return "", &JsonsError{
-			Op:      "pretty",
-			Message: fmt.Sprintf("failed to parse JSON: %v", err),
-			Err:     ErrInvalidJSON,
-		}
-	}
-
-	// Use custom encoder with pretty formatting to preserve number types
-	config := PrettyConfig()
-	config.PreserveNumbers = options.PreserveNumbers
-	// Respect caller's Indent/Prefix if explicitly provided via options
-	if options.Indent != "" {
-		config.Indent = options.Indent
-	}
-	if options.Prefix != "" {
-		config.Prefix = options.Prefix
-	}
-
-	encoder := newCustomEncoder(config)
-	defer encoder.Close()
-
-	result, err := encoder.Encode(data)
-	if err != nil {
-		return "", &JsonsError{
-			Op:      "pretty",
-			Message: "failed to format JSON",
-			Err:     err,
-		}
-	}
-
-	// Cache result if enabled
-	p.setCachedResult(cacheKey, result, options)
-
-	return result, nil
-}
-
-// printData handles the core logic for Print and PrintPretty
-func (p *Processor) printData(data any, pretty bool) (string, error) {
-	switch v := data.(type) {
-	case string:
-		return p.formatJSONString(v, pretty)
-	case []byte:
-		return p.formatJSONString(string(v), pretty)
-	default:
-		return p.encodeValue(v, pretty)
-	}
-}
-
-// formatJSONString formats a JSON string or encodes a non-JSON string.
-func (p *Processor) formatJSONString(jsonStr string, pretty bool) (string, error) {
-	isValid, validErr := p.Valid(jsonStr)
-	if validErr != nil {
-		// Distinguish processor errors (closed, context) from invalid JSON
-		// Processor errors should propagate; invalid JSON falls through to string encoding
-		if errors.Is(validErr, ErrProcessorClosed) || errors.Is(validErr, context.Canceled) {
-			return "", validErr
-		}
-	}
-	if isValid {
-		if pretty {
-			return p.Prettify(jsonStr)
-		}
-		return p.Compact(jsonStr)
-	}
-	// Not valid JSON - encode as a string value
-	cfg := DefaultConfig()
-	cfg.Pretty = pretty
-	return p.EncodeWithConfig(jsonStr, cfg)
-}
-
-// encodeValue encodes any Go value to JSON string.
-func (p *Processor) encodeValue(value any, pretty bool) (string, error) {
-	cfg := DefaultConfig()
-	cfg.Pretty = pretty
-	return p.EncodeWithConfig(value, cfg)
-}
-
-// print writes any Go value as JSON to stdout in compact format.
-// Note: Writes errors to stderr. Use printE for error handling.
-func (p *Processor) print(data any) {
-	result, err := p.printData(data, false)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "json.Print error: %v\n", err)
-		return
-	}
-	fmt.Println(result)
-}
-
-// printE prints any Go value as JSON to stdout in compact format.
-// Returns an error instead of writing to stderr, allowing callers to handle errors.
-func (p *Processor) printE(data any) error {
-	result, err := p.printData(data, false)
-	if err != nil {
-		return fmt.Errorf("json.Print error: %w", err)
-	}
-	fmt.Println(result)
-	return nil
-}
-
-// printPretty prints any Go value as formatted JSON to stdout.
-// Note: Writes errors to stderr. Use printPrettyE for error handling.
-func (p *Processor) printPretty(data any) {
-	result, err := p.printData(data, true)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "json.PrintPretty error: %v\n", err)
-		return
-	}
-	fmt.Println(result)
-}
-
-// printPrettyE prints any Go value as formatted JSON to stdout.
-// Returns an error instead of writing to stderr, allowing callers to handle errors.
-func (p *Processor) printPrettyE(data any) error {
-	result, err := p.printData(data, true)
-	if err != nil {
-		return fmt.Errorf("json.PrintPretty error: %w", err)
-	}
-	fmt.Println(result)
-	return nil
-}
-
-// Compact removes whitespace from JSON string.
-// This is useful for minimizing JSON size for transmission or storage.
-// The result is a single-line JSON string with no unnecessary whitespace.
-//
-// Errors:
-//   - ErrProcessorClosed: processor has been closed
-//   - ErrInvalidJSON: jsonStr is not valid JSON
-//   - ErrSizeLimit: JSON exceeds MaxJSONSize
-//
-// Example:
-//
-//	compact, err := processor.Compact(`{
-//	    "name": "Alice",
-//	    "age": 30
-//	}`)
-//	// Output: {"name":"Alice","age":30}
-func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error) {
-	if err := p.checkClosed(); err != nil {
-		return "", err
-	}
-
-	options, err := p.prepareOptions(cfg...)
-	if err != nil {
-		return "", err
-	}
-	defer releaseConfig(options)
-
-	if err := p.validateInput(jsonStr); err != nil {
-		return "", err
-	}
-
-	// Check cache first
-	cacheKey := p.createCacheKey("compact", jsonStr, "", options)
-	if cached, ok := p.getCachedResult(cacheKey); ok {
-		if val, typeOk := cached.(string); typeOk {
-			return val, nil
-		}
-		// Cache type mismatch - evict corrupted entry
-		p.invalidateCachedResult(cacheKey)
-	}
-
-	// Parse with number preservation to maintain original number types
-	decoder := newNumberPreservingDecoder(options.PreserveNumbers)
-	data, err := decoder.DecodeToAny(jsonStr)
-	if err != nil {
-		return "", &JsonsError{
-			Op:      "compact",
-			Message: fmt.Sprintf("failed to parse JSON: %v", err),
-			Err:     ErrInvalidJSON,
-		}
-	}
-
-	// Use custom encoder with compact formatting to preserve number types
-	config := DefaultConfig()
-	config.PreserveNumbers = options.PreserveNumbers
-
-	encoder := newCustomEncoder(config)
-	defer encoder.Close()
-
-	result, err := encoder.Encode(data)
-	if err != nil {
-		return "", &JsonsError{
-			Op:      "compact",
-			Message: "failed to compact JSON",
-			Err:     err,
-		}
-	}
-
-	// Cache result if enabled
-	p.setCachedResult(cacheKey, result, options)
-
-	return result, nil
-}
-
-// CompactBuffer appends to dst the JSON-encoded src with insignificant space characters elided.
-// Compatible with encoding/json.Compact with optional Config support.
-// This is the buffer-based counterpart to Compact, matching the encoding/json.Compact signature.
-//
-// Example:
-//
-//	var buf bytes.Buffer
-//	err := processor.CompactBuffer(&buf, []byte(`{"name": "Alice"}`))
-func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) error {
-	compacted, err := p.Compact(string(src), cfg...)
-	if err != nil {
-		return err
-	}
-	_, err = dst.WriteString(compacted)
-	return err
-}
-
-// Indent appends to dst an indented form of the JSON-encoded src.
-// Compatible with encoding/json.Indent with optional Config support.
-//
-// Example:
-//
-//	var buf bytes.Buffer
-//	err := processor.Indent(&buf, []byte(`{"name":"Alice"}`), "", "  ")
-func (p *Processor) Indent(dst *bytes.Buffer, src []byte, prefix, indent string, cfg ...Config) error {
-	var data any
-	if err := p.Unmarshal(src, &data, cfg...); err != nil {
-		return err
-	}
-	indented, err := p.MarshalIndent(data, prefix, indent, cfg...)
-	if err != nil {
-		return err
-	}
-	_, err = dst.Write(indented)
-	return err
-}
-
-
-// HTMLEscape appends to dst the JSON-encoded src with HTML-safe escaping.
-// Performs character-level escaping of <, >, &, U+2028, and U+2029 without re-encoding.
-// Compatible with encoding/json.HTMLEscape.
-//
-// Example:
-//
-//	var buf bytes.Buffer
-//	processor.HTMLEscape(&buf, []byte(`{"url":"<script>alert(1)</script>"}`))
-func (p *Processor) HTMLEscape(dst *bytes.Buffer, src []byte, cfg ...Config) {
-	_ = cfg // Config not used; character-level escaping requires no re-encoding
-	internal.HTMLEscapeTo(dst, string(src))
-}
-
-
 func (p *Processor) navigateToPath(data any, path string) (any, error) {
 	if path == "" || path == "." || path == "/" {
 		return data, nil
@@ -620,12 +343,12 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 	segments := p.getPathSegments()
 	defer p.putPathSegments(segments)
 
-	segments = p.splitPath(path, segments)
+	*segments = p.splitPath(path, *segments)
 
-	for i := 0; i < len(segments); i++ {
-		segment := segments[i]
+	for i := 0; i < len(*segments); i++ {
+		segment := (*segments)[i]
 		if internal.IsExtractionSegment(segment) {
-			return p.handleDistributedOperation(current, segments[i:])
+			return p.handleDistributedOperation(current, (*segments)[i:])
 		}
 
 		switch segment.Type {
@@ -657,8 +380,8 @@ func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
 			}
 			current = extractResult
 
-			if i+1 < len(segments) {
-				nextSegment := segments[i+1]
+			if i+1 < len(*segments) {
+				nextSegment := (*segments)[i+1]
 				if nextSegment.Type == internal.ArrayIndexSegment || nextSegment.Type == internal.ArraySliceSegment {
 					if segment.IsFlatExtract() {
 						if nextSegment.Type == internal.ArraySliceSegment {
@@ -731,11 +454,6 @@ func (p *Processor) navigateJSONPointer(data any, path string) (any, error) {
 	return current, nil
 }
 
-// unescapeJSONPointer unescapes JSON Pointer special characters
-func (p *Processor) unescapeJSONPointer(segment string) string {
-	return internal.UnescapeJSONPointer(segment)
-}
-
 func (p *Processor) handlePropertyAccess(data any, property string) propertyAccessResult {
 	switch v := data.(type) {
 	case map[string]any:
@@ -764,6 +482,8 @@ func (p *Processor) handlePropertyAccess(data any, property string) propertyAcce
 	}
 }
 
+// handlePropertyAccessValue returns the value of a property access, or nil if not found.
+// Convenience wrapper around handlePropertyAccess for callers that don't need the exists flag.
 func (p *Processor) handlePropertyAccessValue(data any, property string) any {
 	result := p.handlePropertyAccess(data, property)
 	if result.exists {
@@ -772,16 +492,27 @@ func (p *Processor) handlePropertyAccessValue(data any, property string) any {
 	return nil
 }
 
-// numberPreservingDecoder provides JSON decoding with optimized number format preservation
+// numberPreservingDecoder provides JSON decoding with optimized number format preservation.
+// OPTIMIZATION: Two pre-allocated instances avoid heap allocation for the common cases.
+// Use decoderNoPreserve (preserveNumbers=false) for standard decoding and
+// decoderPreserve (preserveNumbers=true) for number-preserving decoding.
 type numberPreservingDecoder struct {
 	preserveNumbers bool
 }
 
-// newNumberPreservingDecoder creates a new decoder with performance and number preservation
+var (
+	// Pre-allocated decoders for zero-allocation hot paths
+	decoderNoPreserve = &numberPreservingDecoder{preserveNumbers: false}
+	decoderPreserve   = &numberPreservingDecoder{preserveNumbers: true}
+)
+
+// newNumberPreservingDecoder returns a decoder for the given number preservation setting.
+// Returns pre-allocated instances for the two common cases to avoid heap allocation.
 func newNumberPreservingDecoder(preserveNumbers bool) *numberPreservingDecoder {
-	return &numberPreservingDecoder{
-		preserveNumbers: preserveNumbers,
+	if preserveNumbers {
+		return decoderPreserve
 	}
+	return decoderNoPreserve
 }
 
 // DecodeToAny decodes JSON string to any type with performance and number preservation
@@ -1032,11 +763,6 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
 	}
 
 	return json.Unmarshal(convertedBytes, v)
-}
-
-func (p *Processor) escapeJSONPointer(segment string) string {
-	// Use the centralized JSON pointer escaping helper
-	return escapeJSONPointer(segment)
 }
 
 func (p *Processor) normalizePathSeparators(path string) string {

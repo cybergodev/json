@@ -2,6 +2,7 @@ package json
 
 import (
 	"errors"
+	"maps"
 	"reflect"
 	"time"
 
@@ -84,7 +85,6 @@ const (
 	// Validation constants (internal)
 	validationBOMPrefix = "\uFEFF" // UTF-8 BOM prefix to detect and remove
 )
-
 
 // DefaultConfig returns the default configuration.
 // Creates a new instance each time to allow modifications without affecting other callers.
@@ -172,14 +172,20 @@ func DefaultConfig() Config {
 	}
 }
 
+// cachedDefaultConfigValue is a package-level cached default config value.
+// PERFORMANCE: Avoids DefaultConfig() allocation when no config is provided.
+// This is a value type; callers receive a copy and should not mutate the original.
+var cachedDefaultConfigValue = DefaultConfig()
+
 // getConfigOrDefault extracts configuration from variadic parameter.
 // Internal helper to reduce code duplication across the codebase.
-// Returns the first config if provided, otherwise returns DefaultConfig().
+// Returns the first config if provided, otherwise returns a cached default.
+// PERFORMANCE: Uses cached value to avoid repeated DefaultConfig() allocation.
 func getConfigOrDefault(cfg ...Config) Config {
 	if len(cfg) > 0 {
 		return cfg[0]
 	}
-	return DefaultConfig()
+	return cachedDefaultConfigValue
 }
 
 // Clone creates a copy of the configuration.
@@ -199,17 +205,13 @@ func (c *Config) Clone() *Config {
 	// Deep copy CustomEscapes map
 	if c.CustomEscapes != nil {
 		clone.CustomEscapes = make(map[rune]string, len(c.CustomEscapes))
-		for k, v := range c.CustomEscapes {
-			clone.CustomEscapes[k] = v
-		}
+		maps.Copy(clone.CustomEscapes, c.CustomEscapes)
 	}
 
 	// Deep copy CustomTypeEncoders map
 	if c.CustomTypeEncoders != nil {
 		clone.CustomTypeEncoders = make(map[reflect.Type]TypeEncoder, len(c.CustomTypeEncoders))
-		for k, v := range c.CustomTypeEncoders {
-			clone.CustomTypeEncoders[k] = v
-		}
+		maps.Copy(clone.CustomTypeEncoders, c.CustomTypeEncoders)
 	}
 
 	// Deep copy CustomValidators slice
@@ -234,9 +236,8 @@ func (c *Config) Clone() *Config {
 }
 
 // Validate validates the configuration and applies corrections.
-// This is the single source of truth for config validation.
-// DRY FIX: Delegates to ValidateWithWarnings to avoid code duplication.
-// BEHAVIOR: Auto-corrects invalid values (e.g., negative sizes are clamped to minimums).
+// IMPORTANT: This method MUTATES the config in place. Invalid values are silently
+// clamped to valid ranges. Use ValidateWithWarnings to see what changed.
 // Returns nil after corrections are applied — use ValidateWithWarnings for visibility.
 func (c *Config) Validate() error {
 	if c == nil {

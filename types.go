@@ -3,6 +3,7 @@ package json
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"sync/atomic"
@@ -195,18 +196,29 @@ type Config struct {
 	CustomPathParser PathParser
 }
 
+// SecurityLimits holds a summary of the security-related limits from Config.
+// Returned by Config.getSecurityLimits for structured access to limit values.
+type SecurityLimits struct {
+	MaxNestingDepth            int   `json:"max_nesting_depth"`
+	MaxSecurityValidationSize  int64 `json:"max_security_validation_size"`
+	MaxObjectKeys              int   `json:"max_object_keys"`
+	MaxArrayElements           int   `json:"max_array_elements"`
+	MaxJSONSize                int64 `json:"max_json_size"`
+	MaxPathDepth               int   `json:"max_path_depth"`
+}
+
 // getSecurityLimits returns a summary of current security limits
-func (c *Config) getSecurityLimits() map[string]any {
+func (c *Config) getSecurityLimits() SecurityLimits {
 	if c == nil {
-		return map[string]any{}
+		return SecurityLimits{}
 	}
-	return map[string]any{
-		"max_nesting_depth":            c.MaxNestingDepthSecurity,
-		"max_security_validation_size": c.MaxSecurityValidationSize,
-		"max_object_keys":              c.MaxObjectKeys,
-		"max_array_elements":           c.MaxArrayElements,
-		"max_json_size":                c.MaxJSONSize,
-		"max_path_depth":               c.MaxPathDepth,
+	return SecurityLimits{
+		MaxNestingDepth:           c.MaxNestingDepthSecurity,
+		MaxSecurityValidationSize: c.MaxSecurityValidationSize,
+		MaxObjectKeys:             c.MaxObjectKeys,
+		MaxArrayElements:          c.MaxArrayElements,
+		MaxJSONSize:               c.MaxJSONSize,
+		MaxPathDepth:              c.MaxPathDepth,
 	}
 }
 
@@ -318,8 +330,35 @@ type BatchResult struct {
 	Error  error  `json:"error"`
 }
 
-// marshaler is the interface implemented by types that
+// Marshaler is the interface implemented by types that
 // can marshal themselves into valid JSON.
+// Compatible with encoding/json.Marshaler.
+type Marshaler interface {
+	MarshalJSON() ([]byte, error)
+}
+
+// Unmarshaler is the interface implemented by types that
+// can unmarshal a JSON description of themselves.
+// Compatible with encoding/json.Unmarshaler.
+type Unmarshaler interface {
+	UnmarshalJSON([]byte) error
+}
+
+// TextMarshaler is the interface implemented by types that
+// can marshal themselves to a textual form.
+// Compatible with encoding.TextMarshaler.
+type TextMarshaler interface {
+	MarshalText() ([]byte, error)
+}
+
+// TextUnmarshaler is the interface implemented by types that
+// can unmarshal a textual representation of themselves.
+// Compatible with encoding.TextUnmarshaler.
+type TextUnmarshaler interface {
+	UnmarshalText([]byte) error
+}
+
+// marshaler is the internal interface for JSON marshaling.
 type marshaler interface {
 	MarshalJSON() ([]byte, error)
 }
@@ -338,7 +377,7 @@ func (e *InvalidUnmarshalError) Error() string {
 		return "json: Unmarshal(nil)"
 	}
 
-	if e.Type.Kind() != reflect.Ptr {
+	if e.Type.Kind() != reflect.Pointer {
 		return "json: Unmarshal(non-pointer " + e.Type.String() + ")"
 	}
 	return "json: Unmarshal(nil " + e.Type.String() + ")"
@@ -473,15 +512,6 @@ func (e *rootDataTypeConversionError) Error() string {
 		e.currentType, e.requiredType, e.requiredSize)
 }
 
-// pathInfo contains parsed path information.
-// This is an internal type used for path parsing.
-// Uses internal.PathSegment directly to avoid redundant type alias.
-type pathInfo struct {
-	segments     []internal.PathSegment
-	isPointer    bool
-	originalPath string
-}
-
 // Resource monitoring thresholds (internal)
 const (
 	// highMemoryThreshold is the threshold for high memory usage warning (100MB)
@@ -530,7 +560,7 @@ func (rm *resourceMonitor) recordAllocation(bytes int64) {
 	// in exchange for better throughput and avoiding goroutine starvation
 	const maxCASRetries = 3
 
-	for i := 0; i < maxCASRetries; i++ {
+	for range maxCASRetries {
 		allocated := atomic.LoadInt64(&rm.allocatedBytes)
 		freed := atomic.LoadInt64(&rm.freedBytes)
 		current := allocated - freed
@@ -578,7 +608,7 @@ func (rm *resourceMonitor) recordOperation(duration time.Duration) {
 	newTime := duration.Nanoseconds()
 	const maxCASRetries = 3
 
-	for i := 0; i < maxCASRetries; i++ {
+	for range maxCASRetries {
 		oldAvg := atomic.LoadInt64(&rm.avgResponseTime)
 		newAvg := oldAvg + (newTime-oldAvg)/10
 		if atomic.CompareAndSwapInt64(&rm.avgResponseTime, oldAvg, newAvg) {
@@ -595,7 +625,7 @@ func (rm *resourceMonitor) checkForLeaks() []string {
 
 	// Try to update lastLeakCheck timestamp via CAS; proceed if interval elapsed.
 	casSucceeded := false
-	for i := 0; i < maxCASRetries; i++ {
+	for range maxCASRetries {
 		now := time.Now().Unix()
 		lastCheck := atomic.LoadInt64(&rm.lastLeakCheck)
 
@@ -646,7 +676,9 @@ func (rm *resourceMonitor) checkForLeaks() []string {
 	return issues
 }
 
-// Reset resets all resource statistics
+// Reset resets all resource statistics.
+// NOTE: Not thread-safe — each field is stored atomically but the reset as a whole
+// is not atomic. Use only in tests or single-goroutine teardown contexts.
 func (rm *resourceMonitor) reset() {
 	atomic.StoreInt64(&rm.allocatedBytes, 0)
 	atomic.StoreInt64(&rm.freedBytes, 0)
@@ -755,8 +787,7 @@ type Schema struct {
 	hasMaxItems  bool
 
 	// compiledPattern is the lazily pre-compiled regex for Pattern.
-	// Prevents recompilation on every validateString call (ReDoS mitigation).
-	compiledPattern any
+	compiledPattern *regexp.Regexp
 	patternCompiled bool
 }
 

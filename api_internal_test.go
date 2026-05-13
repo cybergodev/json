@@ -478,3 +478,62 @@ func TestReleaseConfigCoversAllReferenceFields(t *testing.T) {
 		}
 	}
 }
+
+// --- Typed getter default-value branches ---
+
+func TestTypedGetters_Defaults(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func() any
+		want any
+	}{
+		{name: "GetString missing returns default", fn: func() any { return GetString(`{"a":1}`, "missing", "default") }, want: "default"},
+		{name: "GetInt type mismatch returns default", fn: func() any { return GetInt(`{"a":"not_int"}`, "a", 42) }, want: 42},
+		{name: "GetFloat missing returns default", fn: func() any { return GetFloat(`{}`, "missing", 3.14) }, want: 3.14},
+		{name: "GetBool missing returns default", fn: func() any { return GetBool(`{}`, "missing", true) }, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.fn()
+			if got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// --- getProcessorWithConfig cache paths ---
+
+func TestGetProcessorWithConfig_CacheBehavior(t *testing.T) {
+	t.Run("cache hit returns same processor", func(t *testing.T) {
+		cfg := DefaultConfig()
+		p1, err := getProcessorWithConfig(cfg)
+		if err != nil {
+			t.Fatalf("getProcessorWithConfig failed: %v", err)
+		}
+		p2, err := getProcessorWithConfig(cfg)
+		if err != nil {
+			t.Fatalf("getProcessorWithConfig failed: %v", err)
+		}
+		if p1 != p2 {
+			t.Error("expected same processor from cache for identical config")
+		}
+	})
+
+	t.Run("different configs return different processors", func(t *testing.T) {
+		cfg1 := DefaultConfig()
+		cfg2 := DefaultConfig()
+		cfg2.EnableCache = false
+		p1, err := getProcessorWithConfig(cfg1)
+		if err != nil {
+			t.Fatalf("getProcessorWithConfig failed: %v", err)
+		}
+		p2, err := getProcessorWithConfig(cfg2)
+		if err != nil {
+			t.Fatalf("getProcessorWithConfig failed: %v", err)
+		}
+		if p1 == p2 {
+			t.Error("expected different processors for different configs")
+		}
+	})
+}

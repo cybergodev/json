@@ -3,7 +3,6 @@ package internal
 import (
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 )
 
@@ -144,7 +143,7 @@ func ParsePathSegment(part string, segments []PathSegment) []PathSegment {
 	} else if strings.Contains(part, "{") {
 		return ParseExtractionSegment(part, segments)
 	} else {
-		if index, err := strconv.Atoi(part); err == nil {
+		if index, ok := ParseIntFast(part); ok {
 			segments = append(segments, PathSegment{
 				Type:  ArrayIndexSegment,
 				Index: index,
@@ -190,21 +189,21 @@ func ParseArraySegment(part string, segments []PathSegment) []PathSegment {
 		parts := strings.Split(bracketContent, ":")
 		if len(parts) >= 2 {
 			if parts[0] != "" {
-				if startVal, err := strconv.Atoi(parts[0]); err == nil {
+				if startVal, ok := ParseIntFast(parts[0]); ok {
 					start = startVal
 					flags |= FlagHasStart
 				}
 			}
 
 			if parts[1] != "" {
-				if endVal, err := strconv.Atoi(parts[1]); err == nil {
+				if endVal, ok := ParseIntFast(parts[1]); ok {
 					end = endVal
 					flags |= FlagHasEnd
 				}
 			}
 
 			if len(parts) == 3 && parts[2] != "" {
-				if stepVal, err := strconv.Atoi(parts[2]); err == nil {
+				if stepVal, ok := ParseIntFast(parts[2]); ok {
 					step = stepVal
 					flags |= FlagHasStep
 				}
@@ -229,7 +228,7 @@ func ParseArraySegment(part string, segments []PathSegment) []PathSegment {
 				Type: ArrayIndexSegment,
 			}
 
-			if index, err := strconv.Atoi(bracketContent); err == nil {
+			if index, ok := ParseIntFast(bracketContent); ok {
 				segment.Index = index
 			}
 
@@ -429,8 +428,8 @@ func IsValidArrayIndex(index string) bool {
 
 	index = strings.TrimPrefix(index, "-")
 
-	_, err := strconv.Atoi(index)
-	return err == nil
+	_, ok := ParseIntFast(index)
+	return ok
 }
 
 // IsValidSliceRange checks if a range string is a valid slice range
@@ -442,7 +441,7 @@ func IsValidSliceRange(rangeStr string) bool {
 
 	for _, part := range parts {
 		if part != "" {
-			if _, err := strconv.Atoi(part); err != nil {
+			if _, ok := ParseIntFast(part); !ok {
 				return false
 			}
 		}

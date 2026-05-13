@@ -4,6 +4,50 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.4.2 - Performance, Quality & Security Improvements (2026-05-14)
+
+### Added
+
+- Export `Marshaler`, `Unmarshaler`, `TextMarshaler`, `TextUnmarshaler` interfaces for encoding/json compatibility
+- UTF-16 surrogate pair handling in streaming Decoder (RFC 8259 §7)
+- Streaming byte limit enforcement in `Decoder` to prevent memory exhaustion from malicious input
+- Concurrency semaphore integration for `Get()`, `Set()`, `Delete()` — bounded parallelism per processor
+- `CacheManager.DeleteByPrefix()` for complete prefix-based cache eviction
+- Panic recovery in hook execution — misbehaving hooks no longer crash the processor
+- Streaming types documentation (Encoder, Decoder, Number, Token, Delim, StreamIterator, ParallelIterator)
+- `Iterator.Reset()` / `ResetWith()` documented as not concurrency-safe
+- Comprehensive boundary condition tests for low-coverage functions
+
+### Fixed
+
+- `JSONLWriter.Write` uses pooled encoding with HTML escape support
+- Path segment pool identity preserved — `getPathSegments`/`putPathSegments` use `*[]PathSegment`
+- Shared mutable `cachedDefaultConfigPtr` removed — prevents silent cross-request config mutation
+- `scanWithRollingWindow` offset progression fix — prevents data skipping at chunk boundaries
+- `shouldUseDistributedArrayOp` heuristic improved — stricter sampling prevents false positives on regular nested arrays
+- `extendArrayAndSetValue` / `extendArrayAndSetSliceValue` guard against theoretical out-of-bounds panic
+- `readContainerValue` validates bracket matching at all nesting depths (was depth==1 only)
+
+### Changed
+
+- Validation cache key generation: SHA-256 (~100ns) → FNV-1a dual-hash (~4ns), ~50x speedup per Get/Set/Parse
+- Fast path for simple property access in `Get()`, `Set()`, `Delete()` — bypasses hash, cache, and recursive processor
+- `strconv.Atoi` in path parsing hot paths replaced with zero-allocation `ParseIntFast`
+- `GlobalPathIntern` changed to zero-capacity lazy init from eager 25000-entry allocation
+- `operation.go` (2162 lines) split into focused files: operation_delete.go, operation_set.go, operation_array.go
+- `processor.go` (1784 lines) split into 7 focused files: lifecycle, get, set, delete, iterate, stats, cache
+- `encoding.go` split into encoding.go (codec), encoding_schema.go (validation), encoding_format.go (formatting)
+- `iterator.go` split into iterator.go, iterable_value.go, iterator_stream.go, iterator_parallel.go
+- Modernized to Go 1.22+ idioms: range-over-int, reflect.Pointer, slices.Sort, maps.Copy
+- IterableValue accessor methods (~400 lines duplication) consolidated to ~120 lines with generic helpers
+- `EncodeWithConfig` delegates to shared `encodeWithConfigToBytes`, eliminating ~80 lines duplicated logic
+- `prepareOptions` returns fresh pooled copy from cached default — no shared mutable state
+- `getHooks` uses copy-on-write pattern — zero allocation for common no-hook case
+- Config comparison for cache keys uses value equality instead of pointer identity
+- `fallbackProcessor` uses minimal config (no cache, no metrics) to reduce memory footprint
+
+---
+
 ## v1.4.1 - Performance, Security & Quality Improvements (2026-05-08)
 
 ### Breaking Changes

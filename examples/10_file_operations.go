@@ -24,8 +24,8 @@ import (
 // Run: go run -tags=example examples/10_file_operations.go
 
 func main() {
-	fmt.Println("📁 JSON Library - File Operations")
-	fmt.Println("=================================\n ")
+	fmt.Println("JSON Library - File Operations")
+	fmt.Println("=================================")
 
 	// Create temporary directory for examples
 	tempDir, err := os.MkdirTemp("", "json-file-ops-*")
@@ -52,12 +52,12 @@ func main() {
 	// 5. READ-MODIFY-WRITE
 	demonstrateReadModifyWrite(tempDir)
 
-	fmt.Println("\n✅ File operations examples complete!")
+	fmt.Println("\nFile operations examples complete!")
 }
 
 func demonstrateSaveToFile(tempDir string) {
 	fmt.Println("1. Save to File")
-	fmt.Println("─────────────────")
+	fmt.Println("-----------------")
 
 	// Sample data
 	config := map[string]any{
@@ -101,7 +101,7 @@ func demonstrateSaveToFile(tempDir string) {
 
 func demonstrateLoadFromFile(tempDir string) {
 	fmt.Println("\n2. Load from File")
-	fmt.Println("───────────────────")
+	fmt.Println("-------------------")
 
 	// First create a file
 	data := `{
@@ -133,7 +133,7 @@ func demonstrateLoadFromFile(tempDir string) {
 
 func demonstrateMarshalToFile(tempDir string) {
 	fmt.Println("\n3. Marshal to File")
-	fmt.Println("────────────────────")
+	fmt.Println("--------------------")
 
 	type User struct {
 		ID     int      `json:"id"`
@@ -170,7 +170,7 @@ func demonstrateMarshalToFile(tempDir string) {
 
 func demonstrateUnmarshalFromFile(tempDir string) {
 	fmt.Println("\n4.  Unmarshal from File")
-	fmt.Println("───────────────────────")
+	fmt.Println("-----------------------")
 
 	// First create a file with JSON data
 	data := `{
@@ -214,7 +214,7 @@ func demonstrateUnmarshalFromFile(tempDir string) {
 
 func demonstrateReadModifyWrite(tempDir string) {
 	fmt.Println("\n5.  Read-Modify-Write Pattern")
-	fmt.Println("────────────────────────────")
+	fmt.Println("----------------------------")
 
 	// Create initial config file
 	initialConfig := `{

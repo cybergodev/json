@@ -8,37 +8,16 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/cybergodev/json/internal"
-)
-
-// Lazy-initialized regex patterns for schema validation
-// PERFORMANCE: Using sync.OnceValue to defer compilation until first use
-// This avoids init-time overhead when schema validation isn't needed
-var (
-	// emailLocalRegex validates local part of email addresses
-	emailLocalRegex = sync.OnceValue(func() *regexp.Regexp {
-		return regexp.MustCompile(`^[a-zA-Z0-9._%+-]+$`)
-	})
-	// emailDomainRegex validates domain part of email addresses
-	emailDomainRegex = sync.OnceValue(func() *regexp.Regexp {
-		return regexp.MustCompile(`^[a-zA-Z0-9.-]+$`)
-	})
-	// uuidRegex validates UUID format (v4 pattern)
-	uuidRegex = sync.OnceValue(func() *regexp.Regexp {
-		return regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	})
-	// ipv6Regex validates IPv6 address format
-	ipv6Regex = sync.OnceValue(func() *regexp.Regexp {
-		return regexp.MustCompile(`^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$`)
-	})
 )
 
 // Token holds a value of one of these types:
@@ -54,6 +33,7 @@ type Token any
 // Delim is a JSON delimiter.
 type Delim rune
 
+// String returns the string representation of the delimiter.
 func (d Delim) String() string {
 	return string(d)
 }
@@ -142,10 +122,8 @@ func NewEncoder(w io.Writer, cfg ...Config) *Encoder {
 //
 // See the documentation for Marshal for details about the
 // conversion of Go values to JSON.
-// newline is a pre-allocated byte slice to avoid per-Encode allocation
-var newline = []byte{'\n'}
-
 func (enc *Encoder) Encode(v any) error {
+	var newline = []byte{'\n'}
 	// Get the current processor on each Encode call to avoid stale references
 	// after SetGlobalProcessor or ShutdownGlobalProcessor.
 	processor := getDefaultProcessor()
@@ -241,6 +219,7 @@ type Decoder struct {
 	disallowUnknownFields bool
 	offset                int64 // total bytes read from input
 	maxNestingDepth       int   // maximum allowed nesting depth for containers
+	maxBytes              int64 // maximum bytes for a single value (0 = unlimited)
 }
 
 // NewDecoder returns a new decoder that reads from r.
@@ -271,6 +250,9 @@ func NewDecoder(r io.Reader, cfg ...Config) *Decoder {
 		if cfg[0].MaxNestingDepthSecurity > 0 {
 			dec.maxNestingDepth = cfg[0].MaxNestingDepthSecurity
 		}
+		if cfg[0].MaxJSONSize > 0 {
+			dec.maxBytes = cfg[0].MaxJSONSize
+		}
 	}
 	return dec
 }
@@ -288,7 +270,7 @@ func (dec *Decoder) Decode(v any) error {
 	}
 
 	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return &InvalidUnmarshalError{Type: reflect.TypeOf(v)}
 	}
 
@@ -317,30 +299,49 @@ func (dec *Decoder) Decode(v any) error {
 			// to avoid the intermediate any → marshal/unmarshal round-trip.
 			inner := json.NewDecoder(bytes.NewReader(data))
 			inner.UseNumber()
+			if dec.disallowUnknownFields {
+				inner.DisallowUnknownFields()
+			}
 			return inner.Decode(v)
 		}
 	}
 
 	// Use the processor's Unmarshal method for normal cases
+	if dec.disallowUnknownFields {
+		cfg := DefaultConfig()
+		cfg.DisallowUnknown = true
+		return processor.Unmarshal(data, v, cfg)
+	}
 	return processor.Unmarshal(data, v)
 }
 
+// UseNumber causes the Decoder to unmarshal a number into an interface{} as a
+// Number instead of as a float64.
 func (dec *Decoder) UseNumber() {
 	dec.useNumber = true
 }
 
+// DisallowUnknownFields causes the Decoder to return an error when the destination
+// is a struct and the input contains object keys which do not match any
+// non-ignored, exported fields in the destination.
 func (dec *Decoder) DisallowUnknownFields() {
 	dec.disallowUnknownFields = true
 }
 
+// Buffered returns a reader of the data remaining in the Decoder's buffer.
+// The reader is valid until the next call to Decode.
 func (dec *Decoder) Buffered() io.Reader {
 	return dec.buf
 }
 
+// InputOffset returns the input stream byte offset of the current decoder position.
+// The offset gives the location of the end of the most recently returned token
+// and the beginning of the next token.
 func (dec *Decoder) InputOffset() int64 {
 	return dec.offset
 }
 
+// More reports whether there is another element in the current array or object being parsed.
 func (dec *Decoder) More() bool {
 	// Peek at the next byte to see if there's more data
 	b, err := dec.buf.Peek(1)
@@ -471,6 +472,9 @@ func (dec *Decoder) readContainerValue(buf *bytes.Buffer, openChar byte) ([]byte
 		}
 		dec.offset++
 		buf.WriteByte(b)
+		if dec.maxBytes > 0 && int64(buf.Len()) > dec.maxBytes {
+			return nil, fmt.Errorf("streaming value size %d exceeds maximum allowed %d bytes", buf.Len(), dec.maxBytes)
+		}
 
 		if escaped {
 			escaped = false
@@ -479,7 +483,7 @@ func (dec *Decoder) readContainerValue(buf *bytes.Buffer, openChar byte) ([]byte
 
 		if inString {
 			switch b {
-			case byte(0x5c):
+			case '\\':
 				escaped = true
 			case '"':
 				inString = false
@@ -496,14 +500,12 @@ func (dec *Decoder) readContainerValue(buf *bytes.Buffer, openChar byte) ([]byte
 				return nil, fmt.Errorf("JSON nesting depth %d exceeds maximum allowed depth %d", depth, maxDepth)
 			}
 		case '}', ']':
-			if depth == 1 {
-				expectedClose := byte('}')
-				if openChar == '[' {
-					expectedClose = ']'
-				}
-				if b != expectedClose {
-					return nil, fmt.Errorf("mismatched JSON delimiters: expected '%c' but got '%c'", expectedClose, b)
-				}
+			expectedClose := byte('}')
+			if openChar == '[' {
+				expectedClose = ']'
+			}
+			if b != expectedClose {
+				return nil, fmt.Errorf("mismatched JSON delimiters: expected '%c' but got '%c'", expectedClose, b)
 			}
 			depth--
 			if depth == 0 {
@@ -609,7 +611,7 @@ func (dec *Decoder) parseString() (string, error) {
 				buf.WriteByte('\t')
 			case 'u':
 				var hex [4]byte
-				for i := 0; i < 4; i++ {
+				for i := range 4 {
 					hex[i], err = dec.buf.ReadByte()
 					if err != nil {
 						return "", err
@@ -621,7 +623,15 @@ func (dec *Decoder) parseString() (string, error) {
 				if err != nil {
 					return "", err
 				}
-				buf.WriteRune(rune(code))
+				r := rune(code)
+				// Handle UTF-16 surrogate pairs per RFC 8259 §7
+				if utf16.IsSurrogate(r) {
+					r, err = dec.parseSurrogatePair(r)
+					if err != nil {
+						return "", err
+					}
+				}
+				buf.WriteRune(r)
 			default:
 				return "", &SyntaxError{
 					msg:    fmt.Sprintf("invalid escape sequence '\\%c'", next),
@@ -632,6 +642,64 @@ func (dec *Decoder) parseString() (string, error) {
 			buf.WriteByte(b)
 		}
 	}
+}
+
+// parseSurrogatePair handles UTF-16 surrogate pair decoding per RFC 8259 section 7.
+// When a high surrogate (U+D800-U+DBFF) is encountered, it reads the expected
+// low surrogate (\uDC00-\uDFFF) and returns the decoded Unicode code point.
+func (dec *Decoder) parseSurrogatePair(high rune) (rune, error) {
+	if high < 0xD800 || high > 0xDBFF {
+		return unicode.ReplacementChar, &SyntaxError{
+			msg:    "invalid UTF-16 high surrogate",
+			Offset: dec.offset,
+		}
+	}
+
+	// Expect \u followed by low surrogate
+	b, err := dec.buf.ReadByte()
+	if err != nil || b != '\\' {
+		return unicode.ReplacementChar, &SyntaxError{
+			msg:    "expected \\u low surrogate in surrogate pair",
+			Offset: dec.offset,
+		}
+	}
+	dec.offset++
+
+	b, err = dec.buf.ReadByte()
+	if err != nil || b != 'u' {
+		return unicode.ReplacementChar, &SyntaxError{
+			msg:    "expected \\u low surrogate after backslash",
+			Offset: dec.offset,
+		}
+	}
+	dec.offset++
+
+	var hex [4]byte
+	for i := range 4 {
+		hex[i], err = dec.buf.ReadByte()
+		if err != nil {
+			return unicode.ReplacementChar, err
+		}
+		dec.offset++
+	}
+
+	code, err := strconv.ParseUint(string(hex[:]), 16, 16)
+	if err != nil {
+		return unicode.ReplacementChar, &SyntaxError{
+			msg:    "invalid hex in surrogate pair",
+			Offset: dec.offset - 4,
+		}
+	}
+
+	low := rune(code)
+	if low < 0xDC00 || low > 0xDFFF {
+		return unicode.ReplacementChar, &SyntaxError{
+			msg:    "invalid low surrogate in surrogate pair",
+			Offset: dec.offset - 4,
+		}
+	}
+
+	return utf16.DecodeRune(high, low), nil
 }
 
 func (dec *Decoder) parseBoolean(first byte) (bool, error) {
@@ -737,16 +805,6 @@ func (dec *Decoder) parseNumber(first byte) (any, error) {
 	}
 
 	return val, nil
-}
-
-// marshalJSON marshals a value to JSON string with optional pretty printing
-// This helper function consolidates duplicate marshaling logic
-func marshalJSON(value any, pretty bool, prefix, indent string) (string, error) {
-	resultBytes, err := internal.MarshalJSONToBytes(value, pretty, prefix, indent)
-	if err != nil {
-		return "", err
-	}
-	return string(resultBytes), nil
 }
 
 // validateDepth checks if the data structure exceeds maximum depth
@@ -957,84 +1015,11 @@ func (p *Processor) EncodeFields(value any, fields []string, cfg ...Config) (str
 //	// With preset configuration
 //	result, err := processor.EncodeWithConfig(data, json.PrettyConfig())
 func (p *Processor) EncodeWithConfig(value any, cfg ...Config) (string, error) {
-	if err := p.checkClosed(); err != nil {
+	b, err := p.encodeWithConfigToBytes(value, cfg...)
+	if err != nil {
 		return "", err
 	}
-
-	// Get config from variadic parameter
-	// PERFORMANCE: Only allocate DefaultConfig when no config is provided
-	var config Config
-	if len(cfg) > 0 {
-		config = cfg[0]
-	} else {
-		config = DefaultConfig()
-	}
-
-	// PERFORMANCE: Fast path for simple types without special encoding needs
-	// This avoids the overhead of reflection-based encoding for common cases
-	if !config.Pretty && !needsCustomEncodingOpts(config) {
-		var result string
-		var ok bool
-		// Use HTML escaping version if EscapeHTML is enabled
-		if config.EscapeHTML {
-			result, ok = fastEncodeSimpleWithHTMLEscape(value)
-		} else {
-			result, ok = fastEncodeSimple(value)
-		}
-		if ok {
-			// Check size limit
-			if int64(len(result)) > p.config.MaxJSONSize {
-				return "", &JsonsError{
-					Op:      "encode_with_config",
-					Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", len(result), p.config.MaxJSONSize),
-					Err:     ErrSizeLimit,
-				}
-			}
-			return result, nil
-		}
-	}
-
-	// Valid depth
-	if config.MaxDepth > 0 {
-		if err := p.validateDepth(value, config.MaxDepth, 0); err != nil {
-			return "", err
-		}
-	}
-
-	var result string
-	var err error
-
-	// Check if we need to use custom encoding features
-	needsCustomEncoding := needsCustomEncodingOpts(config)
-
-	if needsCustomEncoding {
-		// Use custom encoder for advanced options
-		encoder := newCustomEncoder(config)
-		defer encoder.Close() // Ensure buffers are returned to pool
-		result, err = encoder.Encode(value)
-	} else {
-		// Use standard JSON encoding for basic options
-		result, err = marshalJSON(value, config.Pretty, config.Prefix, config.Indent)
-	}
-
-	if err != nil {
-		return "", &JsonsError{
-			Op:      "encode_with_config",
-			Message: "failed to encode value",
-			Err:     err,
-		}
-	}
-
-	// Check size limit
-	if int64(len(result)) > p.config.MaxJSONSize {
-		return "", &JsonsError{
-			Op:      "encode_with_config",
-			Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", len(result), p.config.MaxJSONSize),
-			Err:     ErrSizeLimit,
-		}
-	}
-
-	return result, nil
+	return string(b), nil
 }
 
 // encodeWithConfigToBytes encodes value to []byte directly, avoiding string round-trip.
@@ -1273,7 +1258,7 @@ func (e *customEncoder) encodeValue(value any) error {
 	v := reflect.ValueOf(value)
 
 	// Handle pointers
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			e.buffer.WriteString("null")
 			return nil
@@ -1593,7 +1578,7 @@ func (e *customEncoder) encodeMap(v reflect.Value) error {
 	for _, key := range keys {
 		value := v.MapIndex(key)
 
-		if !e.config.IncludeNulls && (value.Interface() == nil || (value.Kind() == reflect.Ptr && value.IsNil())) {
+		if !e.config.IncludeNulls && (value.Interface() == nil || (value.Kind() == reflect.Pointer && value.IsNil())) {
 			continue
 		}
 
@@ -1677,13 +1662,7 @@ func (e *customEncoder) encodeStructCustom(v reflect.Value) error {
 
 		tagParts := strings.Split(jsonTag, ",")
 
-		hasOmitEmpty := false
-		for _, part := range tagParts[1:] {
-			if part == "omitempty" {
-				hasOmitEmpty = true
-				break
-			}
-		}
+		hasOmitEmpty := slices.Contains(tagParts[1:], "omitempty")
 
 		shouldSkip := false
 
@@ -1693,7 +1672,7 @@ func (e *customEncoder) encodeStructCustom(v reflect.Value) error {
 		}
 
 		if !e.config.IncludeNulls {
-			if fieldValue.Interface() == nil || (fieldValue.Kind() == reflect.Ptr && fieldValue.IsNil()) {
+			if fieldValue.Interface() == nil || (fieldValue.Kind() == reflect.Pointer && fieldValue.IsNil()) {
 				shouldSkip = true
 			}
 		}
@@ -1800,639 +1779,10 @@ func (e *customEncoder) isEmpty(v reflect.Value) bool {
 		return v.Uint() == 0
 	case reflect.Float32, reflect.Float64:
 		return v.Float() == 0
-	case reflect.Interface, reflect.Ptr:
+	case reflect.Interface, reflect.Pointer:
+		return v.IsNil()
+	case reflect.Chan, reflect.Func, reflect.UnsafePointer:
 		return v.IsNil()
 	}
 	return false
-}
-
-// ValidateSchema validates JSON data against a schema
-func (p *Processor) ValidateSchema(jsonStr string, schema *Schema, cfg ...Config) ([]ValidationError, error) {
-	if err := p.checkClosed(); err != nil {
-		return nil, err
-	}
-
-	options, err := p.prepareOptions(cfg...)
-	if err != nil {
-		return nil, err
-	}
-	defer releaseConfig(options)
-
-	if err := p.validateInput(jsonStr); err != nil {
-		return nil, err
-	}
-
-	if schema == nil {
-		return nil, &JsonsError{
-			Op:      "validate_schema",
-			Message: "schema cannot be nil",
-			Err:     errOperationFailed,
-		}
-	}
-
-	// Parse JSON
-
-	var data any
-	err = p.Parse(jsonStr, &data, cfg...)
-	if err != nil {
-		return nil, err
-	}
-
-	// Valid against schema
-	var errors []ValidationError
-	p.validateValue(data, schema, "", &errors)
-
-	return errors, nil
-}
-
-// validateValue validates a value against a schema with improved performance
-func (p *Processor) validateValue(value any, schema *Schema, path string, errors *[]ValidationError) {
-	if schema == nil {
-		return
-	}
-
-	// Constant value validation
-	if schema.Const != nil {
-		if !p.valuesEqual(value, schema.Const) {
-			*errors = append(*errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("value must be constant: %v", schema.Const),
-			})
-			return
-		}
-	}
-
-	// Enum validation
-	if len(schema.Enum) > 0 {
-		found := false
-		for _, enumValue := range schema.Enum {
-			if p.valuesEqual(value, enumValue) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			*errors = append(*errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("value '%v' is not in allowed enum values: %v", value, schema.Enum),
-			})
-			return
-		}
-	}
-
-	// Type validation
-	if schema.Type != "" {
-		if !p.validateType(value, schema.Type) {
-			*errors = append(*errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("expected type %s, got %T", schema.Type, value),
-			})
-			return
-		}
-	}
-
-	// Type-specific validations using switch for better performance
-	switch schema.Type {
-	case "object":
-		if obj, ok := value.(map[string]any); ok {
-			p.validateObject(obj, schema, path, errors)
-		}
-	case "array":
-		if arr, ok := value.([]any); ok {
-			p.validateArray(arr, schema, path, errors)
-		}
-	case "string":
-		if str, ok := value.(string); ok {
-			p.validateString(str, schema, path, errors)
-		}
-	case "number":
-		p.validateNumber(value, schema, path, errors)
-	}
-}
-
-// validateType checks if a value matches the expected type
-func (p *Processor) validateType(value any, expectedType string) bool {
-	switch expectedType {
-	case "object":
-		_, ok := value.(map[string]any)
-		return ok
-	case "array":
-		_, ok := value.([]any)
-		return ok
-	case "string":
-		_, ok := value.(string)
-		return ok
-	case "number":
-		switch value.(type) {
-		case int, int8, int16, int32, int64,
-			uint, uint8, uint16, uint32, uint64,
-			float32, float64:
-			return true
-		}
-		return false
-	case "boolean":
-		_, ok := value.(bool)
-		return ok
-	case "null":
-		return value == nil
-	}
-	return false
-}
-
-// validateObject validates an object against a schema with type safety
-func (p *Processor) validateObject(obj map[string]any, schema *Schema, path string, errors *[]ValidationError) {
-	// Required properties validation
-	for _, required := range schema.Required {
-		if _, exists := obj[required]; !exists {
-			*errors = append(*errors, ValidationError{
-				Path:    p.joinPath(path, required),
-				Message: fmt.Sprintf("required property '%s' is missing", required),
-			})
-		}
-	}
-
-	// Valid properties
-	for key, val := range obj {
-		if propSchema, exists := schema.Properties[key]; exists {
-			p.validateValue(val, propSchema, p.joinPath(path, key), errors)
-		} else if !schema.AdditionalProperties {
-			*errors = append(*errors, ValidationError{
-				Path:    p.joinPath(path, key),
-				Message: fmt.Sprintf("additional property '%s' is not allowed", key),
-			})
-		}
-	}
-}
-
-// validateArray validates an array against a schema with type safety
-func (p *Processor) validateArray(arr []any, schema *Schema, path string, errors *[]ValidationError) {
-	arrLen := len(arr)
-
-	// Array length validation
-	if schema.hasMinItems && arrLen < schema.MinItems {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("array length %d is less than minimum %d", arrLen, schema.MinItems),
-		})
-	}
-
-	if schema.hasMaxItems && arrLen > schema.MaxItems {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("array length %d exceeds maximum %d", arrLen, schema.MaxItems),
-		})
-	}
-
-	// Unique items validation
-	if schema.UniqueItems {
-		seen := make(map[string]bool)
-		for i, item := range arr {
-			itemStr := fmt.Sprintf("%v", item)
-			if seen[itemStr] {
-				*errors = append(*errors, ValidationError{
-					Path:    fmt.Sprintf("%s[%d]", path, i),
-					Message: fmt.Sprintf("duplicate item found: %v", item),
-				})
-			}
-			seen[itemStr] = true
-		}
-	}
-
-	// Validate items
-	if schema.Items != nil {
-		for i, item := range arr {
-			itemPath := fmt.Sprintf("%s[%d]", path, i)
-			p.validateValue(item, schema.Items, itemPath, errors)
-		}
-	}
-}
-
-// validateString validates a string against a schema with type safety
-func (p *Processor) validateString(str string, schema *Schema, path string, errors *[]ValidationError) {
-	// Length validation
-	strLen := utf8.RuneCountInString(str)
-	if schema.hasMinLength && strLen < schema.MinLength {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("string length %d is less than minimum %d", strLen, schema.MinLength),
-		})
-	}
-
-	if schema.hasMaxLength && strLen > schema.MaxLength {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("string length %d exceeds maximum %d", strLen, schema.MaxLength),
-		})
-	}
-
-	// Pattern validation (regular expression)
-	// Lazily compile and cache the regex to prevent recompilation on every call
-	if schema.Pattern != "" {
-		if !schema.patternCompiled {
-			re, err := regexp.Compile(schema.Pattern)
-			if err != nil {
-				*errors = append(*errors, ValidationError{
-					Path:    path,
-					Message: fmt.Sprintf("invalid pattern '%s': %v", schema.Pattern, err),
-				})
-				return
-			}
-			schema.compiledPattern = re
-			schema.patternCompiled = true
-		}
-		if re, ok := schema.compiledPattern.(*regexp.Regexp); ok && re != nil {
-			if !re.MatchString(str) {
-				*errors = append(*errors, ValidationError{
-					Path:    path,
-					Message: fmt.Sprintf("string '%s' does not match pattern '%s'", str, schema.Pattern),
-				})
-			}
-		}
-	}
-
-	// Format validation
-	if schema.Format != "" {
-		if err := p.validateStringFormat(str, schema.Format, path, errors); err != nil {
-			*errors = append(*errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("format validation failed: %v", err),
-			})
-		}
-	}
-}
-
-// validateNumber validates a number against a schema
-func (p *Processor) validateNumber(value any, schema *Schema, path string, errors *[]ValidationError) {
-	var num float64
-	switch v := value.(type) {
-	case int:
-		num = float64(v)
-	case int32:
-		num = float64(v)
-	case int64:
-		num = float64(v)
-	case float32:
-		num = float64(v)
-	case float64:
-		num = v
-	default:
-		return
-	}
-
-	// Range validation - only validate if constraints are explicitly set
-	if schema.hasMinimum {
-		if schema.ExclusiveMinimum {
-			if num <= schema.Minimum {
-				*errors = append(*errors, ValidationError{
-					Path:    path,
-					Message: fmt.Sprintf("number %g must be greater than %g (exclusive)", num, schema.Minimum),
-				})
-			}
-		} else {
-			if num < schema.Minimum {
-				*errors = append(*errors, ValidationError{
-					Path:    path,
-					Message: fmt.Sprintf("number %g is less than minimum %g", num, schema.Minimum),
-				})
-			}
-		}
-	}
-
-	if schema.hasMaximum {
-		if schema.ExclusiveMaximum {
-			if num >= schema.Maximum {
-				*errors = append(*errors, ValidationError{
-					Path:    path,
-					Message: fmt.Sprintf("number %g must be less than %g (exclusive)", num, schema.Maximum),
-				})
-			}
-		} else {
-			if num > schema.Maximum {
-				*errors = append(*errors, ValidationError{
-					Path:    path,
-					Message: fmt.Sprintf("number %g exceeds maximum %g", num, schema.Maximum),
-				})
-			}
-		}
-	}
-
-	// Multiple of validation
-	if schema.MultipleOf > 0 {
-		// Use tolerance-based comparison to handle IEEE 754 floating-point imprecision
-		quotient := num / schema.MultipleOf
-		roundedQuotient := float64(int(quotient + 0.5))
-		remainder := num - schema.MultipleOf*roundedQuotient
-		const epsilon = 1e-9
-		if remainder < -epsilon || remainder > epsilon {
-			*errors = append(*errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("number %g is not a multiple of %g", num, schema.MultipleOf),
-			})
-		}
-	}
-}
-
-// validateStringFormat validates string format (email, date, etc.)
-func (p *Processor) validateStringFormat(str, format, path string, errors *[]ValidationError) error {
-	switch format {
-	case "email":
-		return p.validateEmailFormat(str, path, errors)
-	case "date":
-		return p.validateDateFormat(str, path, errors)
-	case "date-time":
-		return p.validateDateTimeFormat(str, path, errors)
-	case "time":
-		return p.validateTimeFormat(str, path, errors)
-	case "uri":
-		return p.validateURIFormat(str, path, errors)
-	case "uuid":
-		return p.validateUUIDFormat(str, path, errors)
-	case "ipv4":
-		return p.validateIPv4Format(str, path, errors)
-	case "ipv6":
-		return p.validateIPv6Format(str, path, errors)
-	default:
-		// Unknown format - log warning but don't fail validation
-		return nil
-	}
-}
-
-// validateEmailFormat validates email format with improved security
-// Prevents consecutive dots, limits length, and validates proper structure
-func (p *Processor) validateEmailFormat(email, path string, errors *[]ValidationError) error {
-	// Length validation to prevent DoS
-	if len(email) > 254 { // RFC 5321 limit
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' exceeds maximum email length of 254 characters", email),
-		})
-		return nil
-	}
-
-	// Split into local and domain parts
-	atIndex := strings.LastIndex(email, "@")
-	if atIndex <= 0 || atIndex == len(email)-1 {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid email format", email),
-		})
-		return nil
-	}
-
-	localPart := email[:atIndex]
-	domainPart := email[atIndex+1:]
-
-	// Validate local part (max 64 chars as per RFC 5321)
-	if len(localPart) > 64 || len(localPart) == 0 {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' has invalid local part in email address", email),
-		})
-		return nil
-	}
-
-	// Check for consecutive dots or invalid characters
-	if strings.Contains(localPart, "..") || strings.Contains(localPart, ".@") ||
-		strings.HasPrefix(localPart, ".") || strings.HasSuffix(localPart, ".") {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' has invalid local part in email address", email),
-		})
-		return nil
-	}
-
-	// Validate domain part
-	if len(domainPart) > 253 || len(domainPart) == 0 {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' has invalid domain in email address", email),
-		})
-		return nil
-	}
-
-	// Check for consecutive dots in domain
-	if strings.Contains(domainPart, "..") || strings.HasPrefix(domainPart, ".") ||
-		strings.HasSuffix(domainPart, ".") {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' has invalid domain in email address", email),
-		})
-		return nil
-	}
-
-	// Validate domain has at least one dot and TLD is at least 2 chars
-	dotCount := strings.Count(domainPart, ".")
-	if dotCount < 1 {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' has invalid domain in email address", email),
-		})
-		return nil
-	}
-
-	// Check TLD length
-	lastDot := strings.LastIndex(domainPart, ".")
-	tld := domainPart[lastDot+1:]
-	if len(tld) < 2 || len(tld) > 63 {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' has invalid TLD in email address", email),
-		})
-		return nil
-	}
-
-	// Basic character validation for local and domain parts
-	if !emailLocalRegex().MatchString(localPart) || !emailDomainRegex().MatchString(domainPart) {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' contains invalid characters in email address", email),
-		})
-		return nil
-	}
-
-	return nil
-}
-
-// validateDateFormat validates date format (YYYY-MM-DD)
-func (p *Processor) validateDateFormat(date, path string, errors *[]ValidationError) error {
-	_, err := time.Parse("2006-01-02", date)
-	if err != nil {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid date format (expected YYYY-MM-DD)", date),
-		})
-	}
-	return nil
-}
-
-// validateDateTimeFormat validates date-time format (RFC3339)
-func (p *Processor) validateDateTimeFormat(datetime, path string, errors *[]ValidationError) error {
-	_, err := time.Parse(time.RFC3339, datetime)
-	if err != nil {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid date-time format (expected RFC3339)", datetime),
-		})
-	}
-	return nil
-}
-
-// validateTimeFormat validates time format (HH:MM:SS)
-func (p *Processor) validateTimeFormat(timeStr, path string, errors *[]ValidationError) error {
-	_, err := time.Parse("15:04:05", timeStr)
-	if err != nil {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid time format (expected HH:MM:SS)", timeStr),
-		})
-	}
-	return nil
-}
-
-// validateURIFormat validates URI format
-func (p *Processor) validateURIFormat(uri, path string, errors *[]ValidationError) error {
-	// Simple URI validation - check for scheme
-	if !strings.Contains(uri, "://") {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid URI format", uri),
-		})
-	}
-	return nil
-}
-
-// validateUUIDFormat validates UUID format
-func (p *Processor) validateUUIDFormat(uuid, path string, errors *[]ValidationError) error {
-	if !uuidRegex().MatchString(uuid) {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid UUID format", uuid),
-		})
-	}
-	return nil
-}
-
-// validateIPv4Format validates IPv4 format
-func (p *Processor) validateIPv4Format(ip, path string, errors *[]ValidationError) error {
-	parts := strings.Split(ip, ".")
-	if len(parts) != 4 {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid IPv4 format", ip),
-		})
-		return nil
-	}
-
-	for _, part := range parts {
-		num, err := parseInt(part)
-		if err != nil || num < 0 || num > 255 {
-			*errors = append(*errors, ValidationError{
-				Path:    path,
-				Message: fmt.Sprintf("'%s' is not a valid IPv4 format", ip),
-			})
-			return nil
-		}
-	}
-	return nil
-}
-
-// validateIPv6Format validates IPv6 format
-func (p *Processor) validateIPv6Format(ip, path string, errors *[]ValidationError) error {
-	// Simple IPv6 validation - check for colons and hex characters
-	if !strings.Contains(ip, ":") {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid IPv6 format", ip),
-		})
-		return nil
-	}
-
-	// Use lazy-initialized regex for validation
-	if !ipv6Regex().MatchString(ip) {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid IPv6 format", ip),
-		})
-	}
-	return nil
-}
-
-// valuesEqual compares two values for equality
-func (p *Processor) valuesEqual(a, b any) bool {
-	// Handle nil cases
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
-
-	// Direct comparison for basic types
-	if a == b {
-		return true
-	}
-
-	// Handle numeric type conversions
-	switch va := a.(type) {
-	case int:
-		switch vb := b.(type) {
-		case int:
-			return va == vb
-		case int32:
-			return int32(va) == vb
-		case int64:
-			return int64(va) == vb
-		case float32:
-			return float32(va) == vb
-		case float64:
-			return float64(va) == vb
-		}
-	case float64:
-		switch vb := b.(type) {
-		case int:
-			return va == float64(vb)
-		case int32:
-			return va == float64(vb)
-		case int64:
-			return va == float64(vb)
-		case float32:
-			return va == float64(vb)
-		case float64:
-			return va == vb
-		}
-	}
-
-	return false
-}
-
-// joinPath joins path segments
-func (p *Processor) joinPath(parent, child string) string {
-	if parent == "" {
-		return child
-	}
-	return parent + "." + child
-}
-
-// parseInt is a simple integer parser for validation
-func parseInt(s string) (int, error) {
-	var result int
-	var negative bool
-	i := 0
-
-	if len(s) > 0 && s[0] == '-' {
-		negative = true
-		i = 1
-	}
-
-	for ; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return 0, fmt.Errorf("invalid integer")
-		}
-		result = result*10 + int(s[i]-'0')
-	}
-
-	if negative {
-		result = -result
-	}
-	return result, nil
 }

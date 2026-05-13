@@ -23,7 +23,7 @@ import (
 
 func main() {
 	fmt.Println("JSON Library - Type Conversion")
-	fmt.Println("===============================\n ")
+	fmt.Println("===============================")
 
 	// 1. TYPE-SAFE GENERICS
 	demonstrateTypeSafeGenerics()

@@ -226,29 +226,6 @@ func TestNewOperationPathError(t *testing.T) {
 	}
 }
 
-func TestIsRetryableBoundary(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"nil error", nil, false},
-		{"timeout error", ErrOperationTimeout, true},
-		{"concurrency limit", ErrConcurrencyLimit, true},
-		{"path not found", ErrPathNotFound, false},
-		{"wrapped timeout", fmt.Errorf("wrap: %w", ErrOperationTimeout), true},
-		{"other error", fmt.Errorf("something else"), false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isRetryable(tt.err); got != tt.want {
-				t.Errorf("isRetryable() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 // ============================================================================
 // Iterator Reset boundary tests (iterator.go: 0% coverage)
 // ============================================================================

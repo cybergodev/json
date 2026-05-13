@@ -151,6 +151,23 @@ if result.Ok() {
 
 // Batch retrieval
 results, err := json.GetMultiple(data, []string{"user.name", "user.age"})
+
+// Context-aware retrieval (supports timeout/cancellation)
+value, err := json.GetWithContext(ctx, data, "user.name")
+```
+
+### Parsing
+
+```go
+// Parse JSON to any (uses default processor)
+data, err := json.ParseAny(jsonStr)
+
+// Parse JSON into typed target
+var user User
+err = json.Parse(jsonStr, &user)
+
+// With configuration
+data, err = json.ParseAny(jsonStr, json.SecurityConfig())
 ```
 
 ### Data Modification
@@ -213,6 +230,12 @@ result, _ := json.Encode(data, cfg)
 
 // Preset configs
 result, _ := json.Encode(data, json.PrettyConfig())
+
+// Quick pretty encoding
+result, _ = json.EncodePretty(data)
+
+// Validate with configuration
+valid, err := json.ValidWithConfig(jsonStr, json.SecurityConfig())
 ```
 
 ### File Operations
@@ -221,6 +244,9 @@ result, _ := json.Encode(data, json.PrettyConfig())
 // Load and save (package-level functions)
 jsonStr, _ := json.LoadFromFile("data.json")
 json.SaveToFile("output.json", data, json.PrettyConfig())
+
+// Load from reader (with size limiting)
+jsonStr, _ = json.LoadFromReader(reader)
 
 // Struct/Map serialization
 json.MarshalToFile("user.json", user)
@@ -300,9 +326,10 @@ processor.ClearCache()
 ### Preset Configurations
 
 ```go
+// Choose a preset based on your use case:
 cfg := json.DefaultConfig()   // balanced defaults
-cfg := json.SecurityConfig()  // for untrusted input
-cfg := json.PrettyConfig()    // for pretty output
+// cfg := json.SecurityConfig()  // for untrusted input
+// cfg := json.PrettyConfig()    // for pretty output
 ```
 
 ---
@@ -443,16 +470,26 @@ err = ndjson.ProcessFile("data.ndjson", func(lineNum int, obj map[string]any) er
     return nil
 })
 
-// JSONL filter, map, reduce
-filtered, _ := processor.FilterJSONL(reader, func(item *json.IterableValue) bool {
+// JSONL filter, map, reduce (available as package-level functions too)
+filtered, _ := json.FilterJSONL(reader, func(item *json.IterableValue) bool {
     return item.GetBool("active")
 })
-mapped, _   := processor.MapJSONL(reader, func(lineNum int, item *json.IterableValue) (any, error) {
+mapped, _   := json.MapJSONL(reader, func(lineNum int, item *json.IterableValue) (any, error) {
     return map[string]any{"id": item.GetString("id")}, nil
 })
-result, _   := processor.ReduceJSONL(reader, 0, func(acc any, item *json.IterableValue) any {
+result, _   := json.ReduceJSONL(reader, 0, func(acc any, item *json.IterableValue) any {
     count := item.GetInt("count")
     return acc.(int) + count
+})
+
+// Additional JSONL utilities
+items, _    := json.CollectJSONL(reader)       // collect all items
+first, _, _ := json.FirstJSONL(reader, func(item *json.IterableValue) bool {
+    return item.GetBool("target")              // find first matching item
+})
+err = json.ForeachJSONL(reader, func(lineNum int, item *json.IterableValue) error {
+    fmt.Printf("Line %d: %s\n", lineNum, item.GetString("id"))
+    return nil
 })
 ```
 
@@ -517,9 +554,12 @@ defer processor.Close()
 // Logging hook - takes any type with Info(string, ...any) method
 processor.AddHook(json.LoggingHook(slog.Default()))
 
-// Timing hook - takes an interface with Record(op string, duration time.Duration)
-type MetricsRecorder struct{}
-func (m *MetricsRecorder) Record(op string, d time.Duration) { /* record */ }
+// Timing hook - takes any type with Record(op string, duration time.Duration) method
+// Define your recorder:
+//
+//	type MetricsRecorder struct{}
+//	func (m *MetricsRecorder) Record(op string, d time.Duration) { /* record */ }
+//
 processor.AddHook(json.TimingHook(&MetricsRecorder{}))
 
 // Validation hook - takes func(jsonStr, path string) error

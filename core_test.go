@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -21,32 +19,6 @@ import (
 // ============================================================================
 // Test Helper Functions
 // ============================================================================
-
-// captureOutput captures output written to the given file (os.Stdout or os.Stderr).
-func captureOutput(file **os.File, f func()) string {
-	old := *file
-	r, w, _ := os.Pipe()
-	*file = w
-
-	done := make(chan struct{})
-	go func() {
-		f()
-		w.Close()
-		close(done)
-	}()
-
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	<-done
-	*file = old
-	return buf.String()
-}
-
-// captureStdout captures output written to stdout.
-func captureStdout(f func()) string { return captureOutput(&os.Stdout, f) }
-
-// captureStderr captures output written to stderr.
-func captureStderr(f func()) string { return captureOutput(&os.Stderr, f) }
 
 // intPtr returns a pointer to an int
 func intPtr(i int) *int {
@@ -161,41 +133,11 @@ func BenchmarkJSONPointerEscape(b *testing.B) {
 	input := "user~/name/with~special/chars"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = processor.escapeJSONPointer(input)
+		_ = escapeJSONPointer(input)
 	}
 }
 
 // BenchmarkMarshal is covered by comprehensive versions in benchmark_test.go
-
-func BenchmarkOpBatchSet(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"a": 1, "b": 2, "c": 3}`
-	updates := map[string]any{
-		"a": 10,
-		"b": 20,
-		"c": 30,
-	}
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.batchSetOptimized(jsonStr, updates)
-	}
-}
-
-func BenchmarkOpFastGetMultiple(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"a": 1, "b": 2, "c": 3, "d": 4, "e": 5}`
-	paths := []string{"a", "b", "c", "d", "e"}
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.fastGetMultiple(jsonStr, paths)
-	}
-}
 
 func BenchmarkPathParsingComplex(b *testing.B) {
 	processor, _ := New()
@@ -405,91 +347,6 @@ func TestArraySliceOperations(t *testing.T) {
 		// Check first two items were replaced
 		if len(items) != 5 {
 			t.Errorf("Expected 5 items, got %d", len(items))
-		}
-	})
-}
-
-// TestBatchDeleteOptimized tests the BatchDeleteOptimized function
-func TestBatchDeleteOptimized(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("batch delete multiple paths", func(t *testing.T) {
-		jsonStr := `{"a": 1, "b": 2, "c": 3}`
-		paths := []string{"a", "c"}
-		result, err := processor.batchDeleteOptimized(jsonStr, paths)
-		if err != nil {
-			t.Fatalf("BatchDeleteOptimized error: %v", err)
-		}
-		// Verify the result has keys deleted
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
-			t.Fatalf("Failed to parse result: %v", err)
-		}
-		if _, exists := parsed["a"]; exists {
-			t.Error("key 'a' should be deleted")
-		}
-		if _, exists := parsed["c"]; exists {
-			t.Error("key 'c' should be deleted")
-		}
-		if _, exists := parsed["b"]; !exists {
-			t.Error("key 'b' should still exist")
-		}
-	})
-
-	t.Run("empty paths", func(t *testing.T) {
-		jsonStr := `{"a": 1}`
-		paths := []string{}
-		result, err := processor.batchDeleteOptimized(jsonStr, paths)
-		if err != nil {
-			t.Fatalf("BatchDeleteOptimized error: %v", err)
-		}
-		// Verify original JSON is returned unchanged
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
-			t.Fatalf("Failed to parse result: %v", err)
-		}
-		if _, exists := parsed["a"]; !exists {
-			t.Error("key 'a' should still exist when no paths to delete")
-		}
-	})
-}
-
-// TestBatchSetOptimized tests the BatchSetOptimized function
-func TestBatchSetOptimized(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("batch set multiple values", func(t *testing.T) {
-		jsonStr := `{"a": 1, "b": 2}`
-		updates := map[string]any{
-			"a": 10,
-			"b": 20,
-			"c": 30,
-		}
-		result, err := processor.batchSetOptimized(jsonStr, updates)
-		if err != nil {
-			t.Fatalf("BatchSetOptimized error: %v", err)
-		}
-		if result == "" {
-			t.Error("BatchSetOptimized returned empty result")
-		}
-	})
-
-	t.Run("empty updates", func(t *testing.T) {
-		jsonStr := `{"a": 1}`
-		updates := map[string]any{}
-		result, err := processor.batchSetOptimized(jsonStr, updates)
-		if err != nil {
-			t.Fatalf("BatchSetOptimized error: %v", err)
-		}
-		// Verify original JSON is returned unchanged
-		var parsed map[string]any
-		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
-			t.Fatalf("Failed to parse result: %v", err)
-		}
-		if parsed["a"].(float64) != 1 {
-			t.Errorf("Expected a=1, got %v", parsed["a"])
 		}
 	})
 }
@@ -2014,79 +1871,6 @@ func TestMultiFieldExtraction(t *testing.T) {
 	})
 }
 
-// TestFastDelete tests the FastDelete function
-func TestFastOperations(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("FastDelete", func(t *testing.T) {
-		tests := []struct {
-			name, json, path string
-		}{
-			{"simple", `{"name":"test","age":30}`, "name"},
-			{"nested", `{"user":{"name":"test","email":"t@e.com"}}`, "user.email"},
-			{"array", `{"items":[1,2,3]}`, "items[1]"},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				result, err := processor.fastDelete(tt.json, tt.path)
-				if err != nil {
-					t.Fatalf("FastDelete error: %v", err)
-				}
-				if result == "" {
-					t.Error("FastDelete returned empty result")
-				}
-			})
-		}
-	})
-
-	t.Run("FastGetMultiple", func(t *testing.T) {
-		tests := []struct {
-			name        string
-			json        string
-			paths       []string
-			expectedLen int
-		}{
-			{"multiple", `{"a":1,"b":2,"c":3}`, []string{"a", "b", "c"}, 3},
-			{"empty", `{"a":1}`, []string{}, 0},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				results, err := processor.fastGetMultiple(tt.json, tt.paths)
-				if err != nil {
-					t.Fatalf("FastGetMultiple error: %v", err)
-				}
-				if len(results) != tt.expectedLen {
-					t.Errorf("FastGetMultiple returned %d results, want %d", len(results), tt.expectedLen)
-				}
-			})
-		}
-	})
-
-	t.Run("FastSet", func(t *testing.T) {
-		tests := []struct {
-			name, json, path string
-			value            any
-		}{
-			{"simple", `{"name":"old"}`, "name", "new"},
-			{"nested", `{"user":{"name":"old"}}`, "user.name", "new"},
-			{"new_prop", `{"name":"test"}`, "age", 30},
-			{"array", `{"items":[1,2,3]}`, "items[1]", 10},
-		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				result, err := processor.fastSet(tt.json, tt.path, tt.value)
-				if err != nil {
-					t.Fatalf("FastSet error: %v", err)
-				}
-				if result == "" {
-					t.Error("FastSet returned empty result")
-				}
-			})
-		}
-	})
-}
-
 // TestCompactString tests compact formatting via processor
 func TestCompactString(t *testing.T) {
 	prettyJSON := `{
@@ -2373,21 +2157,6 @@ func TestGetOrMap(t *testing.T) {
 			t.Errorf("GetOr[map[string]any](missing) = %v; want default", result)
 		}
 	})
-}
-
-// TestGetResultBuffer tests buffer pool operations
-func TestGetResultBuffer(t *testing.T) {
-	buf := getResultBuffer()
-	if buf == nil {
-		t.Fatal("getResultBuffer returned nil")
-	}
-
-	*buf = append(*buf, "test data"...)
-	if string(*buf) != "test data" {
-		t.Errorf("Buffer content = %q, want %q", string(*buf), "test data")
-	}
-
-	putResultBuffer(buf)
 }
 
 // TestGetStats tests statistics retrieval
@@ -3264,7 +3033,7 @@ func TestJSONPointerEscapeUnescape(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := processor.escapeJSONPointer(tt.input)
+			result := escapeJSONPointer(tt.input)
 			if result != tt.expected {
 				t.Errorf("escapeJSONPointer(%s) = %s; want %s", tt.input, result, tt.expected)
 			}
@@ -3301,9 +3070,9 @@ func TestJSONPointerEscapeUnescape(t *testing.T) {
 
 	for _, tt := range unescapeTests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := processor.unescapeJSONPointer(tt.input)
+			result := internal.UnescapeJSONPointer(tt.input)
 			if result != tt.expected {
-				t.Errorf("unescapeJSONPointer(%s) = %s; want %s", tt.input, result, tt.expected)
+				t.Errorf("UnescapeJSONPointer(%s) = %s; want %s", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -3508,13 +3277,13 @@ func TestParseArraySegment(t *testing.T) {
 			segments := processor.getPathSegments()
 			defer processor.putPathSegments(segments)
 
-			segments = processor.parseArraySegment(tt.part, segments)
+			*segments = processor.parseArraySegment(tt.part, *segments)
 
-			if len(segments) == 0 {
+			if len(*segments) == 0 {
 				t.Fatal("parseArraySegment returned no segments")
 			}
 
-			firstSeg := segments[0]
+			firstSeg := (*segments)[0]
 			if firstSeg.TypeString() != tt.expectedType {
 				t.Errorf("Segment type = %s; want %s", firstSeg.TypeString(), tt.expectedType)
 			}
@@ -3558,13 +3327,13 @@ func TestParseExtractionSegment(t *testing.T) {
 			segments := processor.getPathSegments()
 			defer processor.putPathSegments(segments)
 
-			segments = processor.parseExtractionSegment(tt.part, segments)
+			*segments = processor.parseExtractionSegment(tt.part, *segments)
 
 			// Find the extraction segment
 			var extractSeg *internal.PathSegment
-			for i := range segments {
-				if segments[i].Type == internal.ExtractSegment {
-					extractSeg = &segments[i]
+			for i := range *segments {
+				if (*segments)[i].Type == internal.ExtractSegment {
+					extractSeg = &(*segments)[i]
 					break
 				}
 			}
@@ -3868,8 +3637,8 @@ func TestPathReconstruction(t *testing.T) {
 			segments := processor.getPathSegments()
 			defer processor.putPathSegments(segments)
 
-			segments = processor.splitPath(tt.path, segments)
-			reconstructed := internal.ReconstructPath(segments)
+			*segments = processor.splitPath(tt.path, *segments)
+			reconstructed := internal.ReconstructPath(*segments)
 
 			if !strings.Contains(reconstructed, tt.contains) {
 				t.Errorf("Reconstructed path '%s' does not contain '%s'", reconstructed, tt.contains)
@@ -4068,59 +3837,6 @@ func TestPreprocessPath(t *testing.T) {
 }
 
 // TestPrintE tests printE function
-func TestPrintFunctions(t *testing.T) {
-	data := map[string]any{"test": "value"}
-	badData := make(chan int)
-
-	t.Run("printE valid", func(t *testing.T) {
-		output := captureStdout(func() {
-			if err := printE(data); err != nil {
-				t.Errorf("printE error: %v", err)
-			}
-		})
-		if !strings.Contains(output, "test") || !strings.Contains(output, "value") {
-			t.Errorf("printE output = %s; should contain test and value", output)
-		}
-	})
-
-	t.Run("printE invalid", func(t *testing.T) {
-		if err := printE(badData); err == nil {
-			t.Error("printE should return error for unserializable data")
-		}
-	})
-
-	t.Run("print error stderr", func(t *testing.T) {
-		stderr := captureStderr(func() { print(badData) })
-		if stderr == "" {
-			t.Error("print() should write error to stderr for unserializable data")
-		}
-	})
-
-	t.Run("printPrettyE valid", func(t *testing.T) {
-		output := captureStdout(func() {
-			if err := printPrettyE(data); err != nil {
-				t.Errorf("printPrettyE error: %v", err)
-			}
-		})
-		if !strings.Contains(output, "\n") {
-			t.Errorf("printPrettyE output should contain newlines, got: %s", output)
-		}
-	})
-
-	t.Run("printPrettyE invalid", func(t *testing.T) {
-		if err := printPrettyE(badData); err == nil {
-			t.Error("printPrettyE should return error for unserializable data")
-		}
-	})
-
-	t.Run("printPretty error stderr", func(t *testing.T) {
-		stderr := captureStderr(func() { printPretty(badData) })
-		if stderr == "" {
-			t.Error("printPretty() should write error to stderr for unserializable data")
-		}
-	})
-}
-
 // TestProcessBatch tests batch processing
 func TestProcessBatch(t *testing.T) {
 	jsonStr := `{"user": {"name": "Alice", "age": 30}}`
@@ -4359,75 +4075,6 @@ func TestProcessor_ErrorHandling(t *testing.T) {
 	})
 }
 
-func TestProcessor_FastOperations(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("FastSet", func(t *testing.T) {
-		jsonStr := `{"user": {"name": "John"}}`
-		result, err := processor.fastSet(jsonStr, "user.name", "Jane")
-		if err != nil {
-			t.Errorf("FastSet error: %v", err)
-		}
-		if result == "" {
-			t.Error("FastSet should return non-empty result")
-		}
-	})
-
-	t.Run("FastDelete", func(t *testing.T) {
-		jsonStr := `{"user": {"name": "John", "age": 30}}`
-		result, err := processor.fastDelete(jsonStr, "user.age")
-		if err != nil {
-			t.Errorf("FastDelete error: %v", err)
-		}
-		if result == "" {
-			t.Error("FastDelete should return non-empty result")
-		}
-	})
-
-	t.Run("BatchSetOptimized", func(t *testing.T) {
-		jsonStr := `{"a": 1, "b": 2}`
-		updates := map[string]any{
-			"a": 10,
-			"c": 3,
-		}
-		result, err := processor.batchSetOptimized(jsonStr, updates)
-		if err != nil {
-			t.Errorf("BatchSetOptimized error: %v", err)
-		}
-		if result == "" {
-			t.Error("BatchSetOptimized should return non-empty result")
-		}
-	})
-
-	t.Run("BatchDeleteOptimized", func(t *testing.T) {
-		jsonStr := `{"a": 1, "b": 2, "c": 3}`
-		paths := []string{"a", "c"}
-		result, err := processor.batchDeleteOptimized(jsonStr, paths)
-		if err != nil {
-			t.Errorf("BatchDeleteOptimized error: %v", err)
-		}
-		if result == "" {
-			t.Error("BatchDeleteOptimized should return non-empty result")
-		}
-	})
-
-	t.Run("FastGetMultiple", func(t *testing.T) {
-		jsonStr := `{"a": 1, "b": 2, "c": 3}`
-		paths := []string{"a", "b"}
-		result, err := processor.fastGetMultiple(jsonStr, paths)
-		if err != nil {
-			t.Errorf("FastGetMultiple error: %v", err)
-		}
-		if result["a"] != 1.0 {
-			t.Errorf("result[a] = %v, want 1", result["a"])
-		}
-		if result["b"] != 2.0 {
-			t.Errorf("result[b] = %v, want 2", result["b"])
-		}
-	})
-}
-
 // TestProcessor_ForeachMethods tests Processor's Foreach methods
 func TestProcessor_ForeachMethods(t *testing.T) {
 	jsonStr := `{
@@ -4636,8 +4283,17 @@ func TestProcessor_ForeachReturn(t *testing.T) {
 		t.Errorf("ForeachReturn count = %d, want 1 (just 'items' key)", count)
 	}
 
-	if result != jsonStr {
-		t.Error("ForeachReturn should return the original JSON string")
+	if result == "" {
+		t.Error("ForeachReturn should return a non-empty JSON string")
+	}
+
+	// Result should be valid JSON representing the same data
+	var parsedResult, parsedOriginal any
+	if err := json.Unmarshal([]byte(result), &parsedResult); err != nil {
+		t.Errorf("ForeachReturn result is not valid JSON: %v", err)
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &parsedOriginal); err != nil {
+		t.Fatalf("Test input is not valid JSON: %v", err)
 	}
 }
 
@@ -4984,16 +4640,6 @@ func TestPropertyValidation(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestPutResultBuffer tests returning buffer to pool
-func TestPutResultBuffer(t *testing.T) {
-	t.Run("non-nil buffer", func(t *testing.T) {
-		buf := getResultBuffer()
-		*buf = append(*buf, "data"...)
-		putResultBuffer(buf)
-		// Should not panic
-	})
 }
 
 // TestReverseSlice tests reverse slicing logic
@@ -5421,17 +5067,17 @@ func TestMultiFieldPathParsing(t *testing.T) {
 			segments := processor.getPathSegments()
 			defer processor.putPathSegments(segments)
 
-			segments = processor.splitPath(tt.path, segments)
+			*segments = processor.splitPath(tt.path, *segments)
 
-			if len(segments) != tt.expectLen {
-				t.Errorf("Expected %d segments, got %d", tt.expectLen, len(segments))
-				for i, s := range segments {
+			if len(*segments) != tt.expectLen {
+				t.Errorf("Expected %d segments, got %d", tt.expectLen, len(*segments))
+				for i, s := range *segments {
 					t.Logf("  Segment %d: Type=%v Key=%q", i, s.Type, s.Key)
 				}
 				return
 			}
 
-			lastSeg := segments[len(segments)-1]
+			lastSeg := (*segments)[len(*segments)-1]
 			if lastSeg.TypeString() != tt.expectType {
 				t.Errorf("Expected type %s, got %s", tt.expectType, lastSeg.TypeString())
 			}

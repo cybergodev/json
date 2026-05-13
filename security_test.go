@@ -1464,3 +1464,78 @@ func TestPatternRegistryAPI(t *testing.T) {
 		}
 	})
 }
+
+// ============================================================================
+// Panic Protection Tests (SEC-003)
+// ============================================================================
+
+// TestPanicProtectionSafeErrorNilErr verifies SafeError does not panic
+// when called with a JsonsError that has a nil Err field.
+func TestPanicProtectionSafeErrorNilErr(t *testing.T) {
+	t.Run("NilErrField", func(t *testing.T) {
+		err := &JsonsError{Op: "test", Message: "something went wrong"}
+		result := SafeError(err)
+		if result != "something went wrong" {
+			t.Errorf("SafeError with nil Err = %q, want %q", result, "something went wrong")
+		}
+	})
+
+	t.Run("NilErrFieldEmptyMessage", func(t *testing.T) {
+		err := &JsonsError{Op: "test"}
+		result := SafeError(err)
+		if result == "" {
+			t.Error("SafeError with nil Err and empty Message should not return empty string")
+		}
+	})
+
+	t.Run("NilInput", func(t *testing.T) {
+		result := SafeError(nil)
+		if result != "" {
+			t.Errorf("SafeError(nil) = %q, want empty string", result)
+		}
+	})
+
+	t.Run("NormalError", func(t *testing.T) {
+		result := SafeError(ErrPathNotFound)
+		if result != "path not found" {
+			t.Errorf("SafeError(ErrPathNotFound) = %q, want %q", result, "path not found")
+		}
+	})
+
+	t.Run("WrappedJsonsError", func(t *testing.T) {
+		inner := &JsonsError{Op: "get", Message: "not found", Err: ErrPathNotFound}
+		result := SafeError(inner)
+		if result != "path not found" {
+			t.Errorf("SafeError(wrapped) = %q, want %q", result, "path not found")
+		}
+	})
+}
+
+// TestPanicProtectionNilProcessor verifies that calling methods on a nil
+// Processor returns an error instead of panicking.
+func TestPanicProtectionNilProcessor(t *testing.T) {
+	t.Run("ParseNilProcessor", func(t *testing.T) {
+		var p *Processor
+		var target any
+		err := p.Parse(`{"a":1}`, &target)
+		if err == nil {
+			t.Error("expected error when calling Parse on nil Processor")
+		}
+	})
+
+	t.Run("GetNilProcessor", func(t *testing.T) {
+		var p *Processor
+		_, err := p.Get("{}", "a")
+		if err == nil {
+			t.Error("expected error when calling Get on nil Processor")
+		}
+	})
+
+	t.Run("SetNilProcessor", func(t *testing.T) {
+		var p *Processor
+		_, err := p.Set(`{}`, "a", 1)
+		if err == nil {
+			t.Error("expected error when calling Set on nil Processor")
+		}
+	})
+}

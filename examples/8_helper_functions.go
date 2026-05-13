@@ -17,7 +17,7 @@ import (
 // Topics covered:
 // - CompareJSON for JSON comparison
 // - MergeJSON for combining JSON objects
-// - Prettify and FormatCompact for formatting
+// - Prettify and Compact for formatting
 // - Encode and EncodePretty for JSON output
 //
 // For JSON validation, see: 6_validation.go
@@ -26,8 +26,8 @@ import (
 // Run: go run -tags=example examples/8_helper_functions.go
 
 func main() {
-	fmt.Println("🔧 JSON Library - Helper Functions")
-	fmt.Println("===================================\n ")
+	fmt.Println("JSON Library - Helper Functions")
+	fmt.Println("===================================")
 
 	// 1. JSON COMPARISON
 	demonstrateComparison()

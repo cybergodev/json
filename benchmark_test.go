@@ -493,92 +493,6 @@ func BenchmarkDeepNesting_Navigate_10(b *testing.B) {
 // BATCH OPERATION BENCHMARKS
 // ----------------------------------------------------------------------------
 
-func BenchmarkBatchSet_Small(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"a":1,"b":2,"c":3}`
-	updates := map[string]any{
-		"a": 10,
-		"b": 20,
-		"c": 30,
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.batchSetOptimized(jsonStr, updates)
-	}
-}
-
-func BenchmarkBatchSet_Large(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	// Generate large JSON
-	var sb strings.Builder
-	sb.WriteString("{")
-	for i := 0; i < 100; i++ {
-		if i > 0 {
-			sb.WriteString(",")
-		}
-		sb.WriteString(fmt.Sprintf(`"key%d":%d`, i, i))
-	}
-	sb.WriteString("}")
-	jsonStr := sb.String()
-
-	// Generate updates
-	updates := make(map[string]any, 50)
-	for i := 0; i < 50; i++ {
-		updates[fmt.Sprintf("key%d", i)] = i * 10
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.batchSetOptimized(jsonStr, updates)
-	}
-}
-
-func BenchmarkFastGetMultiple_Small(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"a":1,"b":2,"c":3,"d":4,"e":5}`
-	paths := []string{"a", "b", "c", "d", "e"}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.fastGetMultiple(jsonStr, paths)
-	}
-}
-
-func BenchmarkFastGetMultiple_Large(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	// Generate large JSON
-	var sb strings.Builder
-	sb.WriteString("{")
-	for i := 0; i < 100; i++ {
-		if i > 0 {
-			sb.WriteString(",")
-		}
-		sb.WriteString(fmt.Sprintf(`"key%d":%d`, i, i))
-	}
-	sb.WriteString("}")
-	jsonStr := sb.String()
-
-	// Generate paths
-	paths := make([]string, 50)
-	for i := 0; i < 50; i++ {
-		paths[i] = fmt.Sprintf("key%d", i)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.fastGetMultiple(jsonStr, paths)
-	}
-}
-
 // ----------------------------------------------------------------------------
 // BUFFER POOL BENCHMARKS
 // ----------------------------------------------------------------------------
@@ -741,19 +655,6 @@ func BenchmarkIterableValue_GetTyped(b *testing.B) {
 // ADDITIONAL PERFORMANCE BENCHMARKS
 // ----------------------------------------------------------------------------
 
-// BenchmarkFastSet_Simple compares FastSet vs Set performance
-func BenchmarkFastSet_Simple(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"name":"test","age":30,"active":true}`
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.fastSet(jsonStr, "name", "updated")
-	}
-}
-
 // BenchmarkSet_Simple for comparison with FastSet
 func BenchmarkSet_Simple(b *testing.B) {
 	processor, _ := New()
@@ -767,19 +668,6 @@ func BenchmarkSet_Simple(b *testing.B) {
 	}
 }
 
-// BenchmarkFastDelete_Simple compares FastDelete vs Delete performance
-func BenchmarkFastDelete_Simple(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"name":"test","age":30,"active":true}`
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.fastDelete(jsonStr, "name")
-	}
-}
-
 // BenchmarkDelete_Simple for comparison with FastDelete
 func BenchmarkDelete_Simple(b *testing.B) {
 	processor, _ := New()
@@ -790,38 +678,6 @@ func BenchmarkDelete_Simple(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		_, _ = processor.Delete(jsonStr, "name")
-	}
-}
-
-// BenchmarkBatchSetOptimized benchmarks the BatchSetOptimized method
-func BenchmarkBatchSetOptimized(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"a":1,"b":2,"c":3,"d":4,"e":5}`
-	updates := map[string]any{
-		"a": 10,
-		"b": 20,
-		"c": 30,
-	}
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.batchSetOptimized(jsonStr, updates)
-	}
-}
-
-// BenchmarkFastGetMultiple benchmarks the FastGetMultiple method
-func BenchmarkFastGetMultiple(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"a":1,"b":2,"c":3,"d":4,"e":5}`
-	paths := []string{"a", "b", "c", "d", "e"}
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		_, _ = processor.fastGetMultiple(jsonStr, paths)
 	}
 }
 

@@ -359,6 +359,17 @@ func unifiedTypeConversion[T any](value any) (T, bool) {
 		return typedValue, true
 	}
 
+	// Unwrap single-element arrays when converting to non-slice target types.
+	// This handles distributed property access (e.g., "choices.message.content")
+	// where an array with one element produces a single-element []any result
+	// that should be unwrapped for typed getters like GetString/GetInt/etc.
+	if arr, ok := value.([]any); ok && len(arr) == 1 {
+		targetType := reflect.TypeOf(zero)
+		if targetType != nil && targetType.Kind() != reflect.Slice {
+			return unifiedTypeConversion[T](arr[0])
+		}
+	}
+
 	// Get target type information
 	targetType := reflect.TypeOf(zero)
 	if targetType == nil {
@@ -624,14 +635,74 @@ func validatePath(path string) error {
 	return processor.validatePath(path)
 }
 
-// deepCopyMaxDepth is the maximum recursion depth for DeepCopy operations
-// SECURITY: Prevents stack overflow from deeply nested structures
+// containerGetProperty retrieves a property from a map container (map[string]any or map[any]any).
+// Returns the value and true if found, nil and false otherwise.
+func containerGetProperty(container any, key string) (any, bool) {
+	switch m := container.(type) {
+	case map[string]any:
+		v, ok := m[key]
+		return v, ok
+	case map[any]any:
+		v, ok := m[key]
+		return v, ok
+	}
+	return nil, false
+}
+
+// containerDeleteProperty deletes a property from a map container (map[string]any or map[any]any).
+// Returns true if the property was found and deleted.
+func containerDeleteProperty(container any, key string) bool {
+	switch m := container.(type) {
+	case map[string]any:
+		if _, ok := m[key]; ok {
+			delete(m, key)
+			return true
+		}
+	case map[any]any:
+		if _, ok := m[key]; ok {
+			delete(m, key)
+			return true
+		}
+	}
+	return false
+}
+
+// containerSetProperty sets a property on a map container (map[string]any or map[any]any).
+// Returns true if the container type was recognized.
+func containerSetProperty(container any, key string, value any) bool {
+	switch m := container.(type) {
+	case map[string]any:
+		m[key] = value
+		return true
+	case map[any]any:
+		m[key] = value
+		return true
+	}
+	return false
+}
+
+// containerIsMap checks if a value is a map[string]any or map[any]any.
+func containerIsMap(v any) bool {
+	switch v.(type) {
+	case map[string]any, map[any]any:
+		return true
+	}
+	return false
+}
+
+// deepCopyMaxDepth is the maximum recursion depth for DeepCopy operations.
+// SECURITY: Prevents stack overflow from deeply nested structures.
 const deepCopyMaxDepth = 200
 
 // DeepCopy creates a deep copy of JSON-compatible data
 // Uses direct recursive copying for better performance (avoids marshal/unmarshal overhead)
 // SECURITY: Added depth limit to prevent stack overflow
 func deepCopy(data any) (any, error) {
+	// Try fast JSON-specialized path first (handles map[string]any, []any, primitives)
+	if result, err := deepCopySubtree(data); err == nil {
+		return result, nil
+	}
+	// Fallback for non-JSON types (structs, typed slices, custom types)
 	return deepCopyValueWithDepth(data, 0)
 }
 
@@ -764,6 +835,20 @@ func deepCopySliceWithDepth(s []any, depth int) ([]any, error) {
 //   - Tier 1: JSON primitives (bool, float64, string, json.Number) → zero allocation
 //   - Tier 2: map[string]any / []any → specialized inline copy without error wrapping
 //   - Tier 3: Fallback for non-JSON types
+// safeCopyResult returns a safe copy of result for JSON primitives or a deep copy for containers.
+// Prevents callers from corrupting cached data.
+func safeCopyResult(result any) any {
+	switch result.(type) {
+	case nil, bool, float64, string, int, int64, uint, uint64, json.Number:
+		return result
+	}
+	copied, err := deepCopySubtree(result)
+	if err != nil {
+		return result // fallback: return original if copy fails
+	}
+	return copied
+}
+
 func deepCopySubtree(data any) (any, error) {
 	return deepCopySubtreeWithDepth(data, 0)
 }
@@ -796,21 +881,53 @@ func deepCopySubtreeWithDepth(data any, depth int) (any, error) {
 	}
 
 	// Tier 3: Fallback for non-JSON types (int slices, custom types, etc.)
-	return deepCopy(data)
+	// NOTE: Calls deepCopyValueWithDepth directly (not deepCopy) to break the
+	// circular call chain: deepCopy → deepCopySubtree → deepCopy.
+	return deepCopyValueWithDepth(data, depth)
 }
 
 // deepCopyJSONMap copies a map[string]any that contains only JSON-compatible values.
-// PERFORMANCE: Inlined primitive check avoids the overhead of deepCopyValueWithDepth's
-// 16-case type switch. No fmt.Errorf wrapping — errors propagate directly.
+// PERFORMANCE v2: Inlined leaf-value copy avoids function call overhead for the
+// common case where most values are JSON primitives (bool, float64, string).
+// No fmt.Errorf wrapping — errors propagate directly.
 func deepCopyJSONMapWithDepth(m map[string]any, depth int) (map[string]any, error) {
 	if depth > deepCopyMaxDepth {
 		return nil, fmt.Errorf("deep copy depth limit exceeded: maximum depth is %d", deepCopyMaxDepth)
 	}
 	result := make(map[string]any, len(m))
 	for k, v := range m {
-		copied, err := deepCopyJSONValueWithDepth(v, depth)
-		if err != nil {
-			return nil, err
+		// Inline leaf-value handling to avoid deepCopyJSONValueWithDepth call overhead
+		// for the common case (~80% of values are primitives in typical JSON).
+		var copied any
+		switch val := v.(type) {
+		case nil:
+			// nil stays nil
+		case bool:
+			copied = val
+		case float64:
+			copied = val
+		case string:
+			copied = val
+		case json.Number:
+			copied = val
+		case map[string]any:
+			c, err := deepCopyJSONMapWithDepth(val, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			copied = c
+		case []any:
+			c, err := deepCopyJSONSliceWithDepth(val, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			copied = c
+		default:
+			c, err := deepCopyValueWithDepth(v, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			copied = c
 		}
 		result[k] = copied
 	}
@@ -818,48 +935,46 @@ func deepCopyJSONMapWithDepth(m map[string]any, depth int) (map[string]any, erro
 }
 
 // deepCopyJSONSlice copies a []any that contains only JSON-compatible values.
-// PERFORMANCE: Same optimization as deepCopyJSONMap — inline JSON-only type handling.
+// PERFORMANCE v2: Same inline leaf-value optimization as deepCopyJSONMapWithDepth.
 func deepCopyJSONSliceWithDepth(s []any, depth int) ([]any, error) {
 	if depth > deepCopyMaxDepth {
 		return nil, fmt.Errorf("deep copy depth limit exceeded: maximum depth is %d", deepCopyMaxDepth)
 	}
 	result := make([]any, len(s))
 	for i, v := range s {
-		copied, err := deepCopyJSONValueWithDepth(v, depth)
-		if err != nil {
-			return nil, err
+		var copied any
+		switch val := v.(type) {
+		case nil:
+		case bool:
+			copied = val
+		case float64:
+			copied = val
+		case string:
+			copied = val
+		case json.Number:
+			copied = val
+		case map[string]any:
+			c, err := deepCopyJSONMapWithDepth(val, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			copied = c
+		case []any:
+			c, err := deepCopyJSONSliceWithDepth(val, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			copied = c
+		default:
+			c, err := deepCopyValueWithDepth(v, depth+1)
+			if err != nil {
+				return nil, err
+			}
+			copied = c
 		}
 		result[i] = copied
 	}
 	return result, nil
-}
-
-// deepCopyJSONValue copies a single JSON-compatible value.
-// PERFORMANCE: Tight type switch covering only types produced by json.Unmarshal into any:
-// nil, bool, float64, string, json.Number, map[string]any, []any.
-// No error wrapping (no fmt.Errorf) — the deepest error propagates directly.
-func deepCopyJSONValueWithDepth(v any, depth int) (any, error) {
-	if v == nil {
-		return nil, nil
-	}
-
-	switch val := v.(type) {
-	case bool:
-		return val, nil
-	case float64:
-		return val, nil
-	case string:
-		return val, nil
-	case json.Number:
-		return val, nil
-	case map[string]any:
-		return deepCopyJSONMapWithDepth(val, depth+1)
-	case []any:
-		return deepCopyJSONSliceWithDepth(val, depth+1)
-	}
-
-	// Non-standard JSON type — fall back to generic deep copy
-	return deepCopy(v)
 }
 
 // CompareJSON compares two JSON strings for equality by parsing and normalizing them.
