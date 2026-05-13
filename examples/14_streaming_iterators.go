@@ -26,7 +26,7 @@ import (
 
 func main() {
 	fmt.Println("JSON Library - Streaming Iterators")
-	fmt.Println("===================================\n ")
+	fmt.Println("===================================")
 
 	// 1. STREAM ITERATOR
 	demonstrateStreamIterator()

@@ -1069,6 +1069,113 @@ func TestEncoding_ParseStringEscapes(t *testing.T) {
 	}
 }
 
+// --- Encoding with config variants ---
+
+func TestEncodeStructConfigVariants(t *testing.T) {
+	type dataStruct struct {
+		URL    string  `json:"url"`
+		Score  float64 `json:"score"`
+		Active bool    `json:"active"`
+	}
+
+	t.Run("escape unicode", func(t *testing.T) {
+		s := dataStruct{URL: "hello世界", Score: 1.0, Active: true}
+		cfg := DefaultConfig()
+		cfg.EscapeUnicode = true
+		result, err := Encode(s, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, "\\u") {
+			t.Errorf("expected unicode escaping in result: %s", result)
+		}
+	})
+
+	t.Run("escape slash", func(t *testing.T) {
+		s := dataStruct{URL: "http://example.com/path", Score: 1.0, Active: true}
+		cfg := DefaultConfig()
+		cfg.EscapeSlash = true
+		result, err := Encode(s, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, "\\/") {
+			t.Errorf("expected slash escaping in result: %s", result)
+		}
+	})
+
+	t.Run("escape newlines and tabs disabled", func(t *testing.T) {
+		type tabStruct struct {
+			Text string `json:"text"`
+		}
+		s := tabStruct{Text: "line1\nline2\ttab"}
+		cfg := DefaultConfig()
+		cfg.EscapeNewlines = false
+		cfg.EscapeTabs = false
+		result, err := Encode(s, cfg)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(result, "line1\nline2") {
+			t.Errorf("expected literal newline: %q", result)
+		}
+	})
+}
+
+func TestEncodeStructCustomAllFlags(t *testing.T) {
+	type fullStruct struct {
+		Name   string  `json:"name"`
+		Null   *string `json:"null,omitempty"`
+		HTML   string  `json:"html"`
+		Number float64 `json:"number"`
+	}
+
+	s := fullStruct{Name: "test", Null: nil, HTML: "<b>", Number: 1.23456}
+	cfg := DefaultConfig()
+	cfg.IncludeNulls = false
+	cfg.SortKeys = true
+	cfg.EscapeHTML = false
+	cfg.FloatPrecision = 2
+	cfg.EscapeNewlines = false
+	cfg.EscapeTabs = false
+	result, err := Encode(s, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, `"name"`) {
+		t.Errorf("expected name field in result: %s", result)
+	}
+	if strings.Contains(result, "null") {
+		t.Errorf("expected null field excluded: %s", result)
+	}
+}
+
+func TestEncodeValueTypes(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SortKeys = true
+
+	tests := []struct {
+		name string
+		val  any
+		want string
+	}{
+		{name: "nil value", val: nil, want: "null"},
+		{name: "bool true", val: true, want: "true"},
+		{name: "bool false", val: false, want: "false"},
+		{name: "int value", val: 42, want: "42"},
+		{name: "float value", val: 3.14, want: "3.14"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Encode(tt.val, cfg)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertJSONEqual(t, tt.want, result)
+		})
+	}
+}
+
 // TestEncoding_ParseStringErrors tests parseString error paths
 func TestEncoding_ParseStringErrors(t *testing.T) {
 	t.Run("invalid escape", func(t *testing.T) {

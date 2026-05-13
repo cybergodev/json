@@ -53,6 +53,8 @@ var (
 
 	// ErrConcurrencyLimit indicates that the concurrent operation count exceeds the limit.
 	// Increase MaxConcurrency in Config for high-concurrency scenarios.
+	//
+	// Deprecated: not currently returned by any operation. Reserved for future use.
 	ErrConcurrencyLimit = errors.New("concurrency limit exceeded")
 
 	// ErrSecurityViolation indicates that potentially dangerous content was detected.
@@ -69,10 +71,14 @@ var (
 
 	// ErrOperationTimeout indicates that an operation exceeded its timeout duration.
 	// Consider increasing timeout or optimizing the operation.
+	//
+	// Deprecated: not currently returned by any operation. Reserved for future use.
 	ErrOperationTimeout = errors.New("operation timeout")
 
 	// ErrResourceExhausted indicates that system resources are exhausted.
 	// This may indicate a memory leak or excessive resource usage.
+	//
+	// Deprecated: not currently returned by any operation. Reserved for future use.
 	ErrResourceExhausted = errors.New("system resources exhausted")
 )
 
@@ -130,7 +136,6 @@ func (e *JsonsError) Is(target error) bool {
 	return errors.Is(e.Err, target)
 }
 
-
 // SafeError returns a client-safe error message that omits internal details.
 // Use this when returning errors to external clients (HTTP responses, APIs).
 // The full Error() output may include path names and internal structure
@@ -150,8 +155,13 @@ func SafeError(err error) string {
 	}
 	var jsErr *JsonsError
 	if errors.As(err, &jsErr) {
-		// Return only the sentinel error message, not the path or operation
-		return jsErr.Err.Error()
+		if jsErr.Err != nil {
+			return jsErr.Err.Error()
+		}
+		if jsErr.Message != "" {
+			return jsErr.Message
+		}
+		return err.Error()
 	}
 	return err.Error()
 }
@@ -191,81 +201,4 @@ func RedactedPath(path string) string {
 		return "***"
 	}
 	return ""
-}
-
-// GetErrorSuggestion provides suggestions for common errors
-func getErrorSuggestion(err error) string {
-	if err == nil {
-		return ""
-	}
-	if errors.Is(err, ErrInvalidJSON) {
-		return "Check JSON syntax - ensure proper quotes, brackets, and commas"
-	}
-	if errors.Is(err, ErrPathNotFound) {
-		return "Verify the path exists in the JSON structure"
-	}
-	if errors.Is(err, ErrTypeMismatch) {
-		return "Check that the path points to the expected data type"
-	}
-	if errors.Is(err, ErrInvalidPath) {
-		return "Use valid path syntax: 'key.subkey', 'array[0]', or 'object{field}'"
-	}
-	if errors.Is(err, ErrSizeLimit) {
-		return "Reduce JSON size or increase MaxJSONSize in configuration"
-	}
-	if errors.Is(err, ErrDepthLimit) {
-		return "Reduce nesting depth or increase MaxNestingDepth in configuration"
-	}
-	if errors.Is(err, ErrConcurrencyLimit) {
-		return "Reduce concurrent operations or increase MaxConcurrency in configuration"
-	}
-	if errors.Is(err, ErrSecurityViolation) {
-		return "Input contains potentially dangerous patterns - review and sanitize"
-	}
-	return "Check the error message for specific details"
-}
-
-// isRetryable determines if an error is retryable
-func isRetryable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrOperationTimeout) || errors.Is(err, ErrConcurrencyLimit) {
-		return true
-	}
-	var jsErr *JsonsError
-	if errors.As(err, &jsErr) {
-		switch jsErr.Op {
-		case "cache_operation", "concurrent_operation":
-			return true
-		}
-	}
-	return false
-}
-
-// isSecurityRelated determines if an error is security-related
-func isSecurityRelated(err error) bool {
-	if err == nil {
-		return false
-	}
-	return errors.Is(err, ErrSecurityViolation)
-}
-
-// userErrorSentinels is the fixed list of user-caused errors, pre-allocated to avoid per-call allocation.
-var userErrorSentinels = []error{
-	ErrInvalidJSON, ErrPathNotFound, ErrTypeMismatch,
-	ErrInvalidPath, ErrUnsupportedPath,
-}
-
-// isUserError determines if an error is caused by user input
-func isUserError(err error) bool {
-	if err == nil {
-		return false
-	}
-	for _, userErr := range userErrorSentinels {
-		if errors.Is(err, userErr) {
-			return true
-		}
-	}
-	return false
 }

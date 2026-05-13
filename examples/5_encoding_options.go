@@ -25,8 +25,8 @@ import (
 // Run: go run -tags=example examples/5_encoding_options.go
 
 func main() {
-	fmt.Println("⚙️  JSON Library - Encoding Options")
-	fmt.Println("==================================\n ")
+	fmt.Println("JSON Library - Encoding Options")
+	fmt.Println("==================================")
 
 	// Sample data
 	type User struct {
@@ -75,12 +75,12 @@ func main() {
 	// 8. ENCODE METHODS
 	demonstrateEncodeMethods()
 
-	fmt.Println("\n✅ Encoding options complete!")
+	fmt.Println("\nEncoding options complete!")
 }
 
 func demonstratePrettyVsCompact(user any) {
-	fmt.Println("1️. Pretty vs Compact Formatting")
-	fmt.Println("─────────────────────────────────")
+	fmt.Println("1. Pretty vs Compact Formatting")
+	fmt.Println("---------------------------------")
 
 	// Pretty formatting - using unified Config API
 	prettyJSON, err := json.EncodeWithConfig(user, json.PrettyConfig())
@@ -103,7 +103,7 @@ func demonstratePrettyVsCompact(user any) {
 
 func demonstrateHTMLEscaping() {
 	fmt.Println("\n2. HTML Escaping Control")
-	fmt.Println("──────────────────────────")
+	fmt.Println("--------------------------")
 
 	// Data with HTML content
 	type HTMLContent struct {
@@ -116,15 +116,15 @@ func demonstrateHTMLEscaping() {
 		Content: "Visit <a href='https://example.com'>here</a>",
 	}
 
-	// With HTML escaping (safe for web)
+	// With HTML escaping + slash escaping (safe for web embedding)
 	webSafeConfig := json.DefaultConfig()
 	webSafeConfig.EscapeHTML = true
 	webSafeConfig.EscapeSlash = true
 	escapedJSON, _ := json.Encode(data, webSafeConfig)
-	fmt.Println("   With HTML escaping (default, safe for web):")
+	fmt.Println("   With HTML+slash escaping (safe for web):")
 	fmt.Println(escapedJSON)
 
-	// Without HTML escaping (for readability)
+	// Without HTML escaping (for readability, not for web embedding)
 	readableConfig := json.PrettyConfig()
 	readableConfig.EscapeHTML = false
 	readableConfig.DisableEscaping = true
@@ -133,13 +133,13 @@ func demonstrateHTMLEscaping() {
 		fmt.Printf("   Encode error: %v\n", err)
 		return
 	}
-	fmt.Println("\n   Without HTML escaping (custom, readable):")
+	fmt.Println("\n   Without HTML escaping (readable output):")
 	fmt.Println(unescapedJSON)
 }
 
 func demonstrateKeySorting() {
-	fmt.Println("\n3️. Key Sorting")
-	fmt.Println("───────────────")
+	fmt.Println("\n3. Key Sorting")
+	fmt.Println("---------------")
 
 	type Data struct {
 		Zebra   int `json:"zebra"`
@@ -165,8 +165,8 @@ func demonstrateKeySorting() {
 }
 
 func demonstrateFloatPrecision() {
-	fmt.Println("\n4️. Float Precision Control")
-	fmt.Println("──────────────────────────")
+	fmt.Println("\n4. Float Precision Control")
+	fmt.Println("--------------------------")
 
 	type Measurement struct {
 		Name  string  `json:"name"`
@@ -210,8 +210,8 @@ func demonstrateFloatPrecision() {
 }
 
 func demonstrateOmitEmpty() {
-	fmt.Println("\n5️. Omit Empty Values")
-	fmt.Println("──────────────────────")
+	fmt.Println("\n5. Omit Empty Values")
+	fmt.Println("----------------------")
 
 	type Config struct {
 		Host     string `json:"host"`
@@ -251,8 +251,8 @@ func demonstrateOmitEmpty() {
 }
 
 func demonstrateCustomEscaping() {
-	fmt.Println("\n6️. Custom Escaping Options")
-	fmt.Println("───────────────────────────")
+	fmt.Println("\n6. Custom Escaping Options")
+	fmt.Println("---------------------------")
 
 	// Data with special characters
 	type Message struct {
@@ -292,8 +292,8 @@ func demonstrateCustomEscaping() {
 }
 
 func demonstrateUnicodeEscaping() {
-	fmt.Println("\n7️. Unicode Escaping")
-	fmt.Println("─────────────────────")
+	fmt.Println("\n7. Unicode Escaping")
+	fmt.Println("---------------------")
 
 	// Data with Unicode characters
 	type Greeting struct {
@@ -325,8 +325,8 @@ func demonstrateUnicodeEscaping() {
 }
 
 func demonstrateEncodeMethods() {
-	fmt.Println("\n8️. Convenience Encode Methods")
-	fmt.Println("────────────────────────────────")
+	fmt.Println("\n8. Convenience Encode Methods")
+	fmt.Println("--------------------------------")
 
 	type Product struct {
 		ID    int     `json:"id"`

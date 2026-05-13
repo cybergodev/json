@@ -23,8 +23,8 @@ import (
 // Run: go run -tags=example examples/12_advanced_delete.go
 
 func main() {
-	fmt.Println("🗑️  JSON Library - Advanced Delete Operations")
-	fmt.Println("==============================================\n ")
+	fmt.Println("JSON Library - Advanced Delete Operations")
+	fmt.Println("==============================================")
 
 	// 1. BASIC DELETE
 	demonstrateBasicDelete()

@@ -17,10 +17,14 @@ func NormalizeIndex(index, length int) int {
 	return index
 }
 
+// ParseArrayIndex parses a string as an array index integer.
+// Returns the index and true if valid, or 0 and false otherwise.
 func ParseArrayIndex(property string) (int, bool) {
 	return ParseIntFast(property)
 }
 
+// ParseSliceComponents parses a slice expression like "1:5:2" into start, end, step pointers.
+// Missing components are returned as nil.
 func ParseSliceComponents(slicePart string) (start, end, step *int, err error) {
 	if slicePart == ":" {
 		return nil, nil, nil, nil
@@ -174,11 +178,15 @@ func calculateSliceCapacity(rangeSize, step int) int {
 	return (rangeSize-1)/step + 1
 }
 
+// IsValidIndex checks whether the given index is within bounds [0, length)
+// after normalizing negative indices.
 func IsValidIndex(index, length int) bool {
 	normalizedIndex := NormalizeIndex(index, length)
 	return normalizedIndex >= 0 && normalizedIndex < length
 }
 
+// GetSafeArrayElement retrieves an element by index with bounds checking.
+// Supports negative indices. Returns the element and true, or nil and false.
 func GetSafeArrayElement(arr []any, index int) (any, bool) {
 	normalizedIndex := NormalizeIndex(index, len(arr))
 	if normalizedIndex < 0 || normalizedIndex >= len(arr) {

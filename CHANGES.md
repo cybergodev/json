@@ -4,6 +4,92 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.5.0 - Performance, Quality & Security Improvements (2026-05-14)
+
+> Minor release: performance gains across all operations, critical bug fixes, security hardening, ~1600 lines of dead code removed
+
+### Added
+
+- Export `Marshaler`, `Unmarshaler`, `TextMarshaler`, `TextUnmarshaler` interfaces for encoding/json compatibility
+- UTF-16 surrogate pair handling in streaming Decoder (RFC 8259 §7)
+- Streaming byte limit enforcement in `Decoder` to prevent memory exhaustion from malicious input
+- Concurrency semaphore integration for `Get()`, `Set()`, `Delete()` — bounded parallelism per processor
+- `CacheManager.DeleteByPrefix()` for complete prefix-based cache eviction
+- Panic recovery in hook execution — misbehaving hooks no longer crash the processor
+- Streaming types documentation (Encoder, Decoder, Number, Token, Delim, StreamIterator, ParallelIterator)
+- `Iterator.Reset()` / `ResetWith()` documented as not concurrency-safe
+- Comprehensive boundary condition tests for low-coverage functions
+
+### Fixed
+
+- `Decoder.DisallowUnknownFields()` now enforces strict field matching (was a no-op)
+- Memory counter race condition in `decMemoryUsage` — non-atomic AddInt64+StoreInt64 replaced with CAS loop
+- `ParseIntFast` 32-bit overflow on MinInt64 boundary — platform width now validated before conversion
+- `HealthChecker` STW pause eliminated — cached memory stats replace direct `runtime.ReadMemStats`
+- Circular call chain in `deepCopy` → `deepCopySubtree` → `deepCopy`
+- `scanWindowForPatterns` now respects `Config.DisableDefaultPatterns` — non-critical patterns skipped when enabled
+- `Get()` no longer returns shared cached reference on deepCopy failure
+- `handleArrayIndexExtension` no longer silently loses writes due to local slice variable
+- `validateNestingDepth` now checks bracket balance for all input sizes (was skipping < 64KB)
+- `StreamLinesInto` now enforces security validation (size limits, depth checks, pattern scanning)
+- `ForeachReturn` now re-encodes data after iteration to reflect callback transformations
+- `GetFromParsed` deep copies non-primitive results to prevent cached data corruption
+- `deleteComplexExtract` collects errors instead of silently discarding them
+- `ParallelIterator` double-close panic — CAS-guarded close replaces select-based close
+- `Processor.Close()` sets timeout state when semaphore drain exceeds deadline
+- TOCTOU race in `checkRateLimit` — load-check-store replaced with CAS loop
+- `invalidateJSONCache()` uses `DeleteByPrefix()` for complete eviction (was leaving stale entries)
+- `SafeError` no longer panics on nil `Err` field in `JsonsError`
+- Nil `Processor` access in `Parse` fast path now guarded
+- `GetStats()` no longer panics on partial initialization (nil cache/metrics)
+- `getCachedPathSegments()` returns copy to prevent data races when callers mutate the slice
+- `StreamIterator.Next()` propagates closing-bracket decode errors instead of silently discarding
+- `ShutdownGlobalProcessor` now closes `fallbackProcessor` to prevent resource leak
+- `JSONLWriter.Write` uses pooled encoding with HTML escape support
+- Path segment pool identity preserved — `getPathSegments`/`putPathSegments` use `*[]PathSegment`
+- Shared mutable `cachedDefaultConfigPtr` removed — prevents silent cross-request config mutation
+- `scanWithRollingWindow` offset progression fix — prevents data skipping at chunk boundaries
+- `shouldUseDistributedArrayOp` heuristic improved — stricter sampling prevents false positives on regular nested arrays
+- `extendArrayAndSetValue` / `extendArrayAndSetSliceValue` guard against theoretical out-of-bounds panic
+- `readContainerValue` validates bracket matching at all nesting depths (was depth==1 only)
+
+### Changed
+
+- Validation cache key generation: SHA-256 (~100ns) → FNV-1a dual-hash (~4ns), ~50x speedup per Get/Set/Parse
+- Fast path for simple property access in `Get()`, `Set()`, `Delete()` — bypasses hash, cache, and recursive processor
+- `strconv.Atoi` in path parsing hot paths replaced with zero-allocation `ParseIntFast`
+- `GlobalPathIntern` changed to zero-capacity lazy init from eager 25000-entry allocation
+- `operation.go` (2162 lines) split into focused files: operation_delete.go, operation_set.go, operation_array.go
+- `processor.go` (1784 lines) split into 7 focused files: lifecycle, get, set, delete, iterate, stats, cache
+- `encoding.go` split into encoding.go (codec), encoding_schema.go (validation), encoding_format.go (formatting)
+- `iterator.go` split into iterator.go, iterable_value.go, iterator_stream.go, iterator_parallel.go
+- Modernized to Go 1.22+ idioms: range-over-int, reflect.Pointer, slices.Sort, maps.Copy
+- IterableValue accessor methods (~400 lines duplication) consolidated to ~120 lines with generic helpers
+- `EncodeWithConfig` delegates to shared `encodeWithConfigToBytes`, eliminating ~80 lines duplicated logic
+- `prepareOptions` returns fresh pooled copy from cached default — no shared mutable state
+- `getHooks` uses copy-on-write pattern — zero allocation for common no-hook case
+- Config comparison for cache keys uses value equality instead of pointer identity
+- `fallbackProcessor` uses minimal config (no cache, no metrics) to reduce memory footprint
+
+### Performance
+
+- Concurrent Get: 537ns → 487ns (9.3% faster), memory 104 → 72 B/op (30.8% less)
+- Set Simple: 1476ns → 1233ns (16.5% faster), memory 841 → 777 B/op (7.6% less)
+- Delete Simple: 1363ns → 1219ns (10.6% faster), memory 752 → 688 B/op (8.5% less)
+- Unmarshal Simple: 1223ns → 1142ns (6.6% faster), memory 696 → 664 B/op (4.6% less)
+- Large JSON Parse: 347Kns → 322Kns (7.2% faster)
+- Deep Nesting Parse: 2329ns → 2211ns (5.1% faster)
+
+### Removed
+
+- `internal/array_ops.go` (926 lines) — all exported functions unused by parent package
+- `internal/parallel_ops.go` (683 lines) — entire file unused
+- ~190 lines of experimental dead code (fastSet, fastDelete, batchSetOptimized, etc.)
+- Unused print functions, error helpers, experimental pools, and wrapper methods
+- ~2400 lines of redundant/duplicate test code consolidated into focused test files
+
+---
+
 ## v1.4.1 - Performance, Security & Quality Improvements (2026-05-08)
 
 ### Breaking Changes

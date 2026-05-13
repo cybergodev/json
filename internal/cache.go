@@ -3,9 +3,8 @@ package internal
 import (
 	"container/list"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"runtime"
+		"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,8 +14,8 @@ import (
 // This replaces the previous CacheConfig interface to avoid forcing
 // exported accessor methods on the public Config type.
 type cacheConfigValues struct {
-	enableCache  bool
-	cacheTTL     time.Duration
+	enableCache bool
+	cacheTTL    time.Duration
 }
 
 // Cache memory limits - configurable based on system resources
@@ -135,14 +134,14 @@ func NewCacheManager(enableCache bool, maxCacheSize int, cacheTTL time.Duration)
 	if !enableCache {
 		// Return disabled cache manager
 		return &CacheManager{
-			shards:     []*cacheShard{newCacheShard(1)},
-			cacheConfig: cacheConfigValues{enableCache: false, cacheTTL: cacheTTL},
-			shardCount: 1,
-			shardMask:  0,
-			entryPool:  entryPool,
-			ctx:        ctx,
-			cancelFunc: cancel,
-			maxMemory:  DefaultMaxCacheMemory,
+			shards:        []*cacheShard{newCacheShard(1)},
+			cacheConfig:   cacheConfigValues{enableCache: false, cacheTTL: cacheTTL},
+			shardCount:    1,
+			shardMask:     0,
+			entryPool:     entryPool,
+			ctx:           ctx,
+			cancelFunc:    cancel,
+			maxMemory:     DefaultMaxCacheMemory,
 			highWatermark: int64(DefaultMaxCacheMemory * CacheHighWatermarkPercent / 100),
 		}
 	}
@@ -163,14 +162,14 @@ func NewCacheManager(enableCache bool, maxCacheSize int, cacheTTL time.Duration)
 	highWater := int64(maxMem * int64(CacheHighWatermarkPercent) / 100)
 
 	return &CacheManager{
-		shards:     shards,
-		cacheConfig: cacheConfigValues{enableCache: true, cacheTTL: cacheTTL},
-		shardCount: shardCount,
-		shardMask:  uint64(shardCount - 1),
-		entryPool:  entryPool,
-		ctx:        ctx,
-		cancelFunc: cancel,
-		maxMemory:  maxMem,
+		shards:        shards,
+		cacheConfig:   cacheConfigValues{enableCache: true, cacheTTL: cacheTTL},
+		shardCount:    shardCount,
+		shardMask:     uint64(shardCount - 1),
+		entryPool:     entryPool,
+		ctx:           ctx,
+		cancelFunc:    cancel,
+		maxMemory:     maxMem,
 		highWatermark: highWater,
 	}
 }
@@ -471,6 +470,39 @@ func (cm *CacheManager) Delete(key string) {
 			entry.reset()
 			cm.entryPool.Put(entry)
 		}
+	}
+}
+
+
+// DeleteByPrefix removes all cache entries whose keys contain the given prefix.
+// Used for invalidating all entries related to a specific JSON input hash.
+func (cm *CacheManager) DeleteByPrefix(prefix string) {
+	if !cm.cacheConfig.enableCache || prefix == "" {
+		return
+	}
+
+	for _, shard := range cm.shards {
+		shard.mu.Lock()
+		var toDelete []string
+		for key := range shard.items {
+			if strings.Contains(key, prefix) {
+				toDelete = append(toDelete, key)
+			}
+		}
+		for _, key := range toDelete {
+			if element, exists := shard.items[key]; exists {
+				entry := element.Value.(*lruEntry)
+				cm.decMemoryUsage(int64(entry.size))
+				delete(shard.items, key)
+				shard.evictList.Remove(element)
+				shard.size--
+				if cm.entryPool != nil {
+					entry.reset()
+					cm.entryPool.Put(entry)
+				}
+			}
+		}
+		shard.mu.Unlock()
 	}
 }
 
@@ -781,28 +813,46 @@ func (cm *CacheManager) estimateSize(value any) int {
 // decMemoryUsage decrements memoryUsage by delta and clamps to zero
 // to prevent negative values from estimation inaccuracies.
 func (cm *CacheManager) decMemoryUsage(delta int64) {
-	if atomic.AddInt64(&cm.memoryUsage, -delta) < 0 {
-		atomic.StoreInt64(&cm.memoryUsage, 0)
+	for {
+		old := atomic.LoadInt64(&cm.memoryUsage)
+		newVal := old - delta
+		if newVal < 0 {
+			newVal = 0
+		}
+		if atomic.CompareAndSwapInt64(&cm.memoryUsage, old, newVal) {
+			return
+		}
 	}
 }
 
-// truncateCacheKey safely truncates a long cache key using hash-based truncation
-// to prevent key collisions that could occur with simple truncation
+// truncateCacheKey safely truncates a long cache key using FNV-1a hash.
+// PERFORMANCE v2: Replaced SHA-256 with FNV-1a for ~50x faster truncation.
+// Cache keys are not security-critical (they are internal), so FNV-1a's
+// collision resistance is sufficient for cache key deduplication.
 func truncateCacheKey(key string) string {
 	if len(key) <= MaxCacheKeyLength {
 		return key
 	}
 
-	// Use SHA-256 hash of the excess portion to create a unique suffix
-	// This ensures different long keys produce different truncated keys
-	hashSuffixLen := 16                                // Length of hash suffix
-	prefixLen := MaxCacheKeyLength - hashSuffixLen - 3 // 3 for "..." separator
+	// Use FNV-1a hash for fast truncation (~2ns vs ~100ns for SHA-256)
+	prefixLen := MaxCacheKeyLength - 19 // "..." + 16 hex chars
 	prefixLen = max(prefixLen, 0)
 
-	// Calculate hash of the full key for uniqueness
-	hash := sha256.Sum256([]byte(key))
-	hashStr := hex.EncodeToString(hash[:])[:hashSuffixLen]
+	// Fast FNV-1a hash of full key
+	h := HashStringFNV1a(key)
 
-	// Return: prefix + "..." + hash suffix
-	return key[:prefixLen] + "..." + hashStr
+	// Format hash as hex directly into result
+	var hashBuf [16]byte
+	const hexChars = "0123456789abcdef"
+	for i := 15; i >= 0; i-- {
+		hashBuf[i] = hexChars[h&0xF]
+		h >>= 4
+	}
+
+	// Build result: prefix + "..." + hex hash
+	result := make([]byte, 0, prefixLen+3+16)
+	result = append(result, key[:prefixLen]...)
+	result = append(result, '.', '.', '.')
+	result = append(result, hashBuf[:]...)
+	return string(result)
 }

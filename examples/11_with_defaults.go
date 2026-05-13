@@ -20,8 +20,8 @@ import (
 // Run: go run -tags=example examples/11_with_defaults.go
 
 func main() {
-	fmt.Println("🔧 JSON Library - With Defaults")
-	fmt.Println("================================\n ")
+	fmt.Println("JSON Library - With Defaults")
+	fmt.Println("================================")
 
 	// Sample data with some missing/optional fields
 	partialData := `{

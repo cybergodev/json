@@ -24,8 +24,8 @@ import (
 // Run: go run -tags=example examples/3_production_ready.go
 
 func main() {
-	fmt.Println("🏭 JSON Library - Production Ready")
-	fmt.Println("===================================\n ")
+	fmt.Println("JSON Library - Production Ready")
+	fmt.Println("================================")
 
 	// Sample data for demonstrations
 	testData := `{
@@ -56,13 +56,12 @@ func main() {
 	// 5. MONITORING & METRICS
 	demonstrateMonitoring(testData)
 
-	fmt.Println("\n✅ Production-ready patterns complete!")
-	fmt.Println("💡 These patterns ensure reliability, performance, and safety in production!")
+	fmt.Println("\nProduction-ready patterns complete!")
 }
 
 func demonstrateConfigurations(testData string) {
-	fmt.Println("1️. Configuration Patterns")
-	fmt.Println("───────────────────────────")
+	fmt.Println("1. Configuration Patterns")
+	fmt.Println("--------------------------")
 
 	// 1. Default configuration (quick start)
 	fmt.Println("   Default Configuration:")
@@ -116,8 +115,8 @@ func demonstrateConfigurations(testData string) {
 }
 
 func demonstrateConcurrency(testData string) {
-	fmt.Println("\n2️. Thread-Safe Concurrent Operations")
-	fmt.Println("──────────────────────────────────────")
+	fmt.Println("\n2. Thread-Safe Concurrent Operations")
+	fmt.Println("--------------------------------------")
 
 	processor, _ := json.New(json.DefaultConfig()) // OK: DefaultConfig always valid
 	defer processor.Close()
@@ -166,10 +165,10 @@ func demonstrateConcurrency(testData string) {
 	totalOps := atomic.LoadInt64(&successCount) + atomic.LoadInt64(&errorCount)
 	successRate := float64(atomic.LoadInt64(&successCount)) / float64(totalOps) * 100
 
-	fmt.Printf("   ✓ Completed %d operations in %v\n", totalOps, duration)
-	fmt.Printf("   ✓ Success rate: %.2f%% (%d/%d)\n", successRate, atomic.LoadInt64(&successCount), totalOps)
-	fmt.Printf("   ✓ Throughput: %.0f ops/sec\n", float64(totalOps)/duration.Seconds())
-	fmt.Printf("   ✓ All operations were thread-safe!\n")
+	fmt.Printf("   Completed %d operations in %v\n", totalOps, duration)
+	fmt.Printf("   Success rate: %.2f%% (%d/%d)\n", successRate, atomic.LoadInt64(&successCount), totalOps)
+	fmt.Printf("   Throughput: %.0f ops/sec\n", float64(totalOps)/duration.Seconds())
+	fmt.Printf("   All operations were thread-safe!\n")
 }
 
 func demonstratePerformance(testData string) {
@@ -199,9 +198,9 @@ func demonstratePerformance(testData string) {
 	stats := cachedProc.GetStats()
 	hitRatio := float64(stats.HitCount) / float64(stats.HitCount+stats.MissCount) * 100
 
-	fmt.Printf("   ✓ 1000 cached operations in: %v\n", cachedDuration)
-	fmt.Printf("   ✓ Cache hit ratio: %.2f%%\n", hitRatio)
-	fmt.Printf("   ✓ Throughput: %.0f ops/sec\n", 1000.0/cachedDuration.Seconds())
+	fmt.Printf("   1000 cached operations in: %v\n", cachedDuration)
+	fmt.Printf("   Cache hit ratio: %.2f%%\n", hitRatio)
+	fmt.Printf("   Throughput: %.0f ops/sec\n", 1000.0/cachedDuration.Seconds())
 
 	// Test without cache for comparison
 	noCacheConfig := json.DefaultConfig()
@@ -216,12 +215,12 @@ func demonstratePerformance(testData string) {
 	noCacheDuration := time.Since(start)
 
 	speedup := float64(noCacheDuration) / float64(cachedDuration)
-	fmt.Printf("   ✓ Without cache: %v (%.1fx slower)\n", noCacheDuration, speedup)
+	fmt.Printf("   Without cache: %v (%.1fx slower)\n", noCacheDuration, speedup)
 }
 
 func demonstrateResourceManagement(testData string) {
-	fmt.Println("\n4️. Resource Management")
-	fmt.Println("────────────────────────")
+	fmt.Println("\n4. Resource Management")
+	fmt.Println("------------------------")
 
 	// Proper resource lifecycle management
 	processor, _ := json.New(json.DefaultConfig()) // OK: DefaultConfig always valid
@@ -229,7 +228,7 @@ func demonstrateResourceManagement(testData string) {
 	// Use defer to ensure cleanup
 	defer func() {
 		processor.Close()
-		fmt.Println("   ✓ Processor resources cleaned up")
+		fmt.Println("   Processor resources cleaned up")
 	}()
 
 	// Perform operations
@@ -237,7 +236,7 @@ func demonstrateResourceManagement(testData string) {
 
 	// Check processor health
 	if !processor.IsClosed() {
-		fmt.Println("   ✓ Processor is healthy and active")
+		fmt.Println("   Processor is healthy and active")
 	}
 
 	// Context-aware operations with timeout
@@ -251,15 +250,15 @@ func demonstrateResourceManagement(testData string) {
 
 	result, err := processor.GetWithContext(ctx, testData, "config.features", cfg)
 	if err != nil {
-		fmt.Printf("   ✗ Operation failed: %v\n", err)
+		fmt.Printf("   Operation failed: %v\n", err)
 	} else {
-		fmt.Printf("   ✓ Context-aware operation succeeded: %v\n", result)
+		fmt.Printf("   Context-aware operation succeeded: %v\n", result)
 	}
 }
 
 func demonstrateMonitoring(testData string) {
 	fmt.Println("\n5. Monitoring & Metrics")
-	fmt.Println("─────────────────────────")
+	fmt.Println("-----------------------------")
 
 	config := json.DefaultConfig()
 	config.EnableCache = true
@@ -287,7 +286,7 @@ func demonstrateMonitoring(testData string) {
 
 	// Get comprehensive statistics
 	stats := processor.GetStats()
-	fmt.Printf("   📊 Performance Metrics:\n")
+	fmt.Printf("   Performance Metrics:\n")
 	fmt.Printf("   - Total operations: %d\n", stats.OperationCount)
 	fmt.Printf("   - Cache size: %d entries\n", stats.CacheSize)
 	fmt.Printf("   - Cache hits: %d\n", stats.HitCount)
@@ -297,8 +296,8 @@ func demonstrateMonitoring(testData string) {
 
 	// Health check
 	if processor.IsClosed() {
-		fmt.Printf("   ⚠️  Processor is closed\n")
+		fmt.Printf("   Processor is closed\n")
 	} else {
-		fmt.Printf("   ✅ Processor is healthy and active\n")
+		fmt.Printf("   Processor is healthy and active\n")
 	}
 }

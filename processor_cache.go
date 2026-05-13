@@ -13,6 +13,21 @@ func (p *Processor) ClearCache() {
 	}
 }
 
+// invalidateJSONCache removes all cached results associated with a JSON string.
+// Called after mutation operations (Set, Delete) to prevent stale cache hits.
+func (p *Processor) invalidateJSONCache(jsonStr string) {
+	if !p.config.EnableCache || p.cache == nil {
+		return
+	}
+
+	jsonHash := hashStringToUint64(jsonStr)
+	hashPrefix := formatUint64HexString(jsonHash)
+
+	// Delete all entries containing this JSON hash prefix.
+	// Catches parse, get, set, delete, iterate, validate, and any future operation keys.
+	p.cache.DeleteByPrefix(hashPrefix)
+}
+
 // hashStringToUint64 generates a fast 64-bit hash using FNV-1a.
 // Delegates to internal package for consistent implementation.
 // PERFORMANCE: For large strings (> 4KB), uses sampling to avoid full scan.
@@ -34,8 +49,8 @@ func (p *Processor) createCacheKey(operation, jsonStr, path string, options *Con
 // PERFORMANCE: Allows hash reuse across multiple cache key creations.
 // Uses pointer identity check for default config to avoid 40+ field comparisons.
 func (p *Processor) createCacheKeyWithHash(operation string, jsonHash uint64, path string, options *Config) string {
-	// Determine if options are default — pointer identity is the fastest check
-	isDefault := options == nil || options == cachedDefaultConfigPtr
+	// Determine if options are default
+	isDefault := options == nil || configFieldsEqual(*options, cachedDefaultConfigValue)
 
 	// Use a fixed-size array buffer for small keys to avoid allocations
 	// Most cache keys are < 128 bytes
@@ -125,8 +140,10 @@ func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, 
 		cacheKey := createSimpleCacheKey("path", path)
 		if cached, ok := p.cache.Get(cacheKey); ok {
 			if segments, ok := cached.([]internal.PathSegment); ok {
-				// PERFORMANCE: Return cached segments directly - they are immutable after creation
-				return segments, nil
+				// Return a copy to prevent callers from mutating cached data
+				result := make([]internal.PathSegment, len(segments))
+				copy(result, segments)
+				return result, nil
 			}
 		}
 

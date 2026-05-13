@@ -24,7 +24,7 @@ import (
 
 func main() {
 	fmt.Println("JSON Library - JSONL Processing")
-	fmt.Println("================================\n ")
+	fmt.Println("================================")
 
 	// 1. JSONL CONVERSION
 	demonstrateJSONLConversion()

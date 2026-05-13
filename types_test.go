@@ -248,11 +248,11 @@ func TestConfig_GetSecurityLimits(t *testing.T) {
 
 	limits := config.getSecurityLimits()
 
-	if limits["max_nesting_depth"].(int) != 100 {
-		t.Errorf("GetSecurityLimits max_nesting_depth = %v, want 100", limits["max_nesting_depth"])
+	if limits.MaxNestingDepth != 100 {
+		t.Errorf("GetSecurityLimits max_nesting_depth = %v, want 100", limits.MaxNestingDepth)
 	}
-	if limits["max_json_size"].(int64) != 10*1024*1024 {
-		t.Errorf("GetSecurityLimits max_json_size = %v, want %d", limits["max_json_size"], 10*1024*1024)
+	if limits.MaxJSONSize != 10*1024*1024 {
+		t.Errorf("GetSecurityLimits max_json_size = %v, want %d", limits.MaxJSONSize, 10*1024*1024)
 	}
 }
 
@@ -914,93 +914,6 @@ func TestEncodeConfig_Clone_Zero(t *testing.T) {
 }
 
 // TestErrorClassifier tests error classification functionality
-func TestErrorClassifier(t *testing.T) {
-	helper := newTestHelper(t)
-
-	t.Run("isSecurityRelated", func(t *testing.T) {
-		tests := []struct {
-			name     string
-			err      error
-			expected bool
-		}{
-			{"SecurityViolation", ErrSecurityViolation, true},
-			{"PathNotFound", ErrPathNotFound, false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				result := isSecurityRelated(tt.err)
-				helper.AssertEqual(tt.expected, result)
-			})
-		}
-	})
-
-	t.Run("isUserError", func(t *testing.T) {
-		tests := []struct {
-			name     string
-			err      error
-			expected bool
-		}{
-			{"PathNotFound", ErrPathNotFound, true},
-			{"InvalidPath", ErrInvalidPath, true},
-			{"TypeMismatch", ErrTypeMismatch, true},
-			{"SystemError", errOperationFailed, false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				result := isUserError(tt.err)
-				helper.AssertEqual(tt.expected, result)
-			})
-		}
-	})
-
-	t.Run("isRetryable", func(t *testing.T) {
-		tests := []struct {
-			name     string
-			err      error
-			expected bool
-		}{
-			{"Timeout", ErrOperationTimeout, true},
-			{"ConcurrencyLimit", ErrConcurrencyLimit, true},
-			{"InvalidJSON", ErrInvalidJSON, false},
-			{"PathNotFound", ErrPathNotFound, false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				result := isRetryable(tt.err)
-				helper.AssertEqual(tt.expected, result)
-			})
-		}
-	})
-
-	t.Run("getErrorSuggestion", func(t *testing.T) {
-		tests := []struct {
-			name               string
-			err                error
-			suggestionContains string
-		}{
-			{"InvalidJSON", ErrInvalidJSON, "valid"},
-			{"PathNotFound", ErrPathNotFound, "check"},
-			{"TypeMismatch", ErrTypeMismatch, "type"},
-			{"InvalidPath", ErrInvalidPath, "format"},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				suggestion := getErrorSuggestion(tt.err)
-				helper.AssertNotNil(suggestion)
-				helper.AssertTrue(
-					len(suggestion) > 0,
-					"Suggestion should not be empty",
-				)
-				// Suggestions may vary by implementation, just verify we got one
-				_ = tt.suggestionContains
-			})
-		}
-	})
-}
 
 // TestErrorHandling comprehensive error handling tests
 func TestErrorHandling(t *testing.T) {
@@ -1091,33 +1004,6 @@ func TestErrorMessages(t *testing.T) {
 // TestErrorRecovery tests error recovery scenarios
 func TestErrorRecovery(t *testing.T) {
 	helper := newTestHelper(t)
-
-	t.Run("RetryAfterTimeout", func(t *testing.T) {
-		retryableErrors := []error{
-			ErrOperationTimeout,
-			ErrConcurrencyLimit,
-		}
-
-		for _, err := range retryableErrors {
-			t.Run(err.Error(), func(t *testing.T) {
-				helper.AssertTrue(isRetryable(err))
-			})
-		}
-	})
-
-	t.Run("NoRetryForInvalidData", func(t *testing.T) {
-		nonRetryableErrors := []error{
-			ErrInvalidJSON,
-			ErrInvalidPath,
-			ErrTypeMismatch,
-		}
-
-		for _, err := range nonRetryableErrors {
-			t.Run(err.Error(), func(t *testing.T) {
-				helper.AssertFalse(isRetryable(err))
-			})
-		}
-	})
 
 	t.Run("ContinueAfterError", func(t *testing.T) {
 		testData := `{
@@ -1546,7 +1432,7 @@ func TestOperation_String(t *testing.T) {
 		{opGet, "get"},
 		{opSet, "set"},
 		{opDelete, "delete"},
-		{opValidate, "validate"},
+		{operation(3), "unknown"},
 		{operation(999), "unknown"},
 	}
 
@@ -1556,32 +1442,6 @@ func TestOperation_String(t *testing.T) {
 				t.Errorf("operation.String() = %v, want %v", got, tt.expected)
 			}
 		})
-	}
-}
-
-// TestPathInfo tests the pathInfo type (internal)
-func TestPathInfo(t *testing.T) {
-	segments := []internal.PathSegment{
-		{Type: internal.PropertySegment, Key: "user"},
-		{Type: internal.ArrayIndexSegment, Index: 0},
-	}
-
-	pathInfo := pathInfo{
-		segments:     segments,
-		isPointer:    false,
-		originalPath: "user[0]",
-	}
-
-	if len(pathInfo.segments) != 2 {
-		t.Errorf("segments length = %d, want 2", len(pathInfo.segments))
-	}
-
-	if pathInfo.isPointer {
-		t.Errorf("isPointer = true, want false")
-	}
-
-	if pathInfo.originalPath != "user[0]" {
-		t.Errorf("originalPath = %q, want %q", pathInfo.originalPath, "user[0]")
 	}
 }
 
@@ -2185,33 +2045,6 @@ func TestProcessorConcurrencyComprehensive(t *testing.T) {
 	})
 }
 
-// TestPropertyAccessResult tests the propertyAccessResult type
-func TestPropertyAccessResult(t *testing.T) {
-	// Test exists case
-	result1 := propertyAccessResult{
-		value:  "test",
-		exists: true,
-	}
-
-	if !result1.exists {
-		t.Errorf("exists should be true")
-	}
-
-	if result1.value != "test" {
-		t.Errorf("value = %v, want %v", result1.value, "test")
-	}
-
-	// Test not exists case
-	result2 := propertyAccessResult{
-		value:  nil,
-		exists: false,
-	}
-
-	if result2.exists {
-		t.Errorf("exists should be false")
-	}
-}
-
 // TestResourceManager tests resource management functionality
 func TestResourceManager(t *testing.T) {
 	helper := newTestHelper(t)
@@ -2361,277 +2194,102 @@ func TestSafeConvertToUint64(t *testing.T) {
 	}
 }
 
-// TestSchema tests the Schema type
-func TestSchema(t *testing.T) {
-	schema := &Schema{
-		MinLength:        5,
-		MaxLength:        100,
-		Minimum:          0,
-		Maximum:          1000,
-		MinItems:         1,
-		MaxItems:         10,
-		ExclusiveMinimum: true,
-		ExclusiveMaximum: true,
-	}
-	schema.hasMinLength = true
-	schema.hasMaxLength = true
-	schema.hasMinimum = true
-	schema.hasMaximum = true
-	schema.hasMinItems = true
-	schema.hasMaxItems = true
+// TestSchemaComprehensive consolidates TestSchema, TestSchema_AllConstraints,
+// TestSchema_ArrayConstraints, TestSchema_ExclusiveConstraints,
+// TestSchema_NumericConstraints, TestSchema_StringConstraints,
+// and TestSchema_DefaultSchema into a single table-driven test.
+func TestSchemaComprehensive(t *testing.T) {
+	t.Run("constraint fields", func(t *testing.T) {
+		tests := []struct {
+			name            string
+			minLen          int
+			maxLen          int
+			minimum         float64
+			maximum         float64
+			minItems        int
+			maxItems        int
+			exclusiveMin    bool
+			exclusiveMax    bool
+		}{
+			{"all set positive", 5, 100, 0, 1000, 1, 10, true, true},
+			{"all set negative range", 5, 50, -100, 100, 1, 10, false, false},
+			{"zero values", 0, 0, 0, 0, 0, 0, false, false},
+			{"large values", 100, 10000, -1e6, 1e9, 0, 100000, true, false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				s := &Schema{
+					MinLength: tt.minLen, hasMinLength: true,
+					MaxLength: tt.maxLen, hasMaxLength: true,
+					Minimum: tt.minimum, hasMinimum: true,
+					Maximum: tt.maximum, hasMaximum: true,
+					MinItems: tt.minItems, hasMinItems: true,
+					MaxItems: tt.maxItems, hasMaxItems: true,
+					ExclusiveMinimum: tt.exclusiveMin,
+					ExclusiveMaximum: tt.exclusiveMax,
+				}
+				if !s.hasMinLength || s.MinLength != tt.minLen {
+					t.Errorf("MinLength = %d, has=%v, want %d", s.MinLength, s.hasMinLength, tt.minLen)
+				}
+				if !s.hasMaxLength || s.MaxLength != tt.maxLen {
+					t.Errorf("MaxLength = %d, has=%v, want %d", s.MaxLength, s.hasMaxLength, tt.maxLen)
+				}
+				if !s.hasMinimum || s.Minimum != tt.minimum {
+					t.Errorf("Minimum = %v, has=%v, want %v", s.Minimum, s.hasMinimum, tt.minimum)
+				}
+				if !s.hasMaximum || s.Maximum != tt.maximum {
+					t.Errorf("Maximum = %v, has=%v, want %v", s.Maximum, s.hasMaximum, tt.maximum)
+				}
+				if !s.hasMinItems || s.MinItems != tt.minItems {
+					t.Errorf("MinItems = %d, has=%v, want %d", s.MinItems, s.hasMinItems, tt.minItems)
+				}
+				if !s.hasMaxItems || s.MaxItems != tt.maxItems {
+					t.Errorf("MaxItems = %d, has=%v, want %d", s.MaxItems, s.hasMaxItems, tt.maxItems)
+				}
+				if s.ExclusiveMinimum != tt.exclusiveMin {
+					t.Errorf("ExclusiveMinimum = %v, want %v", s.ExclusiveMinimum, tt.exclusiveMin)
+				}
+				if s.ExclusiveMaximum != tt.exclusiveMax {
+					t.Errorf("ExclusiveMaximum = %v, want %v", s.ExclusiveMaximum, tt.exclusiveMax)
+				}
+			})
+		}
+	})
 
-	// Test DefaultSchema initialization
-	defaultSchema := DefaultSchema()
-	if defaultSchema == nil {
-		t.Errorf("DefaultSchema() should not return nil")
-	}
+	t.Run("DefaultSchema has no constraints", func(t *testing.T) {
+		s := DefaultSchema()
+		if s == nil {
+			t.Fatal("DefaultSchema() returned nil")
+		}
+		for _, set := range []bool{s.hasMinLength, s.hasMaxLength, s.hasMinimum, s.hasMaximum, s.hasMinItems, s.hasMaxItems} {
+			if set {
+				t.Error("DefaultSchema should have no constraints set")
+			}
+		}
+	})
 
-	// Test Has* methods
-	if !schema.hasMinLength {
-		t.Errorf("HasMinLength() should return true")
-	}
-	if !schema.hasMaxLength {
-		t.Errorf("HasMaxLength() should return true")
-	}
-	if !schema.hasMinimum {
-		t.Errorf("HasMinimum() should return true")
-	}
-	if !schema.hasMaximum {
-		t.Errorf("HasMaximum() should return true")
-	}
-	if !schema.hasMinItems {
-		t.Errorf("HasMinItems() should return true")
-	}
-	if !schema.hasMaxItems {
-		t.Errorf("HasMaxItems() should return true")
-	}
-	if !schema.ExclusiveMinimum {
-		t.Errorf("ExclusiveMinimum should be true")
-	}
-	if !schema.ExclusiveMaximum {
-		t.Errorf("ExclusiveMaximum should be true")
-	}
-}
+	t.Run("mutable constraint updates", func(t *testing.T) {
+		s := &Schema{MinLength: 10, MaxLength: 100}
+		s.hasMinLength = true
+		s.hasMaxLength = true
+		s.MinLength = 5
+		s.MaxLength = 50
+		if s.MinLength != 5 || s.MaxLength != 50 {
+			t.Errorf("MinLength/MaxLength not updated correctly: %d/%d", s.MinLength, s.MaxLength)
+		}
+	})
 
-// TestSchema_AllConstraints tests setting all constraints together
-func TestSchema_AllConstraints(t *testing.T) {
-	schema := &Schema{
-		MinLength:        5,
-		MaxLength:        50,
-		Minimum:          0,
-		Maximum:          100,
-		MinItems:         1,
-		MaxItems:         10,
-		ExclusiveMinimum: false,
-		ExclusiveMaximum: false,
-	}
-	schema.hasMinLength = true
-	schema.hasMaxLength = true
-	schema.hasMinimum = true
-	schema.hasMaximum = true
-	schema.hasMinItems = true
-	schema.hasMaxItems = true
-
-	if !schema.hasMinLength || schema.MinLength != 5 {
-		t.Errorf("MinLength not set correctly")
-	}
-	if !schema.hasMaxLength || schema.MaxLength != 50 {
-		t.Errorf("MaxLength not set correctly")
-	}
-	if !schema.hasMinimum || schema.Minimum != 0 {
-		t.Errorf("Minimum not set correctly")
-	}
-	if !schema.hasMaximum || schema.Maximum != 100 {
-		t.Errorf("Maximum not set correctly")
-	}
-	if !schema.hasMinItems || schema.MinItems != 1 {
-		t.Errorf("MinItems not set correctly")
-	}
-	if !schema.hasMaxItems || schema.MaxItems != 10 {
-		t.Errorf("MaxItems not set correctly")
-	}
-	if schema.ExclusiveMinimum {
-		t.Errorf("ExclusiveMinimum should be false")
-	}
-	if schema.ExclusiveMaximum {
-		t.Errorf("ExclusiveMaximum should be false")
-	}
-}
-
-// TestSchema_ArrayConstraints tests array constraint methods
-func TestSchema_ArrayConstraints(t *testing.T) {
-	schema := &Schema{
-		MinItems: 1,
-		MaxItems: 100,
-	}
-	schema.hasMinItems = true
-	schema.hasMaxItems = true
-
-	// Test HasMinItems
-	if !schema.hasMinItems {
-		t.Errorf("HasMinItems() should return true")
-	}
-	if schema.MinItems != 1 {
-		t.Errorf("MinItems = %d, want 1", schema.MinItems)
-	}
-
-	// Test HasMaxItems
-	if !schema.hasMaxItems {
-		t.Errorf("HasMaxItems() should return true")
-	}
-	if schema.MaxItems != 100 {
-		t.Errorf("MaxItems = %d, want 100", schema.MaxItems)
-	}
-
-	// Test zero values
-	schema2 := &Schema{MinItems: 0, MaxItems: 0}
-	schema2.hasMinItems = true
-	schema2.hasMaxItems = true
-	if !schema2.hasMinItems {
-		t.Errorf("HasMinItems() should return true for 0")
-	}
-	if !schema2.hasMaxItems {
-		t.Errorf("HasMaxItems() should return true for 0")
-	}
-}
-
-// TestSchema_DefaultSchema tests the DefaultSchema function
-func TestSchema_DefaultSchema(t *testing.T) {
-	schema := DefaultSchema()
-
-	if schema == nil {
-		t.Fatal("DefaultSchema() returned nil")
-	}
-
-	// Verify defaults
-	if schema.hasMinLength {
-		t.Errorf("Default schema should not have MinLength set")
-	}
-	if schema.hasMaxLength {
-		t.Errorf("Default schema should not have MaxLength set")
-	}
-	if schema.hasMinimum {
-		t.Errorf("Default schema should not have Minimum set")
-	}
-	if schema.hasMaximum {
-		t.Errorf("Default schema should not have Maximum set")
-	}
-	if schema.hasMinItems {
-		t.Errorf("Default schema should not have MinItems set")
-	}
-	if schema.hasMaxItems {
-		t.Errorf("Default schema should not have MaxItems set")
-	}
-}
-
-// TestSchema_ExclusiveConstraints tests exclusive constraint methods
-func TestSchema_ExclusiveConstraints(t *testing.T) {
-	// Test ExclusiveMinimum
-	schema := &Schema{ExclusiveMinimum: true}
-	if !schema.ExclusiveMinimum {
-		t.Errorf("ExclusiveMinimum should be true")
-	}
-
-	schema.ExclusiveMinimum = false
-	if schema.ExclusiveMinimum {
-		t.Errorf("ExclusiveMinimum should be false")
-	}
-
-	// Test ExclusiveMaximum
-	schema.ExclusiveMaximum = true
-	if !schema.ExclusiveMaximum {
-		t.Errorf("ExclusiveMaximum should be true")
-	}
-
-	schema.ExclusiveMaximum = false
-	if schema.ExclusiveMaximum {
-		t.Errorf("ExclusiveMaximum should be false")
-	}
-
-	// Test with other constraints set
-	schema.Minimum = 10
-	schema.hasMinimum = true
-	schema.ExclusiveMinimum = true
-	if schema.Minimum != 10 {
-		t.Errorf("Minimum should still be 10")
-	}
-
-	schema.Maximum = 100
-	schema.hasMaximum = true
-	schema.ExclusiveMaximum = true
-	if schema.Maximum != 100 {
-		t.Errorf("Maximum should still be 100")
-	}
-}
-
-// TestSchema_NumericConstraints tests numeric constraint methods
-func TestSchema_NumericConstraints(t *testing.T) {
-	schema := &Schema{
-		Minimum: -100,
-		Maximum: 1000,
-	}
-	schema.hasMinimum = true
-	schema.hasMaximum = true
-
-	// Test HasMinimum
-	if !schema.hasMinimum {
-		t.Errorf("HasMinimum() should return true")
-	}
-	if schema.Minimum != -100 {
-		t.Errorf("Minimum = %f, want -100", schema.Minimum)
-	}
-
-	// Test HasMaximum
-	if !schema.hasMaximum {
-		t.Errorf("HasMaximum() should return true")
-	}
-	if schema.Maximum != 1000 {
-		t.Errorf("Maximum = %f, want 1000", schema.Maximum)
-	}
-
-	// Test zero values
-	schema2 := &Schema{Minimum: 0, Maximum: 0}
-	schema2.hasMinimum = true
-	schema2.hasMaximum = true
-	if !schema2.hasMinimum {
-		t.Errorf("HasMinimum() should return true for 0")
-	}
-	if !schema2.hasMaximum {
-		t.Errorf("HasMaximum() should return true for 0")
-	}
-}
-
-// TestSchema_StringConstraints tests string constraint methods
-func TestSchema_StringConstraints(t *testing.T) {
-	schema := &Schema{
-		MinLength: 10,
-		MaxLength: 100,
-	}
-	schema.hasMinLength = true
-	schema.hasMaxLength = true
-
-	// Test HasMinLength
-	if !schema.hasMinLength {
-		t.Errorf("HasMinLength() should return true")
-	}
-	if schema.MinLength != 10 {
-		t.Errorf("MinLength = %d, want 10", schema.MinLength)
-	}
-
-	// Test HasMaxLength
-	if !schema.hasMaxLength {
-		t.Errorf("HasMaxLength() should return true")
-	}
-	if schema.MaxLength != 100 {
-		t.Errorf("MaxLength = %d, want 100", schema.MaxLength)
-	}
-
-	// Test updating values
-	schema.MinLength = 5
-	schema.MaxLength = 50
-	if schema.MinLength != 5 || schema.MaxLength != 50 {
-		t.Errorf("MinLength/MaxLength not updated correctly")
-	}
+	t.Run("exclusive with numeric constraints", func(t *testing.T) {
+		s := &Schema{Minimum: 10, Maximum: 100, ExclusiveMinimum: true, ExclusiveMaximum: true}
+		s.hasMinimum = true
+		s.hasMaximum = true
+		if s.Minimum != 10 || s.Maximum != 100 {
+			t.Errorf("Minimum/Maximum should be preserved: %v/%v", s.Minimum, s.Maximum)
+		}
+		if !s.ExclusiveMinimum || !s.ExclusiveMaximum {
+			t.Error("Exclusive flags should be true")
+		}
+	})
 }
 
 // TestSyntaxError tests the SyntaxError type

@@ -76,11 +76,9 @@ func GetEncoderBuffer() *bytes.Buffer {
 
 // PutEncoderBuffer returns a buffer to the pool
 func PutEncoderBuffer(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 8 * 1024
-	const minPoolBufferSize = 256
 	if buf != nil {
 		c := buf.Cap()
-		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
+		if c >= MinPoolBufferSize && c <= MaxPoolBufferSize/4 {
 			buf.Reset()
 			encoderBufferPool.Put(buf)
 		}
@@ -91,11 +89,9 @@ func PutEncoderBuffer(buf *bytes.Buffer) {
 // SECURITY: Use this when the buffer may have contained sensitive information
 // PERFORMANCE: Slightly slower than PutEncoderBuffer due to zeroing operation
 func PutEncoderBufferSecure(buf *bytes.Buffer) {
-	const maxPoolBufferSize = 8 * 1024
-	const minPoolBufferSize = 256
 	if buf != nil {
 		c := buf.Cap()
-		if c >= minPoolBufferSize && c <= maxPoolBufferSize {
+		if c >= MinPoolBufferSize && c <= MaxPoolBufferSize/4 {
 			// SECURITY: Zero out the buffer content before returning to pool
 			// This prevents potential data leakage through uninitialized memory
 			clear(buf.Bytes())
@@ -130,9 +126,8 @@ func PutByteSlice(b *[]byte) {
 	if b == nil {
 		return
 	}
-	const maxByteSliceCap = 32 * 1024 // 32KB
 	c := cap(*b)
-	if c > maxByteSliceCap {
+	if c > MaxPoolBufferSize {
 		return // Don't pool very large slices
 	}
 	*b = (*b)[:0]
@@ -153,9 +148,8 @@ func PutByteSliceSecure(b *[]byte) {
 	if b == nil {
 		return
 	}
-	const maxByteSliceCap = 32 * 1024 // 32KB
 	c := cap(*b)
-	if c > maxByteSliceCap {
+	if c > MaxPoolBufferSize {
 		return // Don't pool very large slices
 	}
 	// SECURITY: Zero out the slice content before returning to pool
@@ -260,13 +254,10 @@ func ParseIntFast(s string) (int, bool) {
 		if result > cutoff || (result == cutoff && digit > maxInt64%10) {
 			// Would overflow int64
 			if negative {
-				// Check if this is exactly MinInt64
-				if result == cutoff && digit == maxInt64%10+1 {
-					// Verify it fits in int (platform-dependent)
-					converted := int(-result - digit)
-					if converted == int(int64(converted)) {
-						return converted, true
-					}
+				// Check if this is exactly MinInt64: only valid on 64-bit platforms
+				const minInt64 int64 = -9223372036854775808
+				if result == cutoff && digit == maxInt64%10+1 && int64(int(minInt64)) == minInt64 {
+					return int(minInt64), true
 				}
 			}
 			return 0, false

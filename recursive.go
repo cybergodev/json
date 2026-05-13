@@ -59,8 +59,21 @@ func (urp *recursiveProcessor) ProcessRecursivelyWithOptions(data any, path stri
 	}
 
 	// Check if any segment in the path was a flat extraction
-	// If so, we need special handling to apply flattening and subsequent ops correctly
+	// PERFORMANCE: Quick check — if no segment is an ExtractSegment at all,
+	// skip the entire flat-handling block. This avoids iterating all segments
+	// for the common case of simple property/array paths.
 	if op == opGet {
+		hasExtract := false
+		for _, segment := range segments {
+			if segment.Type == internal.ExtractSegment {
+				hasExtract = true
+				break
+			}
+		}
+		if !hasExtract {
+			return result, nil
+		}
+
 		// Find the LAST flat segment, not the first one
 		// This is important for paths like orders{flat:items}{flat:tags}[0:3]
 		flatSegmentIndex := -1
@@ -172,7 +185,7 @@ func (urp *recursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 	case []any:
 		// Determine if this should be a distributed op based on actual data structure
 		// A distributed op is needed when we have nested arrays that need individual processing
-		shouldUseDistributed := urp.shouldUseDistributedArrayop(container)
+		shouldUseDistributed := urp.shouldUseDistributedArrayOp(container)
 
 		if shouldUseDistributed {
 			// For distributed ops, apply the index to each element in the container
@@ -182,7 +195,7 @@ func (urp *recursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 
 			for _, item := range container {
 				// Find the actual target array for distributed op
-				targetArray := urp.findTargetArrayForDistributedop(item)
+				targetArray := urp.findTargetArrayForDistributedOp(item)
 				if targetArray != nil {
 					// Apply index op to this array
 					index := internal.NormalizeIndex(segment.Index, len(targetArray))
@@ -197,19 +210,8 @@ func (urp *recursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 					if isLastSegment {
 						switch op {
 						case opGet:
-							// Get the result from the target array
 							result := targetArray[index]
-
-							// For distributed array ops, unwrap single element results for flattening
-							// This mimics the behavior of the original getValueWithDistributedop
-							if segment.Type != internal.ArraySliceSegment {
-								// For index ops (not slice), add the result directly
-								// This will be a single value like "Alice", not an array
-								results = append(results, result)
-							} else {
-								// For slice ops, add the result as-is (could be an array)
-								results = append(results, result)
-							}
+							results = append(results, result)
 						case opSet:
 							targetArray[index] = value
 						case opDelete:
@@ -231,7 +233,7 @@ func (urp *recursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 
 			if op == opGet {
 				// For distributed array ops, flatten the results to match expected behavior
-				// This mimics the behavior of the original getValueWithDistributedop
+				// This mimics the behavior of the original getValueWithDistributedOp
 				if isLastSegment && segment.Type != internal.ArraySliceSegment {
 					// Return flattened results for distributed array index ops
 					return results, nil
@@ -400,6 +402,9 @@ func (urp *recursiveProcessor) handlePropertySegmentUnified(data any, segment in
 			if len(results) == 0 {
 				return nil, nil
 			}
+			if len(results) == 1 {
+				return results[0], nil
+			}
 			return results, nil
 		}
 
@@ -418,7 +423,7 @@ func (urp *recursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 	switch container := data.(type) {
 	case []any:
 		// Check if this should be a distributed op
-		shouldUseDistributed := urp.shouldUseDistributedArrayop(container)
+		shouldUseDistributed := urp.shouldUseDistributedArrayOp(container)
 
 		if shouldUseDistributed {
 			// Distributed slice op - apply slice to each array element
@@ -427,7 +432,7 @@ func (urp *recursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 			errs := make([]error, 0, 4)
 
 			for _, item := range container {
-				targetArray := urp.findTargetArrayForDistributedop(item)
+				targetArray := urp.findTargetArrayForDistributedOp(item)
 				if targetArray == nil {
 					continue // Skip non-array items
 				}
@@ -1219,9 +1224,9 @@ func (urp *recursiveProcessor) combineErrors(errs []error) error {
 	return errors.Join(validErrors...)
 }
 
-// findTargetArrayForDistributedop finds the actual target array for distributed ops
+// findTargetArrayForDistributedOp finds the actual target array for distributed ops
 // This handles nested array structures that may result from extraction ops
-func (urp *recursiveProcessor) findTargetArrayForDistributedop(item any) []any {
+func (urp *recursiveProcessor) findTargetArrayForDistributedOp(item any) []any {
 	// If item is directly an array, return it
 	if arr, ok := item.([]any); ok {
 		// Check if this array contains only one element that is also an array
@@ -1236,7 +1241,7 @@ func (urp *recursiveProcessor) findTargetArrayForDistributedop(item any) []any {
 						return nestedArr
 					} else if _, ok := nestedArr[0].([]any); ok {
 						// Another level of nesting, recurse
-						return urp.findTargetArrayForDistributedop(nestedArr)
+						return urp.findTargetArrayForDistributedOp(nestedArr)
 					} else {
 						// This is the target array containing primitive values (like strings)
 						return nestedArr
@@ -1294,9 +1299,9 @@ func (urp *recursiveProcessor) deepFlattenResults(results []any, flattened *[]an
 	}
 }
 
-// shouldUseDistributedArrayop determines if an array op should be distributed
+// shouldUseDistributedArrayOp determines if an array op should be distributed
 // based on the actual data structure. Optimized with early exit and sampling.
-func (urp *recursiveProcessor) shouldUseDistributedArrayop(container []any) bool {
+func (urp *recursiveProcessor) shouldUseDistributedArrayOp(container []any) bool {
 	// Distributed ops should ONLY be used for extraction results, not regular nested arrays
 	// Regular nested arrays like [[1,2,3], [4,5,6]] should use normal array indexing
 	// Extraction results have specific patterns that distinguish them from regular nested arrays
@@ -1322,14 +1327,15 @@ func (urp *recursiveProcessor) shouldUseDistributedArrayop(container []any) bool
 	// Optimization: Only check up to maxCheckElements to avoid O(n) traversal for large arrays
 	// Statistical sampling is sufficient for pattern detection
 	maxCheckElements := n
-	if n > 10 {
-		maxCheckElements = 10 // Check at most 10 elements
+	if n > 20 {
+		maxCheckElements = 20 // Check at most 20 elements
 	}
 
-	// Check if elements are arrays containing objects
-	// Early exit as soon as we find a non-array element
+	// Check if ALL sampled elements are arrays AND ALL contain objects.
+	// Stricter than before: every sampled inner array must contain at least one object.
+	// This prevents treating [[1,2,3], [4,5,6]] as an extraction result.
 	allArrays := true
-	hasObjects := false
+	allContainObjects := true
 
 	for i := 0; i < maxCheckElements; i++ {
 		item := container[i]
@@ -1339,20 +1345,23 @@ func (urp *recursiveProcessor) shouldUseDistributedArrayop(container []any) bool
 			break
 		}
 
-		// Check if this array contains objects (check first few elements only)
+		// Check if this inner array contains at least one object
+		foundObject := false
 		maxInnerCheck := len(arr)
-		if maxInnerCheck > 5 {
-			maxInnerCheck = 5
+		if maxInnerCheck > 10 {
+			maxInnerCheck = 10
 		}
 		for j := 0; j < maxInnerCheck; j++ {
 			if _, isObj := arr[j].(map[string]any); isObj {
-				hasObjects = true
+				foundObject = true
 				break
 			}
 		}
+		if !foundObject {
+			allContainObjects = false
+		}
 	}
 
-	// Only use distributed op if ALL elements are arrays AND at least one contains objects
-	// This prevents treating [[1,2,3], [4,5,6]] as an extraction result
-	return allArrays && hasObjects
+	// Only use distributed op if ALL elements are arrays AND all contain objects
+	return allArrays && allContainObjects
 }

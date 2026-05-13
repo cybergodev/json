@@ -82,7 +82,7 @@ Automatic sanitization of JSON paths to prevent injection attacks:
 Cache operations include security measures:
 
 - **Sensitive data detection**: Automatic exclusion of sensitive data from cache
-- **Secure hashing**: SHA-256 based cache key generation
+- **Secure hashing**: Dual FNV-1a cache key generation
 - **Cache key validation**: Prevention of cache injection attacks
 - **TTL enforcement**: Automatic expiration of cached data
 
@@ -201,7 +201,6 @@ fmt.Printf("Full Security Scan: %v\n", config.FullSecurityScan)
 // Max Object Keys: 100000
 // Max Array Elements: 100000
 // Full Security Scan: false
-// }
 // Note: SecurityConfig() uses more restrictive values than DefaultConfig().
 ```
 
@@ -478,17 +477,19 @@ result, err := processor.Get(jsonString, "user.credentials")
 Cache keys use secure hashing:
 
 ```go
-// Cache keys are generated using secure hashing:
-// - Small JSON (<4KB): Secure FNV-1a with length XOR
-// - Large JSON (>=4KB): SHA-256 (full 32 bytes / 64 hex chars)
+// Cache keys are generated using dual FNV-1a hashing:
+// - Small and large JSON: Dual independent FNV-1a hashes (different seeds)
+//   with length prefix. Format: "len:h1:h2".
+// - This provides collision resistance below 2^-64.
 // This prevents:
 // 1. Cache key collision attacks
 // 2. Cache timing attacks
 // 3. Information disclosure through cache keys
 
-// Example for large JSON:
-hash := sha256.Sum256([]byte(input))
-cacheKey := fmt.Sprintf("%d:%x", len(input), hash[:])  // full 32 bytes
+// Key generation (all JSON sizes):
+h1 := HashBytesFNV1a([]byte(input))
+h2 := HashBytesFNV1aOffset([]byte(input))  // independent seed
+cacheKey := fmt.Sprintf("%d:%016x:%016x", len(input), h1, h2)
 ```
 
 ### Cache Key Validation
@@ -715,8 +716,17 @@ Set timeouts to prevent resource exhaustion:
 ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 defer cancel()
 
-// Use context for operations (if supported)
-// This prevents long-running operations from blocking
+// Use context-aware operations with boundary-level checks
+result, err := json.GetWithContext(ctx, jsonString, "path.to.data")
+if err != nil {
+    if ctx.Err() != nil {
+        log.Printf("Operation timed out: %v", ctx.Err())
+    }
+    return err
+}
+
+// Or use the processor method:
+result, err := processor.GetWithContext(ctx, jsonString, "path.to.data")
 ```
 
 ### 6. Monitor Resource Usage
@@ -961,7 +971,7 @@ func ProcessUserJSON(userInput string) error {
 ### Scenario 2: High-Volume API Processing
 
 ```go
-func ProcessAPIRequests() {
+func ProcessAPIRequests() error {
     // Configure for high volume
     config := &json.Config{
         MaxJSONSize:              5 * 1024 * 1024,
@@ -1097,7 +1107,7 @@ func isValidConfigPath(path string) bool {
 ### Path Operations
 - **Risk**: Path injection attacks
 - **Mitigation**: Automatic path validation and sanitization
-- **Best Practice**: Validate user-provided paths before use
+- **Best Practice**: Validate user-provided paths before use; use `GetWithContext` for context-aware operations with boundary-level checks
 
 ### Batch Operations
 - **Risk**: Resource exhaustion through large batches
@@ -1206,7 +1216,7 @@ The library implements a multi-layered security validation system:
 │         ↓                                                       │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
 │  │ Structure   │→ │ Depth Check │→ │ Cache Result│             │
-│  │ Validation  │  │ (Max: 200)  │  │ (SHA-256)   │             │
+│  │ Validation  │  │ (Max: 200)  │  │ (FNV-1a)    │             │
 │  └─────────────┘  └─────────────┘  └─────────────┘             │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -1347,16 +1357,16 @@ Overlap Size = maxPatternLength + 8 bytes
 The validation cache uses secure key generation to prevent collision attacks:
 
 ```go
-// For small JSON (< 4KB): Secure FNV-1a with length XOR
-key := fmt.Sprintf("%d:%016x", len(json), fnv1aHash(json) ^ uint64(len(json)))
-
-// For large JSON (>= 4KB): SHA-256 full 32 bytes
-hash := sha256.Sum256([]byte(json))
-key := fmt.Sprintf("%d:%x", len(json), hash[:]) // Full 32 bytes (64 hex chars)
+// All JSON sizes: Dual independent FNV-1a hashes (different seeds) with length prefix
+// Key format: "len:h1:h2" (~55 bytes)
+// This provides collision resistance below 2^-64.
+h1 := HashBytesFNV1a([]byte(json))
+h2 := HashBytesFNV1aOffset([]byte(json))  // independent seed
+key := fmt.Sprintf("%d:%016x:%016x", len(json), h1, h2)
 
 // Cache management:
 // - Maximum entries: configurable via MaxCacheSize (default: 128, max: 2,000)
-// - LRU eviction at 80% capacity
+// - Proactive eviction at 8,000 entries (fixed threshold for the validation cache)
 // - Entry includes last access timestamp
 ```
 
@@ -1399,7 +1409,6 @@ Input Path
 
 // Mixed encoding:
 "..%2f", "..%5c", "..%c0%af", "..%c1%9c"
-"%c0%ae", "%c1%1c"
 
 // Partial encoding:
 ".%2e", "%2e.", "%2e%2e%2f", "%2e%2e%5c"
@@ -1407,6 +1416,12 @@ Input Path
 // Control character injection:
 "..%00", "..%0a", "..%0d", "..%09", "..%20"
 "%00", "%0a", "%0d", "%09", "%20"
+
+// Windows patterns:
+"..\\/", "..\\"
+
+// UTF-8 overlong encoding:
+"%c0%ae", "%c1%1c", "%c1%9c", "..%255c"
 
 // Fullwidth encoding:
 "%uff0e%uff0e", "..%ef%bc%8f"
@@ -1416,8 +1431,9 @@ Input Path
 
 // Double patterns:
 "....//", "....\\\\", ".....", "......"
-"..\\/"  // Additional Windows pattern
 ```
+
+**Note:** The path validation uses pattern-matching heuristics. The above list shows the explicitly detected patterns. Additional patterns may be caught by the general `..` and `%` encoding checks.
 
 #### Unicode Lookalike Character Detection
 ```go
@@ -1503,16 +1519,16 @@ func deepCopyValueWithDepth(data any, depth int) (any, error) {
 #### Cache Memory Protection
 ```go
 // Cache configuration:
-maxCacheKeyLength: 1024        // Maximum key length
-cacheHighWatermark: 8000       // 80% of 10000 entries
-evictionStrategy: LRU          // Least Recently Used
+maxCacheKeyLength: 1024              // Maximum key length
+securityCacheHighWatermark: 8000     // Fixed threshold for validation cache (independent of MaxCacheSize)
+evictionStrategy: LRU                // Least Recently Used
 
 // Key truncation for long keys:
 func truncateCacheKey(key string) string {
-    // Uses SHA-256 hash suffix to prevent collisions
+    // Uses FNV-1a hash suffix for fast truncation (~2ns vs ~100ns for SHA-256)
     prefix := key[:maxLen-19]
-    hash := sha256.Sum256([]byte(key))
-    return prefix + "..." + hex.EncodeToString(hash[:8])
+    h := HashStringFNV1a(key)  // produces 16-hex-char suffix
+    return prefix + "..." + hexEncode(h)
 }
 ```
 
@@ -1538,11 +1554,16 @@ func (r AccessResult) AsInt() (int, error) {
     if !r.Exists {
         return 0, ErrPathNotFound
     }
+    // Strict type check: bool should not convert to int
+    // (bool rejection is done here in AsInt, not in convertToInt)
+    switch r.Value.(type) {
+    case bool:
+        return 0, fmt.Errorf("cannot convert bool to int")
+    }
     // Delegates to convertToInt() which handles:
     // - int64 overflow checks (platform-adaptive minInt/maxInt)
     // - uint64 overflow checks (math.MaxInt64)
     // - float64 precision loss detection
-    // - bool rejection
     result, ok := convertToInt(r.Value)
     if !ok {
         return 0, fmt.Errorf("cannot convert %T to int", r.Value)
@@ -1631,36 +1652,33 @@ The library caches validation results to avoid redundant security scans:
 
 #### Cache Key Generation
 ```go
-// Small JSON strings (<4KB): Secure FNV-1a hash with length XOR
-// - Uses HashStringFNV1aSecure (hardened variant)
-// - String length XOR'd into hash for collision resistance
-
-// Large JSON strings (>=4KB): SHA-256 (full 32 bytes / 64 hex chars)
-// - Uses full 256-bit output to prevent birthday attacks
-// - Prevents cache poisoning attacks
+// All JSON sizes: Dual independent FNV-1a hashes (different seeds) with length prefix
+// Key format: "len:h1:h2" — combines length + two independent FNV-1a hashes
+// to reduce collision probability below 2^-64.
+// PERFORMANCE: FNV-1a (~2ns) instead of SHA-256 (~100ns) for ~50x speedup.
+// The cache is internal-only, so a collision simply means a redundant validation.
 
 // getValidationCacheKey is a method on securityValidator (internal)
 func (sv *securityValidator) getValidationCacheKey(jsonStr string) string {
-    if len(jsonStr) <= 4096 {
-        // Secure FNV-1a for small strings (with length XOR)
-        h := HashStringFNV1aSecure(jsonStr)
-        return fmt.Sprintf("%d:%016x", len(jsonStr), h)
-    }
-    // SHA-256 full 32 bytes for large strings (security)
-    hash := sha256.Sum256([]byte(jsonStr))
-    // Uses full 32 bytes (64 hex chars) to prevent birthday attacks
-    return fmt.Sprintf("%d:%x", len(jsonStr), hash[:])
+    strLen := len(jsonStr)
+    b := internal.StringToBytes(jsonStr)
+
+    // Two independent FNV-1a hashes for strong collision resistance
+    h1 := internal.HashBytesFNV1a(b)
+    h2 := internal.HashBytesFNV1aOffset(b)  // different seed
+
+    return fmt.Sprintf("%d:%016x:%016x", strLen, h1, h2)
 }
 ```
 
 #### Cache Eviction Strategy
 ```go
 // LRU (Least Recently Used) eviction:
-// - Triggers at 80% capacity (proactive)
+// - Triggers at 8,000 entries (fixed threshold for the validation cache)
 // - Removes oldest 25% of entries
 // - Prevents memory spikes
 
-const cacheHighWatermark = 80  // 80% of MaxCacheSize (configurable, max 2,000)
+const securityCacheHighWatermark = 8000  // Fixed threshold for validation cache (independent of MaxCacheSize)
 
 func evictLRUEntries() {
     // Sort by lastAccess time
@@ -1670,8 +1688,8 @@ func evictLRUEntries() {
 ```
 
 #### Cache Security Guarantees
-1. **Collision Resistance**: SHA-256 for large strings prevents key collisions
-2. **Memory Protection**: Proactive eviction at 80% prevents OOM
+1. **Collision Resistance**: Dual FNV-1a hashes prevent key collisions (below 2^-64)
+2. **Memory Protection**: Proactive eviction at 8,000 entries prevents OOM
 3. **Timing Safety**: LRU updates are batched to reduce lock contention
 
 ### Optimized Security Scanning

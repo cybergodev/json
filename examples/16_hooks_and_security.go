@@ -24,7 +24,7 @@ import (
 
 func main() {
 	fmt.Println("JSON Library - Hooks and Security")
-	fmt.Println("==================================\n ")
+	fmt.Println("==================================")
 
 	// 1. HOOK INTERFACE
 	demonstrateHookInterface()
@@ -65,25 +65,20 @@ func demonstrateHookInterface() {
 	processor, _ := json.New(json.DefaultConfig()) // OK: preset config always valid
 	defer processor.Close()
 
-	// Add a custom hook that implements the Hook interface
+	// Add a custom hook that implements the Hook interface.
+	// Hooks are automatically invoked by processor operations (Get, Set, Delete, etc.)
 	hook := &countingHook{}
 	processor.AddHook(hook)
 
-	// Hooks are stored on the processor as extension points.
-	// Demonstrate hook invocation with HookContext
-	ctx := json.HookContext{
-		Operation: "get",
-		Path:      "user.name",
-		JSONStr:   `{"user": {"name": "Alice"}}`,
-		StartTime: time.Now(),
-	}
+	// Perform operations through the processor — hooks fire automatically
+	testData := `{"user": {"name": "Alice"}, "admin": true}`
+	_, _ = processor.Get(testData, "user.name")
+	_, _ = processor.Get(testData, "admin")
 
-	_ = hook.Before(ctx)
-	result, _ := hook.After(ctx, "Alice", nil)
-
-	fmt.Printf("   Hook After result: %v\n", result)
-	fmt.Printf("   Hook state: before=%d, after=%d\n", hook.beforeCount, hook.afterCount)
-	fmt.Printf("   Operations tracked: %v\n", hook.operations)
+	fmt.Printf("   Hook state after processor operations:\n")
+	fmt.Printf("   - Before calls: %d\n", hook.beforeCount)
+	fmt.Printf("   - After calls:  %d\n", hook.afterCount)
+	fmt.Printf("   - Operations tracked: %v\n", hook.operations)
 }
 
 func demonstrateHookFunc() {
@@ -92,6 +87,8 @@ func demonstrateHookFunc() {
 
 	// HookFunc allows creating hooks from plain functions.
 	// Only set the functions you need - unset ones are no-ops.
+	// Below we demonstrate each hook function's behavior directly.
+	// In practice, register via processor.AddHook() and they fire automatically.
 
 	// Before-only hook (validation)
 	validateHook := &json.HookFunc{

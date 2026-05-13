@@ -2,21 +2,33 @@
 
 This document outlines the complete compatibility between `github.com/cybergodev/json` and Go's standard `encoding/json` package.
 
-## 🎯 100% Drop-in Replacement
+## Drop-in Replacement
 
-Our library is designed as a **complete drop-in replacement** for `encoding/json`. Simply change your import statement:
+Our library is designed as a **drop-in replacement** for `encoding/json`. Simply change your import statement:
 
 ```go
 // Before
 import "encoding/json"
 
-// After  
+// After
 import "github.com/cybergodev/json"
 ```
 
-**No code changes required!** All your existing code will work exactly the same.
+**Most code requires no changes.** See notes below for edge cases.
 
-## ✅ Fully Compatible Functions
+### Extended Signatures (Backward-Compatible)
+
+The following functions accept an optional `cfg ...Config` trailing parameter in addition to the standard `encoding/json` signatures. Calls without the extra argument work identically:
+
+- `Compact(dst *bytes.Buffer, src []byte, cfg ...Config) error`
+- `Indent(dst *bytes.Buffer, src []byte, prefix, indent string, cfg ...Config) error`
+- `HTMLEscape(dst *bytes.Buffer, src []byte, cfg ...Config)`
+- `NewEncoder(w io.Writer, cfg ...Config) *Encoder`
+- `NewDecoder(r io.Reader, cfg ...Config) *Decoder`
+
+These are backward-compatible: existing call sites compile without changes. However, **function pointer assignments** (e.g., `var fn = json.Compact`) will differ because the signature includes the optional parameter. If you assign these functions to variables, use an explicit adapter.
+
+## Fully Compatible Functions
 
 | Function                                                             | Status | Notes                                 |
 |----------------------------------------------------------------------|--------|---------------------------------------|
@@ -28,7 +40,7 @@ import "github.com/cybergodev/json"
 | `Indent(dst *bytes.Buffer, src []byte, prefix, indent string, cfg ...Config) error` | ✅      | Same indentation behavior (extended with optional `Config`)    |
 | `HTMLEscape(dst *bytes.Buffer, src []byte, cfg ...Config)`                          | ✅      | Same HTML escaping rules (extended with optional `Config`)     |
 
-## ✅ Fully Compatible Types
+## Fully Compatible Types
 
 ### Streaming Types
 | Type/Method                                   | Status | Notes                      |
@@ -42,7 +54,7 @@ import "github.com/cybergodev/json"
 | `(*Encoder).SetIndent(prefix, indent string)` | ✅      | Same indentation control   |
 | `(*Decoder).Decode(v any) error`              | ✅      | Same decoding behavior     |
 | `(*Decoder).UseNumber()`                      | ✅      | Same number handling       |
-| `(*Decoder).DisallowUnknownFields()`          | ✅      | Same strict field matching |
+| `(*Decoder).DisallowUnknownFields()`          | ✅      | Fully functional; delegates to `encoding/json` Decoder internally |
 | `(*Decoder).More() bool`                      | ✅      | Same stream state checking |
 | `(*Decoder).Token() (Token, error)`           | ✅      | Same token parsing         |
 | `(*Decoder).Buffered() io.Reader`             | ✅      | Same buffer access         |
@@ -58,7 +70,7 @@ import "github.com/cybergodev/json"
 | `Number.Float64() (float64, error)` | ✅      | Same float conversion      |
 | `Number.Int64() (int64, error)`     | ✅      | Same int conversion        |
 
-## ✅ Fully Compatible Error Types
+## Fully Compatible Error Types
 
 | Error Type              | Status | Notes                                   |
 |-------------------------|--------|-----------------------------------------|
@@ -88,7 +100,7 @@ In addition to standard library errors, the library provides:
 | `ErrConcurrencyLimit` | Concurrent operation count exceeds limit |
 | `ErrOperationTimeout` | Operation exceeded timeout duration |
 
-## ✅ Fully Compatible Interfaces
+## Fully Compatible Interfaces
 
 | Interface         | Status | Notes                                |
 |-------------------|--------|--------------------------------------|
@@ -97,8 +109,10 @@ In addition to standard library errors, the library provides:
 | `TextMarshaler`   | ✅      | Same `MarshalText() ([]byte, error)` |
 | `TextUnmarshaler` | ✅      | Same `UnmarshalText([]byte) error`   |
 
+> **Note:** These interfaces are method-compatible with their `encoding/json` and `encoding` counterparts. Types implementing `encoding/json.Marshaler` will satisfy this package's `Marshaler`, and vice versa, because the method signatures are identical. They are not type aliases in the Go `type X = Y` sense, but are structurally equivalent interfaces.
 
-## 🚀 Migration Examples
+
+## Migration Examples
 
 ### Basic Usage
 ```go
@@ -131,16 +145,24 @@ decoder.Decode(&result)
 
 ### Error Handling
 ```go
-// Same error types and behavior as encoding/json
+// The top-level Unmarshal delegates to encoding/json.Unmarshal,
+// so the returned error is *encoding/json.SyntaxError, NOT this
+// package's *json.SyntaxError. Use errors.As for portable matching:
 err := json.Unmarshal([]byte(`invalid`), &result)
-if syntaxErr, ok := err.(*json.SyntaxError); ok {
-    fmt.Printf("Syntax error at offset %d: %v", syntaxErr.Offset, syntaxErr)
+if err != nil {
+    // Safe: works regardless of which SyntaxError type is returned
+    var syntaxErr *json.SyntaxError
+    if errors.As(err, &syntaxErr) {
+        fmt.Printf("Syntax error at offset %d: %v", syntaxErr.Offset, syntaxErr)
+    }
 }
 ```
 
-## 🎉 Bonus Features
+> **Warning:** A direct type assertion like `err.(*json.SyntaxError)` will fail when using this package's top-level `Unmarshal`, because the actual error returned is `*encoding/json.SyntaxError` (a different Go type). Always use `errors.As` for portable error matching. This does not apply to errors returned from `Processor` methods, which use this package's own error types.
 
-Beyond 100% compatibility, our library also provides:
+## Bonus Features
+
+Beyond standard compatibility, our library also provides:
 
 - **Advanced Path Operations**: `json.Get()`, `json.Set()`, `json.Delete()`
 - **Type-Safe Generics**: `json.GetTyped[T]()`, `json.SafeGet()`
@@ -153,13 +175,13 @@ Beyond 100% compatibility, our library also provides:
 - **Schema Validation**: `json.ValidateSchema()` with comprehensive schema support
 - **Data Utilities**: `json.CompareJSON()`, `json.MergeJSON()` (note: `deepCopy` is unexported; deep copy is performed internally by operations like `Set` and `MergeJSON`)
 
-## 🔒 Compatibility Guarantee
+## Compatibility Guarantee
 
 We guarantee:
 
-1. **API Compatibility**: All public APIs match `encoding/json` exactly
+1. **API Compatibility**: All standard `encoding/json` public APIs are present and behave equivalently. Some functions accept an optional `cfg ...Config` trailing parameter (see Extended Signatures above).
 2. **Behavioral Compatibility**: Semantically equivalent output for same input (JSON object key ordering may differ, which is compliant with JSON specification)
-3. **Error Compatibility**: Same error types and messages
+3. **Error Compatibility**: Same error types; messages are semantically equivalent (minor formatting details may differ). Note that top-level `Unmarshal`/`Marshal` return `*encoding/json.SyntaxError` (not this package's type); use `errors.As` for portable matching.
 4. **Performance Compatibility**: Same or better performance
 5. **Version Compatibility**: Requires Go 1.25.0+ (as specified in `go.mod`)
 
@@ -168,7 +190,7 @@ We guarantee:
 - **Performance**: Our library includes additional features like caching and memory pooling, which may result in slightly different performance characteristics compared to the standard library.
 - **Error Messages**: While error types are identical, some error message details may vary slightly while maintaining the same semantic meaning.
 
-## 🔧 Troubleshooting
+## Troubleshooting
 
 ### Common Differences (All Semantically Equivalent)
 
@@ -186,6 +208,6 @@ If you suspect compatibility issues:
 2. **Functional Testing**: Verify that your application logic works the same with both libraries
 3. **Performance Testing**: Measure performance differences in your specific use case
 
-## 💡️ Support
+## Support
 
-We are committed to maintaining 100% **semantic** compatibility with `encoding/json`.
+We are committed to maintaining **semantic** compatibility with `encoding/json`.

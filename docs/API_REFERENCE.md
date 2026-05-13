@@ -7,6 +7,7 @@
 ## Table of Contents
 
 - [Core Functions](#core-functions)
+- [encoding/json Streaming Types](#encodingjson-streaming-types)
 - [Data Retrieval (Get)](#data-retrieval-get)
 - [Data Modification (Set)](#data-modification-set)
 - [Data Deletion (Delete)](#data-deletion-delete)
@@ -43,7 +44,7 @@
 ### Marshal
 
 ```go
-func Marshal(v any) ([]byte, error)
+func Marshal(value any) ([]byte, error)
 ```
 
 Encodes a Go value to JSON. 100% compatible with `encoding/json.Marshal`.
@@ -66,7 +67,7 @@ jsonBytes, err := json.Marshal(data)
 ### Unmarshal
 
 ```go
-func Unmarshal(data []byte, v any) error
+func Unmarshal(data []byte, value any) error
 ```
 
 Decodes JSON bytes into a Go value. 100% compatible with `encoding/json.Unmarshal`.
@@ -119,6 +120,96 @@ Reports whether data is valid JSON.
 
 **Returns:**
 - `bool` - true if valid JSON
+
+---
+
+## encoding/json Streaming Types
+
+### Encoder
+
+```go
+type Encoder struct { /* unexported fields */ }
+
+func NewEncoder(w io.Writer, cfg ...Config) *Encoder
+func (enc *Encoder) Encode(v any) error
+func (enc *Encoder) SetEscapeHTML(on bool)
+func (enc *Encoder) SetIndent(prefix, indent string)
+```
+
+Writes JSON values to an output stream. 100% compatible with `encoding/json.Encoder`. The optional `cfg` parameter allows customization of encoding behavior (e.g., `EscapeHTML`, `Pretty`, `Prefix`, `Indent`).
+
+**Example:**
+```go
+var buf bytes.Buffer
+enc := json.NewEncoder(&buf)
+enc.SetIndent("", "  ")
+err := enc.Encode(map[string]any{"name": "Alice", "age": 30})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(buf.String())
+```
+
+---
+
+### Decoder
+
+```go
+type Decoder struct { /* unexported fields */ }
+
+func NewDecoder(r io.Reader, cfg ...Config) *Decoder
+func (dec *Decoder) Decode(v any) error
+func (dec *Decoder) UseNumber()
+func (dec *Decoder) DisallowUnknownFields()
+func (dec *Decoder) Buffered() io.Reader
+func (dec *Decoder) InputOffset() int64
+func (dec *Decoder) More() bool
+func (dec *Decoder) Token() (Token, error)
+```
+
+Reads and decodes JSON values from an input stream. 100% compatible with `encoding/json.Decoder`. The optional `cfg` parameter allows customization of decoding behavior (e.g., `DisallowUnknown`, `MaxNestingDepthSecurity`, `MaxJSONSize`).
+
+**Example:**
+```go
+reader := strings.NewReader(`{"name": "Alice"} {"name": "Bob"}`)
+dec := json.NewDecoder(reader)
+for dec.More() {
+    var obj map[string]any
+    if err := dec.Decode(&obj); err != nil {
+        break
+    }
+    fmt.Println(obj["name"])
+}
+```
+
+---
+
+### Number, Token, and Delim
+
+```go
+type Number string
+func (n Number) String() string
+func (n Number) Float64() (float64, error)
+func (n Number) Int64() (int64, error)
+
+type Token any
+type Delim rune
+```
+
+`Number` represents a JSON number literal, preserving exact representation. `Token` holds a value of one of these types: `Delim`, `bool`, `float64`, `Number`, `string`, or `nil`. `Delim` represents one of the four JSON delimiters `[ ] { }`.
+
+Use `Decoder.UseNumber()` to decode numbers as `Number` instead of `float64`:
+
+```go
+dec := json.NewDecoder(reader)
+dec.UseNumber()
+var obj map[string]any
+dec.Decode(&obj)
+if n, ok := obj["count"].(json.Number); ok {
+    val, _ := n.Int64()
+    fmt.Println(val)
+}
+```
 
 ---
 
@@ -268,6 +359,29 @@ Retrieves a typed value from JSON at the specified path using generics. Returns 
 ```go
 name := json.GetTyped[string](data, "user.name", "Anonymous")
 age := json.GetTyped[int](data, "user.age", 0)
+```
+
+---
+
+### GetWithContext
+
+```go
+func GetWithContext(ctx context.Context, jsonStr, path string, cfg ...Config) (any, error)
+```
+
+Retrieves a value from JSON with boundary-level context checks. Context is checked before and after the operation, NOT during parsing/navigation. For large JSON documents, the operation may not respond to cancellation mid-parse.
+
+**Parameters:**
+- `ctx` - Context for timeout/cancellation
+- `jsonStr` - JSON string
+- `path` - Path expression
+- `cfg` - Optional configuration
+
+**Example:**
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+value, err := json.GetWithContext(ctx, data, "users[0].name")
 ```
 
 ---
@@ -792,9 +906,9 @@ json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
 func ForeachReturn(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config) (string, error)
 ```
 
-Iterates and returns the original JSON string (read-only).
+Iterates over JSON and returns the JSON string. The package-level function returns the original string unchanged; the Processor method may return a re-encoded copy.
 
-**Note:** This function is read-only. Use `json.Set()` for modifications.
+**Note:** The callback receives data for reading. Use `json.Set()` for modifications.
 
 ---
 
@@ -1552,6 +1666,7 @@ func (p *Processor) GetArray(jsonStr, path string, defaultValue ...[]any) []any
 func (p *Processor) GetObject(jsonStr, path string, defaultValue ...map[string]any) map[string]any
 func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (map[string]any, error)
 func (p *Processor) SafeGet(jsonStr, path string, cfg ...Config) AccessResult
+func (p *Processor) GetTyped[T any](jsonStr, path string, defaultValue ...T) T
 func (p *Processor) GetFromParsed(parsed *ParsedJSON, path string, cfg ...Config) (any, error)
 func (p *Processor) GetCompiled(jsonStr string, cp *CompiledPath) (any, error)
 func (p *Processor) CompilePath(path string) (*CompiledPath, error)
@@ -1604,7 +1719,7 @@ func (p *Processor) GetHealthStatus() HealthStatus
 // Iteration
 func (p *Processor) Foreach(jsonStr string, fn func(key any, item *IterableValue))
 func (p *Processor) ForeachWithPath(jsonStr, path string, fn func(key any, item *IterableValue)) error
-func (p *Processor) ForeachWithPathAndControl(jsonStr, path string, fn func(key any, value any) IteratorControl, cfg ...Config) error
+func (p *Processor) ForeachWithPathAndControl(jsonStr, path string, fn func(key any, value any) IteratorControl) error
 func (p *Processor) ForeachWithPathAndIterator(jsonStr, path string, fn func(key any, item *IterableValue, currentPath string) IteratorControl) error
 func (p *Processor) ForeachReturn(jsonStr string, fn func(key any, item *IterableValue)) (string, error)
 func (p *Processor) ForeachNested(jsonStr string, fn func(key any, item *IterableValue))
@@ -1681,10 +1796,10 @@ var ErrDepthLimit        = errors.New("depth limit exceeded")
 var ErrSecurityViolation = errors.New("security violation detected")
 var ErrInvalidPath       = errors.New("invalid path format")
 var ErrProcessorClosed   = errors.New("processor is closed")
-var ErrConcurrencyLimit  = errors.New("concurrency limit exceeded")
-var ErrOperationTimeout  = errors.New("operation timeout")
+var ErrConcurrencyLimit  = errors.New("concurrency limit exceeded")  // Deprecated: Reserved for future use; not currently returned by any operation.
+var ErrOperationTimeout  = errors.New("operation timeout")             // Deprecated: Reserved for future use; not currently returned by any operation.
 var ErrUnsupportedPath   = errors.New("unsupported path operation")
-var ErrResourceExhausted = errors.New("system resources exhausted")
+var ErrResourceExhausted = errors.New("system resources exhausted")    // Deprecated: Reserved for future use; not currently returned by any operation.
 ```
 
 ---
@@ -1882,6 +1997,34 @@ for iter.HasNext() {
 
 ---
 
+### BatchIterator
+
+```go
+type BatchIterator struct { /* unexported fields */ }
+
+func NewBatchIterator(data []any, cfg ...Config) *BatchIterator
+func (it *BatchIterator) NextBatch() []any
+func (it *BatchIterator) HasNext() bool
+func (it *BatchIterator) Reset()
+func (it *BatchIterator) TotalBatches() int
+func (it *BatchIterator) CurrentIndex() int
+func (it *BatchIterator) Remaining() int
+```
+
+Processes arrays in batches for efficient bulk operations. When `Config` is provided, `Config.MaxBatchSize` is used as the batch size.
+
+**Example:**
+```go
+data := make([]any, 1000)
+iter := json.NewBatchIterator(data)
+for iter.HasNext() {
+    batch := iter.NextBatch()
+    // Process batch...
+}
+```
+
+---
+
 ### NDJSONProcessor
 
 ```go
@@ -2064,11 +2207,33 @@ Returned by `Config.ValidateWithWarnings()` when configuration values are auto-c
 
 ```go
 type SchemaConfig struct {
-    // Pointer-typed optional fields for schema construction
+    Type                 string
+    Properties           map[string]*Schema
+    Items                *Schema
+    Required             []string
+    MinLength            *int
+    MaxLength            *int
+    Minimum              *float64
+    Maximum              *float64
+    Pattern              string
+    Format               string
+    AdditionalProperties *bool
+    MinItems             *int
+    MaxItems             *int
+    UniqueItems          bool
+    Enum                 []any
+    Const                any
+    MultipleOf           *float64
+    ExclusiveMinimum     *bool
+    ExclusiveMaximum     *bool
+    Title                string
+    Description          string
+    Default              any
+    Examples             []any
 }
 ```
 
-Configuration for creating schemas with optional fields. Use `DefaultSchemaConfig()` for defaults and `NewSchemaWithConfig(cfg)` to create.
+Configuration for creating schemas with optional pointer-typed fields. Unlike `Schema`, numeric and boolean constraints use pointer types (`*int`, `*float64`, `*bool`) so that zero values are distinguishable from "not set". Use `DefaultSchemaConfig()` for defaults and `NewSchemaWithConfig(cfg)` to create.
 
 ---
 
@@ -2079,6 +2244,59 @@ type PathSegment = internal.PathSegment
 ```
 
 A segment of a parsed JSON path. Used with custom `PathParser` implementations.
+
+---
+
+### StreamIterator
+
+```go
+type StreamIterator struct { /* unexported fields */ }
+
+func NewStreamIterator(reader io.Reader, cfg ...Config) *StreamIterator
+func (it *StreamIterator) Next() bool
+func (it *StreamIterator) Value() any
+func (it *StreamIterator) Index() int
+func (it *StreamIterator) Err() error
+func (it *StreamIterator) Reset(reader io.Reader)
+```
+
+Provides memory-efficient iteration over large JSON arrays. Processes elements one at a time without loading the entire array into memory. The optional `cfg` parameter allows customization (e.g., `BufferSize`).
+
+**Example:**
+```go
+reader := strings.NewReader(`[1, 2, 3, 4, 5]`)
+iter := json.NewStreamIterator(reader)
+for iter.Next() {
+    fmt.Printf("Index %d: %v\n", iter.Index(), iter.Value())
+}
+if err := iter.Err(); err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+### ParallelIterator
+
+```go
+type ParallelIterator struct { /* unexported fields */ }
+
+func NewParallelIterator(data []any, cfg ...Config) *ParallelIterator
+func (pi *ParallelIterator) ForEach(fn func(index int, value any) error) error
+func (pi *ParallelIterator) ForEachWithContext(ctx context.Context, fn func(index int, value any) error) error
+```
+
+Processes arrays in parallel using worker goroutines. The optional `cfg` parameter controls worker count via `Config.MaxConcurrency`. Also provides `ForEachBatch`, `ForEachBatchWithContext`, `Map`, `Filter`, and `Close` methods.
+
+**Example:**
+```go
+data := []any{1, 2, 3, 4, 5}
+iter := json.NewParallelIterator(data)
+err := iter.ForEach(func(idx int, val any) error {
+    fmt.Printf("Worker processing index %d: %v\n", idx, val)
+    return nil
+})
+```
 
 ---
 

@@ -151,6 +151,23 @@ if result.Ok() {
 
 // 批量获取
 results, err := json.GetMultiple(data, []string{"user.name", "user.age"})
+
+// 带上下文的获取（支持超时/取消）
+value, err := json.GetWithContext(ctx, data, "user.name")
+```
+
+### 解析
+
+```go
+// 解析 JSON 为 any（使用默认处理器）
+data, err := json.ParseAny(jsonStr)
+
+// 解析 JSON 到类型化目标
+var user User
+err = json.Parse(jsonStr, &user)
+
+// 使用配置
+data, err = json.ParseAny(jsonStr, json.SecurityConfig())
 ```
 
 ### 数据修改
@@ -213,6 +230,12 @@ result, _ := json.Encode(data, cfg)
 
 // 预设配置
 result, _ := json.Encode(data, json.PrettyConfig())
+
+// 快速美化编码
+result, _ = json.EncodePretty(data)
+
+// 带配置验证
+valid, err := json.ValidWithConfig(jsonStr, json.SecurityConfig())
 ```
 
 ### 文件操作
@@ -221,6 +244,9 @@ result, _ := json.Encode(data, json.PrettyConfig())
 // 加载和保存（包级别函数）
 jsonStr, _ := json.LoadFromFile("data.json")
 json.SaveToFile("output.json", data, json.PrettyConfig())
+
+// 从 Reader 加载（带大小限制）
+jsonStr, _ = json.LoadFromReader(reader)
 
 // 结构体/Map 序列化
 json.MarshalToFile("user.json", user)
@@ -300,9 +326,10 @@ processor.ClearCache()
 ### 预设配置
 
 ```go
+// 根据使用场景选择预设：
 cfg := json.DefaultConfig()   // 平衡的默认配置
-cfg := json.SecurityConfig()  // 用于不受信任的输入
-cfg := json.PrettyConfig()    // 用于美化输出
+// cfg := json.SecurityConfig()  // 用于不受信任的输入
+// cfg := json.PrettyConfig()    // 用于美化输出
 ```
 
 ---
@@ -443,16 +470,26 @@ err = ndjson.ProcessFile("data.ndjson", func(lineNum int, obj map[string]any) er
     return nil
 })
 
-// JSONL 过滤、映射、归约
-filtered, _ := processor.FilterJSONL(reader, func(item *json.IterableValue) bool {
+// JSONL 过滤、映射、归约（也作为包级别函数提供）
+filtered, _ := json.FilterJSONL(reader, func(item *json.IterableValue) bool {
     return item.GetBool("active")
 })
-mapped, _   := processor.MapJSONL(reader, func(lineNum int, item *json.IterableValue) (any, error) {
+mapped, _   := json.MapJSONL(reader, func(lineNum int, item *json.IterableValue) (any, error) {
     return map[string]any{"id": item.GetString("id")}, nil
 })
-result, _   := processor.ReduceJSONL(reader, 0, func(acc any, item *json.IterableValue) any {
+result, _   := json.ReduceJSONL(reader, 0, func(acc any, item *json.IterableValue) any {
     count := item.GetInt("count")
     return acc.(int) + count
+})
+
+// 更多 JSONL 工具函数
+items, _    := json.CollectJSONL(reader)       // 收集所有元素
+first, _, _ := json.FirstJSONL(reader, func(item *json.IterableValue) bool {
+    return item.GetBool("target")              // 查找第一个匹配的元素
+})
+err = json.ForeachJSONL(reader, func(lineNum int, item *json.IterableValue) error {
+    fmt.Printf("第 %d 行: %s\n", lineNum, item.GetString("id"))
+    return nil
 })
 ```
 
@@ -517,9 +554,12 @@ defer processor.Close()
 // 日志钩子 — 接受带有 Info(string, ...any) 方法的任意类型
 processor.AddHook(json.LoggingHook(slog.Default()))
 
-// 计时钩子 — 接受带有 Record(op string, duration time.Duration) 方法的接口
-type MetricsRecorder struct{}
-func (m *MetricsRecorder) Record(op string, d time.Duration) { /* 记录 */ }
+// 计时钩子 — 接受带有 Record(op string, duration time.Duration) 方法的类型
+// 定义你的记录器：
+//
+//	type MetricsRecorder struct{}
+//	func (m *MetricsRecorder) Record(op string, d time.Duration) { /* 记录 */ }
+//
 processor.AddHook(json.TimingHook(&MetricsRecorder{}))
 
 // 验证钩子 — 接受 func(jsonStr, path string) error

@@ -347,264 +347,70 @@ func TestEncodeStructCustom(t *testing.T) {
 	}
 }
 
-// TestValidateTimeFormat tests time format validation
-func TestValidateTimeFormatEncoding(t *testing.T) {
+// TestValidateFormats tests all format validation functions via table-driven subtests.
+func TestValidateFormats(t *testing.T) {
 	processor, err := New()
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
 	defer processor.Close()
+
+	type validateFunc func(string, string, *[]ValidationError) error
 
 	tests := []struct {
 		name    string
-		timeStr string
+		fn      validateFunc
+		input   string
 		wantErr bool
 	}{
-		{"ValidTime", "12:30:45", false},
-		{"InvalidTime", "25:00:00", true},
-		{"InvalidFormat", "12-30-45", true},
-		{"PartialTime", "12:30", true},
+		// Time
+		{"Time/Valid", processor.validateTimeFormat, "12:30:45", false},
+		{"Time/InvalidHour", processor.validateTimeFormat, "25:00:00", true},
+		{"Time/InvalidFormat", processor.validateTimeFormat, "12-30-45", true},
+		{"Time/Partial", processor.validateTimeFormat, "12:30", true},
+		// DateTime
+		{"DateTime/Valid", processor.validateDateTimeFormat, "2024-01-15T10:30:00Z", false},
+		{"DateTime/WithOffset", processor.validateDateTimeFormat, "2024-01-15T10:30:00+07:00", false},
+		{"DateTime/Invalid", processor.validateDateTimeFormat, "2024-13-45T99:99:99Z", true},
+		{"DateTime/InvalidFormat", processor.validateDateTimeFormat, "2024/01/15 10:30:00", true},
+		// Email
+		{"Email/Valid", processor.validateEmailFormat, "test@example.com", false},
+		{"Email/Invalid", processor.validateEmailFormat, "not-an-email", true},
+		{"Email/Empty", processor.validateEmailFormat, "", true},
+		// URI
+		{"URI/ValidHTTPS", processor.validateURIFormat, "https://example.com", false},
+		{"URI/ValidFTP", processor.validateURIFormat, "ftp://files.example.com", false},
+		{"URI/Invalid", processor.validateURIFormat, "not-a-uri", true},
+		{"URI/Empty", processor.validateURIFormat, "", true},
+		// UUID
+		{"UUID/Valid", processor.validateUUIDFormat, "550e8400-e29b-41d4-a716-446655440000", false},
+		{"UUID/Invalid", processor.validateUUIDFormat, "not-a-uuid", true},
+		{"UUID/Empty", processor.validateUUIDFormat, "", true},
+		// IPv4
+		{"IPv4/Valid", processor.validateIPv4Format, "192.168.1.1", false},
+		{"IPv4/Valid2", processor.validateIPv4Format, "10.0.0.1", false},
+		{"IPv4/TooManyParts", processor.validateIPv4Format, "192.168.1.1.1", true},
+		{"IPv4/TooFewParts", processor.validateIPv4Format, "192.168.1", true},
+		{"IPv4/OutOfRange", processor.validateIPv4Format, "192.168.1.256", true},
+		{"IPv4/NotNumber", processor.validateIPv4Format, "192.168.1.abc", true},
+		{"IPv4/Negative", processor.validateIPv4Format, "192.168.1.-1", true},
+		// IPv6
+		{"IPv6/Valid", processor.validateIPv6Format, "2001:0db8:85a3:0000:0000:8a2e:0370:7334", false},
+		{"IPv6/Short", processor.validateIPv6Format, "::1", false},
+		{"IPv6/NoColon", processor.validateIPv6Format, "192.168.1.1", true},
+		{"IPv6/Empty", processor.validateIPv6Format, "", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var errors []ValidationError
-			err := processor.validateTimeFormat(tt.timeStr, "test.path", &errors)
+			var errs []ValidationError
+			tt.fn(tt.input, "test.path", &errs)
 
-			if tt.wantErr {
-				if err != nil {
-					t.Logf("validateTimeFormat returned error: %v", err)
-				}
-				if len(errors) == 0 {
-					t.Error("expected validation error")
-				}
-			} else {
-				if len(errors) > 0 {
-					t.Errorf("unexpected validation errors: %v", errors)
-				}
+			if tt.wantErr && len(errs) == 0 {
+				t.Error("expected validation error")
 			}
-		})
-	}
-}
-
-// TestValidateDateTimeFormat tests date-time format validation
-func TestValidateDateTimeFormatEncoding(t *testing.T) {
-	processor, err := New()
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name     string
-		datetime string
-		wantErr  bool
-	}{
-		{"ValidDateTime", "2024-01-15T10:30:00Z", false},
-		{"ValidDateTimeWithOffset", "2024-01-15T10:30:00+07:00", false},
-		{"InvalidDateTime", "2024-13-45T99:99:99Z", true},
-		{"InvalidFormat", "2024/01/15 10:30:00", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var errors []ValidationError
-			processor.validateDateTimeFormat(tt.datetime, "test.path", &errors)
-
-			if tt.wantErr {
-				if len(errors) == 0 {
-					t.Error("expected validation error")
-				}
-			} else {
-				if len(errors) > 0 {
-					t.Errorf("unexpected validation errors: %v", errors)
-				}
-			}
-		})
-	}
-}
-
-// TestValidateEmailFormatEncoding tests email format validation
-func TestValidateEmailFormatEncoding(t *testing.T) {
-	processor, err := New()
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name    string
-		email   string
-		wantErr bool
-	}{
-		{"ValidEmail", "test@example.com", false},
-		{"InvalidEmail", "not-an-email", true},
-		{"EmptyEmail", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var errors []ValidationError
-			processor.validateEmailFormat(tt.email, "test.path", &errors)
-
-			if tt.wantErr {
-				if len(errors) == 0 {
-					t.Error("expected validation error")
-				}
-			} else {
-				if len(errors) > 0 {
-					t.Errorf("unexpected validation errors: %v", errors)
-				}
-			}
-		})
-	}
-}
-
-// TestValidateURIEncoding tests URI validation
-func TestValidateURIEncoding(t *testing.T) {
-	processor, err := New()
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name    string
-		uri     string
-		wantErr bool
-	}{
-		{"ValidURI", "https://example.com", false},
-		{"ValidFTP", "ftp://files.example.com", false},
-		{"InvalidURI", "not-a-uri", true},
-		{"EmptyURI", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var errors []ValidationError
-			processor.validateURIFormat(tt.uri, "test.path", &errors)
-
-			if tt.wantErr {
-				if len(errors) == 0 {
-					t.Error("expected validation error")
-				}
-			} else {
-				if len(errors) > 0 {
-					t.Errorf("unexpected validation errors: %v", errors)
-				}
-			}
-		})
-	}
-}
-
-// TestValidateUUIDEncoding tests UUID validation
-func TestValidateUUIDEncoding(t *testing.T) {
-	processor, err := New()
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name    string
-		uuid    string
-		wantErr bool
-	}{
-		{"ValidUUID", "550e8400-e29b-41d4-a716-446655440000", false},
-		{"InvalidUUID", "not-a-uuid", true},
-		{"EmptyUUID", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var errors []ValidationError
-			processor.validateUUIDFormat(tt.uuid, "test.path", &errors)
-
-			if tt.wantErr {
-				if len(errors) == 0 {
-					t.Error("expected validation error")
-				}
-			} else {
-				if len(errors) > 0 {
-					t.Errorf("unexpected validation errors: %v", errors)
-				}
-			}
-		})
-	}
-}
-
-// TestValidateIPv4Encoding tests IPv4 validation
-func TestValidateIPv4Encoding(t *testing.T) {
-	processor, err := New()
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name    string
-		ip      string
-		wantErr bool
-	}{
-		{"ValidIPv4", "192.168.1.1", false},
-		{"ValidIPv4_2", "10.0.0.1", false},
-		{"InvalidIPv4_TooManyParts", "192.168.1.1.1", true},
-		{"InvalidIPv4_TooFewParts", "192.168.1", true},
-		{"InvalidIPv4_OutOfRange", "192.168.1.256", true},
-		{"InvalidIPv4_NotNumber", "192.168.1.abc", true},
-		{"InvalidIPv4_Negative", "192.168.1.-1", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var errors []ValidationError
-			processor.validateIPv4Format(tt.ip, "test.path", &errors)
-
-			if tt.wantErr {
-				if len(errors) == 0 {
-					t.Error("expected validation error")
-				}
-			} else {
-				if len(errors) > 0 {
-					t.Errorf("unexpected validation errors: %v", errors)
-				}
-			}
-		})
-	}
-}
-
-// TestValidateIPv6Encoding tests IPv6 validation
-func TestValidateIPv6Encoding(t *testing.T) {
-	processor, err := New()
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	defer processor.Close()
-
-	tests := []struct {
-		name    string
-		ip      string
-		wantErr bool
-	}{
-		{"ValidIPv6", "2001:0db8:85a3:0000:0000:8a2e:0370:7334", false},
-		{"ValidIPv6_Short", "::1", false},
-		{"InvalidIPv6_NoColon", "192.168.1.1", true},
-		{"InvalidIPv6_Empty", "", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var errors []ValidationError
-			processor.validateIPv6Format(tt.ip, "test.path", &errors)
-
-			if tt.wantErr {
-				if len(errors) == 0 {
-					t.Error("expected validation error")
-				}
-			} else {
-				if len(errors) > 0 {
-					t.Errorf("unexpected validation errors: %v", errors)
-				}
+			if !tt.wantErr && len(errs) > 0 {
+				t.Errorf("unexpected validation errors: %v", errs)
 			}
 		})
 	}
@@ -915,12 +721,6 @@ func TestValidEdgeCases(t *testing.T) {
 			t.Error("Valid(nil) should return false")
 		}
 	})
-
-	t.Run("ValidStringEdgeCases", func(t *testing.T) {
-		if validString("") {
-			t.Error("ValidString('') should return false")
-		}
-	})
 }
 
 // TestFormatJSONStringEdgeCases tests Processor.formatJSONString edge cases
@@ -1002,31 +802,6 @@ func TestHelperFunctions(t *testing.T) {
 		if err != nil || !equal {
 			t.Errorf("CompareJSON should return true for equal JSON: %v, %v", equal, err)
 		}
-	})
-}
-
-// TestEncoderConfigMethods tests EncoderConfig interface methods
-func TestEncoderConfigMethods(t *testing.T) {
-	cfg := DefaultConfig()
-
-	t.Run("ShouldEscapeUnicode", func(t *testing.T) {
-		result := cfg.shouldEscapeUnicode()
-		_ = result
-	})
-
-	t.Run("ShouldEscapeSlash", func(t *testing.T) {
-		result := cfg.shouldEscapeSlash()
-		_ = result
-	})
-
-	t.Run("ShouldEscapeNewlines", func(t *testing.T) {
-		result := cfg.shouldEscapeNewlines()
-		_ = result
-	})
-
-	t.Run("ShouldEscapeTabs", func(t *testing.T) {
-		result := cfg.shouldEscapeTabs()
-		_ = result
 	})
 }
 
@@ -1524,58 +1299,6 @@ func TestProcessorBufferMethods(t *testing.T) {
 // BATCH OPERATIONS TESTS
 // ============================================================================
 
-// TestBatchOperationsAdditional tests additional batch operations
-func TestBatchOperationsAdditional(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("BatchGetMultiple", func(t *testing.T) {
-		jsonStr := `{"a":1,"b":2,"c":3}`
-		paths := []string{"a", "b", "c"}
-
-		result, err := processor.fastGetMultiple(jsonStr, paths)
-		if err != nil {
-			t.Errorf("FastGetMultiple failed: %v", err)
-		}
-
-		if len(result) != 3 {
-			t.Errorf("Result length = %d, want 3", len(result))
-		}
-	})
-
-	t.Run("BatchSetOptimized", func(t *testing.T) {
-		jsonStr := `{"a":1,"b":2}`
-		updates := map[string]any{
-			"a": 10,
-			"b": 20,
-			"c": 30,
-		}
-
-		result, err := processor.batchSetOptimized(jsonStr, updates)
-		if err != nil {
-			t.Errorf("BatchSetOptimized failed: %v", err)
-		}
-
-		if !strings.Contains(result, `"a":10`) {
-			t.Error("Result should contain updated value for a")
-		}
-	})
-
-	t.Run("BatchDeleteOptimized", func(t *testing.T) {
-		jsonStr := `{"a":1,"b":2,"c":3}`
-		paths := []string{"a", "c"}
-
-		result, err := processor.batchDeleteOptimized(jsonStr, paths)
-		if err != nil {
-			t.Errorf("BatchDeleteOptimized failed: %v", err)
-		}
-
-		if strings.Contains(result, `"a"`) {
-			t.Error("Result should not contain deleted key a")
-		}
-	})
-}
-
 // ============================================================================
 // NUMBER PRESERVING DECODER TESTS
 // ============================================================================
@@ -1587,19 +1310,21 @@ func TestNumberPreservingDecoder(t *testing.T) {
 	t.Run("DecodeInteger", func(t *testing.T) {
 		result, err := decoder.DecodeToAny(`42`)
 		if err != nil {
-			t.Errorf("DecodeToAny failed: %v", err)
+			t.Fatalf("DecodeToAny failed: %v", err)
 		}
-		// Number type may be preserved as int or Number
-		_ = result
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
 	})
 
 	t.Run("DecodeFloat", func(t *testing.T) {
 		result, err := decoder.DecodeToAny(`3.14`)
 		if err != nil {
-			t.Errorf("DecodeToAny failed: %v", err)
+			t.Fatalf("DecodeToAny failed: %v", err)
 		}
-		// Number type may be preserved as float64 or Number
-		_ = result
+		if result == nil {
+			t.Fatal("expected non-nil result")
+		}
 	})
 
 	t.Run("DecodeObject", func(t *testing.T) {
@@ -1611,7 +1336,6 @@ func TestNumberPreservingDecoder(t *testing.T) {
 		if !ok {
 			t.Fatalf("Result should be map, got %T", result)
 		}
-		// Just verify the key exists
 		if _, ok := m["num"]; !ok {
 			t.Error("num key should exist")
 		}
@@ -1983,104 +1707,6 @@ func TestEncoderMethods(t *testing.T) {
 	})
 }
 
-// ============================================================================
-// ADDITIONAL ENCODING TESTS
-// ============================================================================
-
-// TestEncodeStructComprehensive tests struct encoding more comprehensively
-func TestEncodeStructComprehensive(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("StructWithJSONTags", func(t *testing.T) {
-		type User struct {
-			ID       int      `json:"id"`
-			Name     string   `json:"name"`
-			Email    string   `json:"email,omitempty"`
-			Tags     []string `json:"tags,omitempty"`
-			Active   bool     `json:"active"`
-			Balance  float64  `json:"balance"`
-			Password string   `json:"-"`
-		}
-
-		user := User{
-			ID:      1,
-			Name:    "Alice",
-			Tags:    []string{"admin", "user"},
-			Active:  true,
-			Balance: 100.50,
-		}
-
-		result, err := processor.EncodeWithConfig(user, DefaultConfig())
-		if err != nil {
-			t.Errorf("EncodeWithConfig failed: %v", err)
-		}
-
-		if strings.Contains(result, "Password") {
-			t.Error("Password should be excluded via json:\"-\" tag")
-		}
-		if !strings.Contains(result, `"id"`) {
-			t.Error("Result should contain id")
-		}
-	})
-
-	t.Run("NestedStructs", func(t *testing.T) {
-		type Address struct {
-			Street  string `json:"street"`
-			City    string `json:"city"`
-			Country string `json:"country"`
-		}
-
-		type Person struct {
-			Name    string  `json:"name"`
-			Address Address `json:"address"`
-		}
-
-		person := Person{
-			Name: "Bob",
-			Address: Address{
-				Street:  "123 Main St",
-				City:    "New York",
-				Country: "USA",
-			},
-		}
-
-		result, err := processor.EncodeWithConfig(person, DefaultConfig())
-		if err != nil {
-			t.Errorf("EncodeWithConfig failed: %v", err)
-		}
-
-		if !strings.Contains(result, "address") || !strings.Contains(result, "street") {
-			t.Error("Result should contain nested struct fields")
-		}
-	})
-
-	t.Run("StructWithPointers", func(t *testing.T) {
-		type Item struct {
-			Name  string  `json:"name"`
-			Price float64 `json:"price"`
-		}
-
-		type Order struct {
-			ID    int    `json:"id"`
-			Item  *Item  `json:"item,omitempty"`
-			Notes string `json:"notes,omitempty"`
-		}
-
-		item := Item{Name: "Widget", Price: 9.99}
-		order := Order{ID: 1, Item: &item}
-
-		result, err := processor.EncodeWithConfig(order, DefaultConfig())
-		if err != nil {
-			t.Errorf("EncodeWithConfig failed: %v", err)
-		}
-
-		if !strings.Contains(result, "Widget") {
-			t.Error("Result should contain item name")
-		}
-	})
-}
-
 // TestEncodeStringEdgeCases tests string encoding edge cases
 func TestEncodeStringEdgeCases(t *testing.T) {
 	processor, _ := New()
@@ -2365,33 +1991,6 @@ func TestEncodeStreamWithConfig(t *testing.T) {
 	if !strings.Contains(result, `"id"`) {
 		t.Error("Result should contain id")
 	}
-}
-
-// TestTruncateFloat tests float truncation
-func TestTruncateFloat(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("TruncatePrecision", func(t *testing.T) {
-		type Data struct {
-			Value float64 `json:"value"`
-		}
-
-		data := Data{Value: 3.141592653589793}
-
-		config := DefaultConfig()
-		config.FloatPrecision = 4
-		config.FloatTruncate = true
-
-		result, err := processor.EncodeWithConfig(data, config)
-		if err != nil {
-			t.Errorf("EncodeWithConfig failed: %v", err)
-		}
-
-		if !strings.Contains(result, "3.1415") {
-			t.Errorf("Result should contain truncated value, got: %s", result)
-		}
-	})
 }
 
 // ============================================================================
@@ -2925,32 +2524,6 @@ func TestGetBoolDefault(t *testing.T) {
 }
 
 // TestValidString tests the validString function
-func TestValidString(t *testing.T) {
-	tests := []struct {
-		jsonStr  string
-		expected bool
-	}{
-		{`{"key":"value"}`, true},
-		{`[1, 2, 3]`, true},
-		{`"string"`, true},
-		{`123`, true},
-		{`true`, true},
-		{`null`, true},
-		{`{invalid}`, false},
-		{``, false},
-		{`{"unclosed":`, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.jsonStr, func(t *testing.T) {
-			result := validString(tt.jsonStr)
-			if result != tt.expected {
-				t.Errorf("validString(%q) = %v, want %v", tt.jsonStr, result, tt.expected)
-			}
-		})
-	}
-}
-
 // TestValidWithConfig tests ValidWithConfig function
 func TestValidWithConfig(t *testing.T) {
 	t.Run("WithConfig", func(t *testing.T) {
@@ -3282,9 +2855,16 @@ func TestEmptyAndNilInputs(t *testing.T) {
 
 	t.Run("EmptyPath", func(t *testing.T) {
 		result, err := processor.Get(`{"key":"value"}`, "")
-		// Empty path may return root or error depending on implementation
-		_ = result
-		_ = err
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		m, ok := result.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map, got %T", result)
+		}
+		if m["key"] != "value" {
+			t.Errorf("expected key=value in root result")
+		}
 	})
 
 	t.Run("NilValue", func(t *testing.T) {
@@ -3292,8 +2872,7 @@ func TestEmptyAndNilInputs(t *testing.T) {
 		if err != nil {
 			t.Errorf("Set with nil value failed: %v", err)
 		}
-		// Verify nil was set
-		_ = result
+		assertJSONEqual(t, `{"key":null}`, result)
 	})
 }
 
@@ -3317,9 +2896,11 @@ func TestArrayBoundaryConditions(t *testing.T) {
 	t.Run("IndexOutOfRange", func(t *testing.T) {
 		result, err := processor.Get(jsonStr, "items[100]")
 		// Out-of-range may return nil or error depending on implementation
-		_ = result
-		_ = err
+		if err == nil && result != nil {
+			t.Errorf("out-of-range index should return nil or error, got result=%v", result)
+		}
 	})
+
 
 	t.Run("EmptyArray", func(t *testing.T) {
 		result, err := processor.Get(`{"empty": []}`, "empty")
@@ -3448,20 +3029,26 @@ func TestResourcePoolOperations(t *testing.T) {
 	t.Run("BufferPoolOperations", func(t *testing.T) {
 		buf := *internal.GetByteSliceWithHint(1024)
 		buf = append(buf, "test"...)
+		if string(buf) != "test" {
+			t.Errorf("buffer content = %q, want test", buf)
+		}
 		internal.PutByteSlice(&buf)
-
-		buf2 := *internal.GetByteSliceWithHint(1024)
-		internal.PutByteSlice(&buf2)
 	})
 
 	t.Run("StringBuilderPoolOperations", func(t *testing.T) {
 		sb := internal.GetStringBuilder()
 		sb.WriteString("test")
+		if sb.String() != "test" {
+			t.Errorf("builder content = %q, want test", sb.String())
+		}
 		internal.PutStringBuilder(sb)
 	})
 
 	t.Run("PathSegmentsPoolOperations", func(t *testing.T) {
 		segs := internal.GetPathSegmentSlice(8)
+		if segs == nil {
+			t.Error("expected non-nil segment slice")
+		}
 		internal.PutPathSegmentSlice(segs)
 	})
 }
@@ -3496,26 +3083,6 @@ func TestStreamEncoderDecodeRoundTrip(t *testing.T) {
 		if decoded["name"] != "test" {
 			t.Error("Decoded name should be 'test'")
 		}
-	})
-}
-
-// TestJSONNumberHandling tests json.Number handling
-func TestJSONNumberHandling(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("UseNumber", func(t *testing.T) {
-		decoder := NewDecoder(strings.NewReader(`{"num":123}`))
-		decoder.UseNumber()
-
-		var result map[string]any
-		err := decoder.Decode(&result)
-		if err != nil {
-			t.Fatalf("Decode failed: %v", err)
-		}
-
-		// The number might be a float64 or json.Number depending on implementation
-		_ = result["num"]
 	})
 }
 

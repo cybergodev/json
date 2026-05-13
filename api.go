@@ -5,8 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 const (
 	configProcessorCacheLimit    = 64 // Maximum cached processors
 	configProcessorCacheEvictNum = 16 // Number to evict when limit reached
+	maxConcurrentCloses          = 8  // Limit concurrent async close goroutines
 )
 
 // Processor cache for config-based processor reuse
@@ -95,10 +95,7 @@ func withTypedGetter[T any](fn func(*Processor, string, string, ...T) T, jsonStr
 // withConfigProcessor handles the config-extract-and-processor pattern for
 // config-aware API functions. Eliminates boilerplate in EncodeBatch, EncodeFields, EncodeStream.
 func withConfigProcessor[T any](cfg []Config, fn func(*Processor, Config) (T, error)) (T, error) {
-	c := DefaultConfig()
-	if len(cfg) > 0 {
-		c = cfg[0]
-	}
+	c := getConfigOrDefault(cfg...)
 	p, err := getProcessorWithConfig(c)
 	if err != nil {
 		var zero T
@@ -110,10 +107,7 @@ func withConfigProcessor[T any](cfg []Config, fn func(*Processor, Config) (T, er
 // withConfigProcessorError handles config-aware functions that only return an error.
 // Eliminates boilerplate in SaveToFile, MarshalToFile, SaveToWriter.
 func withConfigProcessorError(cfg []Config, fn func(*Processor, Config) error) error {
-	c := DefaultConfig()
-	if len(cfg) > 0 {
-		c = cfg[0]
-	}
+	c := getConfigOrDefault(cfg...)
 	p, err := getProcessorWithConfig(c)
 	if err != nil {
 		return err
@@ -138,11 +132,6 @@ func hashConfig(cfg Config) uint64 {
 	return hashConfigFields(cfg)
 }
 
-// cachedDefaultConfig is a package-level cached default config to avoid
-// repeated allocation in isDefaultConfig hot path.
-// PERFORMANCE: Eliminates DefaultConfig() allocation on every call.
-var cachedDefaultConfig = DefaultConfig()
-
 // isDefaultConfig checks if the config matches the default configuration.
 // Performs complete comparison including Context field (which JSON ignores).
 // PERFORMANCE: Uses short-circuit evaluation for common mismatches first.
@@ -158,7 +147,7 @@ func isDefaultConfig(cfg Config) bool {
 	}
 
 	// Check all fields against cached default
-	return configFieldsEqual(cfg, cachedDefaultConfig)
+	return configFieldsEqual(cfg, cachedDefaultConfigValue)
 }
 
 // configFieldAccessor defines how to access and compare/hash a Config field.
@@ -361,10 +350,20 @@ var configFieldList = []configFieldAccessor{
 		func(a, b Config) bool { return customEscapesEqual(a.CustomEscapes, b.CustomEscapes) },
 		func(h uint64, c Config) uint64 { return hashCustomEscapes(h, c.CustomEscapes) }},
 	{"CustomEncoder",
-		func(a, b Config) bool { return (a.CustomEncoder == nil) == (b.CustomEncoder == nil) },
+		func(a, b Config) bool {
+			if (a.CustomEncoder == nil) != (b.CustomEncoder == nil) {
+				return false
+			}
+			if a.CustomEncoder == nil {
+				return true
+			}
+			return fmt.Sprintf("%T", a.CustomEncoder) == fmt.Sprintf("%T", b.CustomEncoder)
+		},
 		func(h uint64, c Config) uint64 {
 			if c.CustomEncoder != nil {
-				return internal.HashBool(h, true)
+				h = internal.HashBool(h, true)
+				h = internal.HashString(h, fmt.Sprintf("%T", c.CustomEncoder))
+				return h
 			}
 			return h
 		}},
@@ -506,7 +505,7 @@ func hashCustomEscapes(h uint64, m map[rune]string) uint64 {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	slices.Sort(keys)
 	for _, k := range keys {
 		h = internal.HashInt(h, int(k))
 		h = internal.HashString(h, m[k])
@@ -539,9 +538,10 @@ func Get(jsonStr, path string, cfg ...Config) (any, error) {
 	})
 }
 
-// GetWithContext retrieves a value from JSON with context support for cancellation.
-// This is the context-aware version of Get() that respects context cancellation
-// and timeout deadlines.
+// GetWithContext retrieves a value from JSON with boundary-level context checks.
+// Context is checked before and after the operation, NOT during parsing/navigation.
+// For large JSON documents, the operation may not respond to cancellation mid-parse.
+// This is the context-aware version of Get() that supports timeout deadlines.
 //
 // Example:
 //
@@ -575,7 +575,7 @@ func GetTyped[T any](jsonStr, path string, defaultValue ...T) T {
 		var zero T
 		return zero
 	}
-	return getTypedWithDefault[T](p, jsonStr, path, defaultValue...)
+	return getTypedWithDefault(p, jsonStr, path, defaultValue...)
 }
 
 // GetString retrieves a string value from JSON at the specified path.
@@ -867,73 +867,16 @@ func Prettify(jsonStr string, cfg ...Config) (string, error) {
 	})
 }
 
-// print writes any Go value as JSON to stdout in compact format.
-// Note: Writes errors to stderr. Use printE for error handling.
-func print(data any) {
-	result, err := printData(data, false)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "json.print error: %v\n", err)
-		return
-	}
-	fmt.Println(result)
-}
-
-// printPretty prints any Go value as formatted JSON to stdout.
-// Note: Writes errors to stderr. Use printPrettyE for error handling.
-func printPretty(data any) {
-	result, err := printData(data, true)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "json.printPretty error: %v\n", err)
-		return
-	}
-	fmt.Println(result)
-}
-
-// printE prints any Go value as JSON to stdout in compact format.
-// Returns an error instead of writing to stderr, allowing callers to handle errors.
-func printE(data any) error {
-	result, err := printData(data, false)
-	if err != nil {
-		return fmt.Errorf("json.print error: %w", err)
-	}
-	fmt.Println(result)
-	return nil
-}
-
-// printPrettyE prints any Go value as formatted JSON to stdout.
-// Returns an error instead of writing to stderr, allowing callers to handle errors.
-func printPrettyE(data any) error {
-	result, err := printData(data, true)
-	if err != nil {
-		return fmt.Errorf("json.printPretty error: %w", err)
-	}
-	fmt.Println(result)
-	return nil
-}
-
-// printData handles the core logic for Print and PrintPretty.
-// Delegates to Processor.printData to avoid duplication.
-func printData(data any, pretty bool) (string, error) {
-	return withProcessor(func(p *Processor) (string, error) {
-		return p.printData(data, pretty)
-	})
-}
-
 // Valid reports whether data is valid JSON.
 // This function is 100% compatible with encoding/json.Valid.
 // Delegates to Processor.ValidBytes for consistent []byte → bool behavior.
 func Valid(data []byte) bool {
 	p := getDefaultProcessor()
 	if p == nil {
-		return false
+		// Fallback: use simple validation when processor is unavailable
+		return isValidJSON(string(data))
 	}
 	return p.ValidBytes(data)
-}
-
-// validString reports whether the JSON string is valid.
-// This is a convenience wrapper for Valid that accepts a string directly.
-func validString(jsonStr string) bool {
-	return Valid([]byte(jsonStr))
 }
 
 // ValidWithConfig reports whether the JSON string is valid with configuration.
@@ -1163,16 +1106,35 @@ func EncodeStream(values any, cfg ...Config) (string, error) {
 	})
 }
 
+// asyncCloseSem limits concurrent async close goroutines to prevent unbounded
+// goroutine growth when many stale processors are replaced simultaneously.
+var asyncCloseSem = make(chan struct{}, maxConcurrentCloses)
+
+// asyncCloseProcessor closes a processor asynchronously with timeout and semaphore.
+func asyncCloseProcessor(p *Processor) {
+	asyncCloseSem <- struct{}{}
+	go func() {
+		defer func() { <-asyncCloseSem }()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_ = p.Close() // best-effort cleanup; async context ignores errors
+		}()
+		select {
+		case <-done:
+		case <-time.After(closeOperationTimeout):
+		}
+	}()
+}
+
 // getProcessorWithConfig returns a processor configured with the given config.
 // Uses caching for identical configurations to improve performance.
-// SECURITY: Implements cache size limit to prevent unbounded memory growth.
-// RACE-FIX: Uses atomic CompareAndSwap pattern to handle concurrent stale entry replacement safely.
 func getProcessorWithConfig(cfg Config) (*Processor, error) {
 	// Compute cache key from config
 	cacheKey := hashConfig(cfg)
 
 	// Fast path: check cache first with validation loop
-	for attempts := 0; attempts < 3; attempts++ {
+	for range 3 {
 		if cached, ok := configProcessorCache.Load(cacheKey); ok {
 			if p, ok := cached.(*Processor); ok && !p.IsClosed() {
 				return p, nil
@@ -1196,7 +1158,7 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 	}
 
 	// Try to store in cache with retry for stale entries
-	for attempts := 0; attempts < 3; attempts++ {
+	for range 3 {
 		if existing, loaded := configProcessorCache.LoadOrStore(cacheKey, p); loaded {
 			// Another goroutine stored first
 			if ep, ok := existing.(*Processor); ok && !ep.IsClosed() {
@@ -1209,26 +1171,14 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 				// Successfully replaced stale entry
 				// Close the old stale processor asynchronously with timeout
 				if staleProc, ok := existing.(*Processor); ok {
-					go func(stale *Processor) {
-						done := make(chan struct{})
-						go func() {
-							defer close(done)
-							_ = stale.Close() // best-effort cleanup
-						}()
-						select {
-						case <-done:
-							// Close completed
-						case <-time.After(closeOperationTimeout):
-							// Timeout — inner goroutine will complete on its own eventually
-						}
-					}(staleProc)
+					asyncCloseProcessor(staleProc)
 				}
 				// Check cache size and evict if necessary
 				maybeEvictConfigCache()
 				return p, nil
 			}
 			// CAS failed - close our processor and create a fresh one for retry
-			_ = p.Close()
+			_ = p.Close() // best-effort cleanup; orphaned processor on CAS failure
 			p, err = New(cfg)
 			if err != nil {
 				return nil, err
@@ -1242,7 +1192,7 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 	}
 
 	// All attempts exhausted - close the orphaned processor
-	_ = p.Close()
+	_ = p.Close() // best-effort cleanup; all retries exhausted
 	return nil, newOperationError("get_processor", "failed to store processor in cache after retries", errOperationFailed)
 }
 
@@ -1307,65 +1257,30 @@ func maybeEvictConfigCache() {
 	if len(validEntries) >= configProcessorCacheLimit {
 		// Sort by key hash to get deterministic eviction order
 		// Keys with lower hash values are evicted first
-		sort.Slice(validEntries, func(i, j int) bool {
-			return validEntries[i].key < validEntries[j].key
+		slices.SortFunc(validEntries, func(a, b struct {
+			key  uint64
+			proc *Processor
+		}) int {
+			if a.key < b.key {
+				return -1
+			}
+			if a.key > b.key {
+				return 1
+			}
+			return 0
 		})
 
 		var toClose []*Processor
 		evictCount := min(configProcessorCacheEvictNum, len(validEntries))
 
-		for i := 0; i < evictCount; i++ {
+		for i := range evictCount {
 			configProcessorCache.Delete(validEntries[i].key)
 			toClose = append(toClose, validEntries[i].proc)
 		}
 
-		// Close evicted processors asynchronously with timeout (best-effort cleanup)
-		// RESOURCE FIX: Added timeout to prevent goroutine leak if Close() hangs
-		// GOROUTINE FIX: Use semaphore to limit concurrent close goroutines and prevent
-		// unbounded goroutine growth when evicting many processors at once.
-		const maxConcurrentCloses = 8
-		closeSemaphore := make(chan struct{}, maxConcurrentCloses)
-		var wg sync.WaitGroup
-
+		// Close evicted processors with bounded concurrency
 		for _, proc := range toClose {
-			wg.Add(1)
-			go func(p *Processor) {
-				defer wg.Done()
-
-				// Acquire semaphore to limit concurrent closes
-				closeSemaphore <- struct{}{}
-				defer func() { <-closeSemaphore }()
-
-				// Use channel with timeout to prevent indefinite blocking
-				done := make(chan struct{}, 1)
-				go func() {
-					defer close(done)
-					_ = p.Close() // best-effort cleanup; error ignored
-				}()
-				select {
-				case <-done:
-					// Close completed
-				case <-time.After(closeOperationTimeout):
-					// Timeout - goroutine will eventually complete on its own
-					// but we don't want to block here indefinitely
-				}
-			}(proc)
-		}
-
-		// Wait for all close operations with timeout to prevent goroutine leak
-		// Use a done channel to track completion with bounded wait
-		waitDone := make(chan struct{})
-		go func() {
-			wg.Wait()
-			close(waitDone)
-		}()
-
-		select {
-		case <-waitDone:
-			// All close operations completed
-		case <-time.After(closeOperationTimeout):
-			// Timeout - goroutines will eventually complete on their own
-			// This prevents indefinite blocking while still ensuring bounded goroutines
+			asyncCloseProcessor(proc)
 		}
 	}
 }
