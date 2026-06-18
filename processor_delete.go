@@ -1,24 +1,20 @@
 package json
 
 import (
-	"encoding/json"
-
 	"github.com/cybergodev/json/internal"
 )
 
 // Delete removes a value from JSON at the specified path
 func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (string, error) {
-	// Enforce concurrency limit
-	if err := p.acquireSemaphore(); err != nil {
-		return "", err
-	}
-	defer p.releaseSemaphore()
-
-	options, cleanup, err := p.prepareOperation("delete", jsonStr, path, cfg...)
+	options, err := p.prepareOperation(jsonStr, path, cfg...)
 	if err != nil {
-		return "", err
+		// Return the original input on failure, matching every other error path
+		// in this method and the contract documented by Set/SetMultiple.
+		return jsonStr, err
 	}
-	defer cleanup()
+	// Release in reverse-acquire order: options first, then governance slot.
+	defer p.endGovernedOp()
+	defer releaseConfig(options)
 
 	// Determine cleanup options from prepared options and config
 	cleanupNulls := options.CleanupNulls || p.config.CleanupNulls
@@ -26,16 +22,16 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (string, error) 
 
 	// PERFORMANCE: Fast path for simple property delete without cache or cleanup.
 	if isSimplePropertyAccess(path) && !p.config.EnableCache && len(cfg) == 0 && !cleanupNulls {
-		var data any
-		if err := json.Unmarshal(internal.StringToBytes(jsonStr), &data); err != nil {
+		m, isObj, err := unmarshalRootObject(jsonStr)
+		if err != nil {
 			return jsonStr, newOperationPathError("delete", path, err.Error(), ErrInvalidJSON)
 		}
-		if m, ok := data.(map[string]any); ok {
+		if isObj {
 			if _, exists := m[path]; !exists {
 				return jsonStr, newOperationPathError("delete", path, "path not found", ErrPathNotFound)
 			}
 			delete(m, path)
-			result, err := internal.FastMarshalToString(data)
+			result, err := internal.FastMarshalToString(m)
 			if err != nil {
 				return jsonStr, newOperationPathError("delete", path, "failed to marshal result", err)
 			}

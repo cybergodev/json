@@ -478,8 +478,10 @@ Cache keys use secure hashing:
 
 ```go
 // Cache keys are generated using dual FNV-1a hashing:
-// - Small and large JSON: Dual independent FNV-1a hashes (different seeds)
-//   with length prefix. Format: "len:h1:h2".
+// - All JSON sizes: two independent FNV-1a hashes (different seeds) combined
+//   with the input length into a fixed-size validationKey struct {length, h1, h2}.
+// - Conceptually "len:h1:h2", but returned as a struct (not a formatted string)
+//   to avoid a per-op heap allocation in the hot path.
 // - This provides collision resistance below 2^-64.
 // This prevents:
 // 1. Cache key collision attacks
@@ -489,7 +491,7 @@ Cache keys use secure hashing:
 // Key generation (all JSON sizes):
 h1 := HashBytesFNV1a([]byte(input))
 h2 := HashBytesFNV1aOffset([]byte(input))  // independent seed
-cacheKey := fmt.Sprintf("%d:%016x:%016x", len(input), h1, h2)
+cacheKey := validationKey{length: len(input), h1: h1, h2: h2}
 ```
 
 ### Cache Key Validation
@@ -1177,7 +1179,7 @@ If you discover a security vulnerability in this library, please report it respo
 
 ### Documentation
 - [Main README](../README.md) - Library overview and features
-- [Compatibility Guide](./compatibility.md) - Compatibility information
+- [Compatibility Guide](./COMPATIBILITY.md) - Compatibility information
 - [Examples](../examples) - Code examples for all features
 
 ### Security Tools
@@ -1357,12 +1359,14 @@ Overlap Size = maxPatternLength + 8 bytes
 The validation cache uses secure key generation to prevent collision attacks:
 
 ```go
-// All JSON sizes: Dual independent FNV-1a hashes (different seeds) with length prefix
-// Key format: "len:h1:h2" (~55 bytes)
-// This provides collision resistance below 2^-64.
+// All JSON sizes: two independent FNV-1a hashes (different seeds) combined
+// with input length into a fixed-size validationKey struct {length, h1, h2}.
+// Conceptually "len:h1:h2" but returned as a struct (not a formatted string)
+// to avoid a per-op heap allocation in the hot path.
+// Collision resistance below 2^-64.
 h1 := HashBytesFNV1a([]byte(json))
-h2 := HashBytesFNV1aOffset([]byte(json))  // independent seed
-key := fmt.Sprintf("%d:%016x:%016x", len(json), h1, h2)
+h2 := HashBytesFNV1aOffset([]byte(json))  // different seed
+key := validationKey{length: len(json), h1: h1, h2: h2}
 
 // Cache management:
 // - Maximum entries: configurable via MaxCacheSize (default: 128, max: 2,000)
@@ -1395,6 +1399,13 @@ Input Path
 │  Layer 4: Unicode Lookalike Check   │  ← Fullwidth chars, etc.
 └─────────────────────────────────────┘
 ```
+
+> **Note on NFC scope:** This multi-layer detection applies to **file path**
+> validation (`file.go:containsPathTraversal`), where Layer 1 NFC normalization
+> runs unconditionally. The **JSON path** validator (`security.go:validatePathSecurity`)
+> applies NFC only when the path contains non-ASCII characters (a performance
+> optimization that is functionally equivalent for pure-ASCII paths, which are
+> unaffected by NFC).
 
 #### Detected Traversal Patterns
 ```go
@@ -1437,15 +1448,21 @@ Input Path
 
 #### Unicode Lookalike Character Detection
 ```go
-// Fullwidth characters that look like path separators:
-'\uFF0E'  // Fullwidth full stop (looks like .)
+// Dot lookalikes (resemble "."):
+'\uFF0E'  // Fullwidth full stop
 '\u2024'  // One dot leader
 '\u2025'  // Two dot leader
 '\u2026'  // Horizontal ellipsis
-'\uFF0F'  // Fullwidth solidus (looks like /)
-'\uFF3C'  // Fullwidth reverse solidus (looks like \)
 
-// Invisible characters that could bypass checks:
+// Slash lookalikes (resemble "/" or "\"):
+'\uFF0F'  // Fullwidth solidus
+'\uFF3C'  // Fullwidth reverse solidus
+'\u2044'  // Fraction slash
+'\u2215'  // Division slash
+'\u29F8'  // Big solidus
+'\uFE68'  // Small reverse solidus
+
+// Invisible/formatting characters that could bypass checks:
 '\u200B'  // Zero-width space
 '\u200C'  // Zero-width non-joiner
 '\u200D'  // Zero-width joiner
@@ -1453,6 +1470,11 @@ Input Path
 '\u2060'  // Word joiner
 '\u00AD'  // Soft hyphen
 '\u034F'  // Combining grapheme joiner
+'\u3000'  // Ideographic space (fullwidth space)
+'\u061C'  // Arabic letter mark
+'\u115F'  // Hangul jamo filler
+'\u1160'  // Hangul jungseong filler
+'\u180E'  // Mongolian vowel separator
 ```
 
 ### Zero-Width Character Detection
@@ -1576,11 +1598,11 @@ func (r AccessResult) AsInt() (int, error) {
 
 #### Worker Pool Protection
 ```go
-// Parallel processing limits:
-maxWorkers: 64                 // Cap at 64 workers
-semaphorePool: chan struct{}   // Limit concurrent goroutines
-taskTracking: atomic.Int32     // Track pending tasks
-conditionVariable: sync.Cond   // Efficient waiting
+// Parallel processing coordination:
+workerCount:   config.MaxConcurrency // Worker count driven by Config (default: 4); capped at the input length
+semaphorePool: chan struct{}         // Limit concurrent goroutines
+taskTracking:  atomic.Int32          // Track pending tasks
+conditionVariable: sync.Cond         // Efficient waiting
 
 // Error handling:
 atomic.CompareAndSwapInt32()   // First error wins
@@ -1652,22 +1674,24 @@ The library caches validation results to avoid redundant security scans:
 
 #### Cache Key Generation
 ```go
-// All JSON sizes: Dual independent FNV-1a hashes (different seeds) with length prefix
-// Key format: "len:h1:h2" — combines length + two independent FNV-1a hashes
-// to reduce collision probability below 2^-64.
+// All JSON sizes: two independent FNV-1a hashes (different seeds) combined
+// with input length into a fixed-size validationKey struct {length, h1, h2}.
+// Conceptually "len:h1:h2" — length + two independent FNV-1a hashes reduce
+// collision probability below 2^-64.
 // PERFORMANCE: FNV-1a (~2ns) instead of SHA-256 (~100ns) for ~50x speedup.
 // The cache is internal-only, so a collision simply means a redundant validation.
+// Returning a fixed-size struct (rather than a formatted "len:h1:h2" string)
+// avoids a per-op heap allocation in the hot path.
 
 // getValidationCacheKey is a method on securityValidator (internal)
-func (sv *securityValidator) getValidationCacheKey(jsonStr string) string {
-    strLen := len(jsonStr)
+func (sv *securityValidator) getValidationCacheKey(jsonStr string) validationKey {
     b := internal.StringToBytes(jsonStr)
 
     // Two independent FNV-1a hashes for strong collision resistance
     h1 := internal.HashBytesFNV1a(b)
     h2 := internal.HashBytesFNV1aOffset(b)  // different seed
 
-    return fmt.Sprintf("%d:%016x:%016x", strLen, h1, h2)
+    return validationKey{length: len(jsonStr), h1: h1, h2: h2}
 }
 ```
 
@@ -1774,27 +1798,16 @@ const (
 
 ### Zero-Width Character Detection
 
-The library detects invisible Unicode characters that could bypass pattern matching:
-
-```go
-// Detected zero-width and invisible characters:
-'\u200B'  // Zero-width space
-'\u200C'  // Zero-width non-joiner
-'\u200D'  // Zero-width joiner
-'\u200E'  // Left-to-right mark
-'\u200F'  // Right-to-left mark
-'\uFEFF'  // Byte order mark (zero-width no-break space)
-'\u2060'  // Word joiner
-'\u2061'  // Function application
-'\u2062'  // Invisible times
-'\u2063'  // Invisible separator
-'\u2064'  // Invisible plus
-'\u00AD'  // Soft hyphen
-'\u034F'  // Combining grapheme joiner
-'\u061C'  // Arabic letter mark
-'\u180E'  // Mongolian vowel separator
-'\uFFFD'  // Replacement character
-```
+The library detects invisible Unicode characters that could bypass pattern
+matching. See the canonical list under
+[Zero-Width Character Detection](#zero-width-character-detection) above \u2014 the
+same `containsZeroWidthChars` function is used in both the input-validation and
+path-validation layers. It covers zero-width characters (`\u200B\u2013\u200F`),
+directional marks, the BOM (`\uFEFF`), format characters (`\u2060\u2013\u2064`,
+`\u206A\u2013\u206F`, `\u2066\u2013\u2069`), soft hyphen (`\u00AD`), combining grapheme
+joiner (`\u034F`), Arabic letter mark (`\u061C`), Jamo fillers (`\u115F`,
+`\u1160`), the Mongolian vowel separator (`\u180E`), and the replacement
+character (`\uFFFD`).
 
 ### System Directory Protection
 

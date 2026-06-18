@@ -91,30 +91,6 @@ func BenchmarkSafeTypeAssert(b *testing.B) {
 	}
 }
 
-// TestBulkProcessor tests bulkProcessor functionality
-func TestBulkProcessor(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	bp := newBulkProcessor(processor, 10)
-
-	jsonStr := `{"a":1,"b":2,"c":3}`
-	paths := []string{"a", "b", "c"}
-
-	results, err := bp.bulkGet(jsonStr, paths)
-	if err != nil {
-		t.Fatalf("bulkGet error: %v", err)
-	}
-
-	if len(results) != 3 {
-		t.Errorf("bulkGet returned %d results, want 3", len(results))
-	}
-
-	if results["a"].(float64) != 1 {
-		t.Errorf("bulkGet a = %v, want 1", results["a"])
-	}
-}
-
 // TestDefaultValues tests default value methods
 func TestDefaultValues(t *testing.T) {
 	data := map[string]any{
@@ -1413,31 +1389,6 @@ func TestNewIterableValue(t *testing.T) {
 	}
 }
 
-// TestPooledDecoder tests pooled decoder operations
-func TestPooledDecoder(t *testing.T) {
-	jsonData := `{"name":"test","value":42}`
-	reader := strings.NewReader(jsonData)
-
-	dec := getPooledDecoder(reader)
-	if dec == nil {
-		t.Fatal("getPooledDecoder returned nil")
-	}
-
-	var result map[string]any
-	err := dec.Decode(&result)
-	if err != nil {
-		t.Fatalf("Decoder error: %v", err)
-	}
-
-	if result["name"] != "test" {
-		t.Errorf("name = %v, want test", result["name"])
-	}
-
-	// Return to pool
-	putPooledDecoder(dec)
-	putPooledDecoder(nil) // Should not panic
-}
-
 // TestSafeTypeAssert tests SafeTypeAssert function
 func TestSafeTypeAssert(t *testing.T) {
 	tests := []struct {
@@ -1518,36 +1469,6 @@ func TestSafeTypeAssert(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestWarmupPathCache tests path cache warmup
-func TestWarmupPathCache(t *testing.T) {
-	paths := []string{
-		"user.name",
-		"user.email",
-		"settings.theme",
-	}
-
-	// Should not panic
-	warmupPathCache(paths)
-	warmupPathCache(nil)        // nil paths
-	warmupPathCache([]string{}) // empty paths
-}
-
-// TestWarmupPathCacheWithProcessor tests path cache warmup with processor
-func TestWarmupPathCacheWithProcessor(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	paths := []string{
-		"test.path",
-		"another.path",
-	}
-
-	// Should not panic
-	warmupPathCacheWith(processor, paths)
-	warmupPathCacheWith(nil, paths)     // nil processor
-	warmupPathCacheWith(processor, nil) // nil paths
 }
 
 // TestIterableValueIsNullAndEmptyData tests IsNullData and IsEmptyData (companion methods)

@@ -1,7 +1,6 @@
 package json
 
 import (
-	"context"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -23,49 +22,29 @@ func (p *Processor) Close() error {
 		return nil
 	}
 	p.cleanupOnce.Do(func() {
-		// Mark as closing to prevent new operations
+		// Mark as closing so new operations fail fast via checkClosed().
 		atomic.StoreInt32(&p.state, processorStateClosing)
 
-		// Drain the concurrency semaphore to release any waiting goroutines
-		// Use context cancellation for clean goroutine termination
-		if p.metrics != nil && p.metrics.concurrencySemaphore != nil {
-			drainCtx, drainCancel := context.WithTimeout(context.Background(), semaphoreDrainTimeout)
-			drainDone := make(chan struct{})
-			go func() {
-				defer close(drainDone)
-				for {
-					select {
-					case <-drainCtx.Done():
-						// Context cancelled - exit cleanly
-						return
-					case <-p.metrics.concurrencySemaphore:
-						// Drained one slot
-					default:
-						// Semaphore is empty
-						return
-					}
-				}
-			}()
-
-			select {
-			case <-drainDone:
-				// Drain completed - goroutine exited cleanly
-				drainCancel()
-			case <-drainCtx.Done():
-				// Timeout on drain - cancel context to signal goroutine to exit,
-				// then wait briefly for it to acknowledge
-				drainCancel()
-				select {
-				case <-drainDone:
-					// Goroutine exited after context cancellation
-				case <-time.After(100 * time.Millisecond):
-					// Goroutine still running - mark as timed-out so IsClosed() returns true.
-					// Operations will fail fast instead of retrying a permanently closing processor.
-					atomic.StoreInt32(&p.state, processorStateCloseTimedOut)
-					return
-				}
-			}
+		// Wait for in-flight operations to finish (bounded by closeOperationTimeout).
+		// Previously this drained the concurrency semaphore by RECEIVING tokens,
+		// which raced with releaseSemaphore() (also a receive) and could strand
+		// in-flight operations blocking forever on their release. The atomic
+		// activeOps counter (incremented by beginGovernedOp) has no such contention.
+		// If the drain timed out, in-flight operations are STILL running. Do NOT
+		// tear down the cache or security validator: those ops may concurrently
+		// read/write them (getCachedResult/setCachedResult), and tearing them down
+		// mid-flight races. Leave resources intact and mark CloseTimedOut so new
+		// ops are rejected (IsClosed() returns true) while the in-flight ones
+		// finish against undisturbed state. cleanupOnce prevents a later Close()
+		// from re-entering, so full teardown waits until the processor is idle or
+		// process exit / ShutdownGlobalProcessor. Correctness over the previous
+		// unconditional teardown, which raced in-flight ops against cache teardown.
+		if !p.waitForActiveOps(closeOperationTimeout) {
+			atomic.StoreInt32(&p.state, processorStateCloseTimedOut)
+			return
 		}
+
+		// All in-flight operations have drained — safe to release resources.
 
 		// Safely close cache: cancels cleanup goroutines and clears data
 		if p.cache != nil {
@@ -94,11 +73,35 @@ func (p *Processor) Close() error {
 		// in individual Close() would invalidate caches for other active processors.
 		// Use ShutdownGlobalProcessor() for complete cleanup at application shutdown.
 
-		// Mark as fully closed
+		// Resources fully released.
 		atomic.StoreInt32(&p.state, processorStateClosed)
 	})
 
 	return nil
+}
+
+// waitForActiveOps blocks until all in-flight operations (registered via
+// beginGovernedOp) have completed, or the timeout elapses. Returns true if all
+// operations finished before the deadline. Close() uses this to drain work
+// without contending with the concurrency semaphore.
+func (p *Processor) waitForActiveOps(timeout time.Duration) bool {
+	if atomic.LoadInt64(&p.activeOps) <= 0 {
+		return true
+	}
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if atomic.LoadInt64(&p.activeOps) <= 0 {
+			return true
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			return atomic.LoadInt64(&p.activeOps) <= 0
+		}
+	}
 }
 
 // IsClosed returns true if the processor has been closed or close timed out.

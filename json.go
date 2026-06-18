@@ -58,30 +58,30 @@ func init() {
 	// The fallback is only used when default processor creation fails,
 	// so it doesn't need caching, metrics, or other heavy features.
 	fallbackCfg := Config{
-		MaxJSONSize:          DefaultMaxJSONSize,
-		MaxPathDepth:         DefaultMaxPathDepth,
-		MaxNestingDepthSecurity: DefaultMaxNestingDepth,
-		MaxConcurrency:       DefaultMaxConcurrency,
-		EnableCache:          false,
-		CacheResults:         false,
-		EnableValidation:     true,
-		ValidateInput:        true,
-		CreatePaths:          true,
-		EscapeHTML:           true,
-		Indent:               "  ",
-		ValidateUTF8:         true,
-		MaxDepth:             100,
-		IncludeNulls:         true,
-		EscapeNewlines:       true,
-		EscapeTabs:           true,
-		ValidateFilePath:     true,
-		CacheTTL:             DefaultCacheTTL,
-		MaxBatchSize:         DefaultMaxBatchSize,
+		MaxJSONSize:               DefaultMaxJSONSize,
+		MaxPathDepth:              DefaultMaxPathDepth,
+		MaxNestingDepthSecurity:   DefaultMaxNestingDepth,
+		MaxConcurrency:            DefaultMaxConcurrency,
+		EnableCache:               false,
+		CacheResults:              false,
+		EnableValidation:          true,
+		ValidateInput:             true,
+		CreatePaths:               true,
+		EscapeHTML:                true,
+		Indent:                    "  ",
+		ValidateUTF8:              true,
+		MaxDepth:                  DefaultMaxDepth,
+		IncludeNulls:              true,
+		EscapeNewlines:            true,
+		EscapeTabs:                true,
+		ValidateFilePath:          true,
+		CacheTTL:                  DefaultCacheTTL,
+		MaxBatchSize:              DefaultMaxBatchSize,
 		MaxSecurityValidationSize: DefaultMaxSecuritySize,
-		MaxObjectKeys:        DefaultMaxObjectKeys,
-		MaxArrayElements:     DefaultMaxArrayElements,
-		ParallelThreshold:    DefaultParallelThreshold,
-		MergeMode:            MergeUnion,
+		MaxObjectKeys:             DefaultMaxObjectKeys,
+		MaxArrayElements:          DefaultMaxArrayElements,
+		ParallelThreshold:         DefaultParallelThreshold,
+		MergeMode:                 MergeUnion,
 	}
 	p, err := New(fallbackCfg)
 	if err != nil {
@@ -146,9 +146,13 @@ func SetGlobalProcessor(processor *Processor) {
 	}
 
 	defaultProcessorMu.Lock()
-	defer defaultProcessorMu.Unlock()
+	old := defaultProcessor.Swap(processor)
+	defaultProcessorMu.Unlock()
 
-	if old := defaultProcessor.Swap(processor); old != nil {
+	// Close the previous processor OUTSIDE the lock. Close() can block up to
+	// ~5s (waitForActiveOps) and would otherwise stall any concurrent
+	// getDefaultProcessor slow-path call that needs the mutex.
+	if old != nil {
 		old.Close()
 	}
 }
@@ -164,14 +168,21 @@ func SetGlobalProcessor(processor *Processor) {
 //	json.ShutdownGlobalProcessor()
 func ShutdownGlobalProcessor() {
 	defaultProcessorMu.Lock()
-	defer defaultProcessorMu.Unlock()
+	old := defaultProcessor.Swap(nil)
+	fb := fallbackProcessor.Swap(nil)
+	defaultProcessorMu.Unlock()
 
-	if old := defaultProcessor.Swap(nil); old != nil {
+	// Close detached processors OUTSIDE the lock. defaultProcessorMu only guards
+	// the defaultProcessor/fallbackProcessor pointers; the Close() calls (and the
+	// global-cache clears below) operate on data with their own synchronization.
+	// Closing under the lock would stall concurrent getDefaultProcessor calls
+	// for up to ~5s per Close().
+	if old != nil {
 		old.Close()
 	}
 
 	// Close fallback processor created in init() to release its cache goroutines.
-	if fb := fallbackProcessor.Swap(nil); fb != nil {
+	if fb != nil {
 		_ = fb.Close() // best-effort cleanup
 	}
 
@@ -243,6 +254,13 @@ func shouldSkipJSONLLineFromConfig(line []byte, cfg *Config) bool {
 //	cfg.JSONLSkipEmpty = false
 //	cfg.JSONLSkipComments = true
 //	results, err := json.StreamLinesInto[MyType](reader, processFunc, cfg)
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - ErrInvalidJSON / UnmarshalTypeError: a line cannot be unmarshaled into T
+//     (wrapped with the line number, unless JSONLContinueOnErr is set)
+//   - any error returned by fn, or while reading reader
+//     (including bufio.ErrTooLong when a line exceeds JSONLMaxLineSize)
 func StreamLinesInto[T any](reader io.Reader, fn func(lineNum int, data T) error, cfg ...Config) ([]T, error) {
 	var config Config
 	if len(cfg) > 0 {
@@ -368,6 +386,12 @@ func NewJSONLWriter(writer io.Writer, cfg ...Config) *JSONLWriter {
 //
 //	writer.Write(map[string]any{"name": "Alice"})  // Writes: {"name":"Alice"}\n
 //	writer.Write([]int{1, 2, 3})                   // Writes: [1,2,3]\n
+//
+// Errors:
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: data cannot be encoded
+//   - any error returned by writing to the underlying writer
+//
+// Once an error occurs it is cached on the writer and returned by subsequent calls.
 func (w *JSONLWriter) Write(data any) error {
 	if w == nil {
 		return &JsonsError{Op: "jsonl_write", Message: "nil JSONLWriter"}
@@ -419,6 +443,8 @@ func (w *JSONLWriter) Write(data any) error {
 //	    map[string]any{"id": 1},
 //	    map[string]any{"id": 2},
 //	})
+//
+// Errors: the first error returned by Write (see Write for conditions).
 func (w *JSONLWriter) WriteAll(data []any) error {
 	if w == nil {
 		return &JsonsError{Op: "jsonl_write_all", Message: "nil JSONLWriter"}
@@ -438,6 +464,9 @@ func (w *JSONLWriter) WriteAll(data []any) error {
 // Example:
 //
 //	writer.WriteRaw([]byte(`{"pre":"encoded"}`))
+//
+// Errors: any error returned by writing to the underlying writer.
+// Once an error occurs it is cached on the writer and returned by subsequent calls.
 func (w *JSONLWriter) WriteRaw(line []byte) error {
 	if w == nil {
 		return &JsonsError{Op: "jsonl_write_raw", Message: "nil JSONLWriter"}
@@ -503,6 +532,12 @@ func (w *JSONLWriter) Stats() JSONLStats {
 //	cfg.JSONLSkipComments = true
 //	cfg.JSONLContinueOnErr = true
 //	data, err := json.ParseJSONL(jsonlBytes, cfg)
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - ErrInvalidJSON: a line is not valid JSON
+//   - any error returned while reading data (including bufio.ErrTooLong
+//     when a line exceeds the configured limit)
 func ParseJSONL(data []byte, cfg ...Config) ([]any, error) {
 	config := getConfigOrDefault(cfg...)
 	p, err := getProcessorWithConfig(config)
@@ -531,6 +566,12 @@ func ParseJSONL(data []byte, cfg ...Config) ([]any, error) {
 //	cfg := json.DefaultConfig()
 //	cfg.EscapeHTML = true
 //	jsonl, err := json.ToJSONL(data, cfg)
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: an element cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func ToJSONL(data []any, cfg ...Config) ([]byte, error) {
 	if len(data) == 0 {
 		return []byte{}, nil
@@ -582,6 +623,8 @@ func ToJSONL(data []any, cfg ...Config) ([]byte, error) {
 //	cfg := json.DefaultConfig()
 //	cfg.EscapeHTML = true
 //	jsonlStr, err := json.ToJSONLString(data, cfg)
+//
+// Errors: see ToJSONL.
 func ToJSONLString(data []any, cfg ...Config) (string, error) {
 	result, err := ToJSONL(data, cfg...)
 	if err != nil {

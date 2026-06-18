@@ -220,50 +220,6 @@ func TestHashBytesFNV1a(t *testing.T) {
 	}
 }
 
-// TestHashStringFNV1aSecure tests the secure hash function
-func TestHashStringFNV1aSecure(t *testing.T) {
-	tests := []struct {
-		name string
-		s    string
-	}{
-		{"empty string", ""},
-		{"small string", "hello"},
-		{"large string", makeString(8192)},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := HashStringFNV1aSecure(tt.s)
-			result2 := HashStringFNV1aSecure(tt.s)
-			if result != result2 {
-				t.Errorf("HashStringFNV1aSecure is not deterministic")
-			}
-		})
-	}
-}
-
-// TestHashBytesFNV1aSecure tests the secure bytes hash function
-func TestHashBytesFNV1aSecure(t *testing.T) {
-	tests := []struct {
-		name string
-		b    []byte
-	}{
-		{"empty", []byte{}},
-		{"data", []byte("test data")},
-		{"large", []byte(makeString(8192))},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := HashBytesFNV1aSecure(tt.b)
-			result2 := HashBytesFNV1aSecure(tt.b)
-			if result != result2 {
-				t.Errorf("HashBytesFNV1aSecure is not deterministic")
-			}
-		})
-	}
-}
-
 // TestHashConstants verifies FNV constants
 func TestHashConstants(t *testing.T) {
 	if FNVOffsetBasis != 14695981039346656037 {

@@ -39,7 +39,7 @@ func main() {
 	demonstrateFormatting()
 
 	// 4. ENCODE FUNCTIONS
-	demonstratePrint()
+	demonstrateEncode()
 
 	fmt.Println("\nHelper functions examples complete!")
 }
@@ -234,7 +234,7 @@ func demonstrateFormatting() {
 	fmt.Println("\n   Formatting is reversible!")
 }
 
-func demonstratePrint() {
+func demonstrateEncode() {
 	fmt.Println("\n4. Encode Functions")
 	fmt.Println("-------------------")
 

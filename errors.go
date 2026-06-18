@@ -90,6 +90,8 @@ type JsonsError struct {
 	Err     error  `json:"err"`     // Underlying error
 }
 
+// Error returns a human-readable description of the JSON processing failure,
+// including the operation, path, message, and underlying cause when present.
 func (e *JsonsError) Error() string {
 	if e == nil {
 		return "json: nil error"
@@ -193,12 +195,14 @@ func newSecurityError(operation, message string) error {
 
 // RedactedPath returns a redacted version of a path for safe inclusion in error messages.
 // SECURITY: Prevents path content from leaking into logs or error responses.
+//
+// Every non-empty path is fully masked to "***" so no segment — including the
+// boundary characters of long paths — can leak. A previous implementation exposed
+// the first and last 8 bytes of paths longer than 32, which leaked more from long
+// paths than from short ones: the opposite of the security intent.
 func RedactedPath(path string) string {
-	if len(path) > 32 {
-		return path[:8] + "..." + path[len(path)-8:]
+	if path == "" {
+		return ""
 	}
-	if path != "" {
-		return "***"
-	}
-	return ""
+	return "***"
 }

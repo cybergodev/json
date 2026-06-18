@@ -347,6 +347,14 @@ func (urp *recursiveProcessor) handlePropertySegmentUnified(data any, segment in
 				if requiredSize < 0 {
 					requiredSize = 1
 				}
+				// SECURITY: bound memory amplification from a user-supplied index.
+				if requiredSize > maxArrayExtension {
+					return nil, &JsonsError{
+						Op:      "create_path",
+						Message: fmt.Sprintf("array index %d exceeds maximum %d", nextSegment.Index, maxArrayExtension),
+						Err:     ErrSizeLimit,
+					}
+				}
 				newContainer = make([]any, requiredSize)
 			case internal.ArraySliceSegment:
 				// For array slice, create array with sufficient size based on slice end
@@ -356,6 +364,14 @@ func (urp *recursiveProcessor) handlePropertySegmentUnified(data any, segment in
 				}
 				if requiredSize <= 0 {
 					requiredSize = 1
+				}
+				// SECURITY: bound memory amplification from a user-supplied slice end.
+				if requiredSize > maxArrayExtension {
+					return nil, &JsonsError{
+						Op:      "create_path",
+						Message: fmt.Sprintf("array slice end %d exceeds maximum %d", requiredSize, maxArrayExtension),
+						Err:     ErrSizeLimit,
+					}
 				}
 				newContainer = make([]any, requiredSize)
 			default:

@@ -709,7 +709,6 @@ func TestBufferCompatibility(t *testing.T) {
 	}
 }
 
-
 // TestCompactBuffer tests compactBuffer function
 func TestCompactBuffer(t *testing.T) {
 	prettyJSON := `{
@@ -779,46 +778,6 @@ func TestComplexPathWithBracesAndBrackets(t *testing.T) {
 	}
 }
 
-func TestConfig_AccessorMethods(t *testing.T) {
-	cfg := &Config{
-		AllowComments:    true,
-		PreserveNumbers:  true,
-		CreatePaths:      true,
-		CleanupNulls:     true,
-		CompactArrays:    true,
-		ValidateInput:    true,
-		ValidateFilePath: true,
-	}
-
-	tests := []struct {
-		name     string
-		got      bool
-		expected bool
-	}{
-		{"IsCommentsAllowed", cfg.isCommentsAllowed(), true},
-		{"ShouldPreserveNumbers", cfg.shouldPreserveNumbers(), true},
-		{"ShouldCreatePaths", cfg.shouldCreatePaths(), true},
-		{"ShouldCleanupNulls", cfg.shouldCleanupNulls(), true},
-		{"ShouldCompactArrays", cfg.shouldCompactArrays(), true},
-		{"ShouldValidateInput", cfg.shouldValidateInput(), true},
-		{"ShouldValidateFilePath", cfg.shouldValidateFilePath(), true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.got != tt.expected {
-				t.Errorf("%s() = %v, want %v", tt.name, tt.got, tt.expected)
-			}
-		})
-	}
-
-	// Test false values
-	cfgFalse := &Config{}
-	if cfgFalse.isCommentsAllowed() {
-		t.Error("IsCommentsAllowed should return false for default config")
-	}
-}
-
 // TestConfiguration tests configuration creation, validation, and cloning
 func TestConfiguration(t *testing.T) {
 	helper := newTestHelper(t)
@@ -838,14 +797,6 @@ func TestConfiguration(t *testing.T) {
 	})
 
 	t.Run("SecurityConfig", func(t *testing.T) {
-		config := SecurityConfig()
-
-		helper.AssertNotNil(config)
-		helper.AssertTrue(config.FullSecurityScan)
-		helper.AssertTrue(config.EnableValidation)
-	})
-
-	t.Run("SecurityConfig_WebAPI", func(t *testing.T) {
 		config := SecurityConfig()
 
 		helper.AssertNotNil(config)
@@ -940,14 +891,14 @@ func TestConfiguration(t *testing.T) {
 		config := DefaultConfig()
 
 		helper.AssertTrue(config.EnableCache)
-			helper.AssertTrue(config.MaxCacheSize > 0)
-			helper.AssertTrue(config.CacheTTL > 0)
-		helper.AssertEqual(config.MaxJSONSize, config.getMaxJSONSize())
-		helper.AssertEqual(config.MaxPathDepth, config.getMaxPathDepth())
-		helper.AssertEqual(config.MaxConcurrency, config.getMaxConcurrency())
-		helper.AssertEqual(config.EnableMetrics, config.isMetricsEnabled())
-		helper.AssertEqual(config.EnableHealthCheck, config.isHealthCheckEnabled())
-		helper.AssertEqual(config.StrictMode, config.isStrictMode())
+		helper.AssertTrue(config.MaxCacheSize > 0)
+		helper.AssertTrue(config.CacheTTL > 0)
+		helper.AssertTrue(config.MaxJSONSize > 0)
+		helper.AssertTrue(config.MaxPathDepth > 0)
+		helper.AssertTrue(config.MaxConcurrency > 0)
+		helper.AssertFalse(config.EnableMetrics)
+		helper.AssertFalse(config.EnableHealthCheck)
+		helper.AssertFalse(config.StrictMode)
 	})
 }
 
@@ -2159,15 +2110,18 @@ func TestGetOrMap(t *testing.T) {
 	})
 }
 
-// TestGetStats tests statistics retrieval
+// TestGetStats tests statistics retrieval from the global processor.
 func TestGetStats(t *testing.T) {
 	stats := GetStats()
 
-	if stats.CacheSize < 0 {
-		t.Error("Expected non-negative cache size")
+	// All counters are non-negative by contract.
+	if stats.CacheSize < 0 || stats.HitCount < 0 || stats.MissCount < 0 || stats.OperationCount < 0 {
+		t.Errorf("Stats has a negative counter: %+v", stats)
 	}
-
-	t.Logf("Stats: %+v", stats)
+	// HitRatio, when reported, is a probability in [0, 1].
+	if stats.HitRatio < 0 || stats.HitRatio > 1 {
+		t.Errorf("HitRatio out of [0,1]: %v", stats.HitRatio)
+	}
 }
 
 // TestGetOr tests typed get with defaults
@@ -2948,7 +2902,6 @@ func TestIndent(t *testing.T) {
 	}
 }
 
-
 // TestIsComplexPath tests complex path detection
 func TestIsComplexPath(t *testing.T) {
 	processor, _ := New()
@@ -2995,7 +2948,6 @@ func TestIsComplexPath(t *testing.T) {
 		})
 	}
 }
-
 
 // TestIsEmptyOrZero is covered by TestIsEmptyOrZeroExtended in test_helpers_new_test.go
 
@@ -4335,26 +4287,6 @@ func TestProcessor_ForeachVsPackageLevel(t *testing.T) {
 	})
 }
 
-func TestProcessor_getFromParsedData(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("getFromParsedData", func(t *testing.T) {
-		data := map[string]any{
-			"user": map[string]any{
-				"name": "John",
-			},
-		}
-		result, err := processor.getFromParsedData(data, "user.name")
-		if err != nil {
-			t.Errorf("getFromParsedData error: %v", err)
-		}
-		if result != "John" {
-			t.Errorf("getFromParsedData = %v, want 'John'", result)
-		}
-	})
-}
-
 func TestProcessor_Iterators(t *testing.T) {
 	processor, _ := New()
 	defer processor.Close()
@@ -4799,7 +4731,6 @@ func TestSetMultiple(t *testing.T) {
 		})
 	}
 }
-
 
 // TestShutdownGlobalProcessor tests ShutdownGlobalProcessor function
 func TestShutdownGlobalProcessor(t *testing.T) {

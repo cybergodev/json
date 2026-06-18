@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // ============================================================================
@@ -73,46 +71,6 @@ func TestAccessResult_Ok_Unwrap_UnwrapOr(t *testing.T) {
 			}
 		})
 	}
-}
-
-// ============================================================================
-// Config accessor boundary tests (config.go: 0% coverage)
-// ============================================================================
-
-func TestConfigAccessors(t *testing.T) {
-	t.Run("isCacheEnabled", func(t *testing.T) {
-		cfg := DefaultConfig()
-		if !cfg.isCacheEnabled() {
-			t.Error("default config should have cache enabled")
-		}
-		cfg.EnableCache = false
-		if cfg.isCacheEnabled() {
-			t.Error("cache should be disabled")
-		}
-	})
-
-	t.Run("getMaxCacheSize", func(t *testing.T) {
-		cfg := DefaultConfig()
-		if cfg.getMaxCacheSize() <= 0 {
-			t.Error("default MaxCacheSize should be positive")
-		}
-		cfg.MaxCacheSize = 42
-		if cfg.getMaxCacheSize() != 42 {
-			t.Errorf("getMaxCacheSize() = %d, want 42", cfg.getMaxCacheSize())
-		}
-	})
-
-	t.Run("getCacheTTL", func(t *testing.T) {
-		cfg := DefaultConfig()
-		ttl := cfg.getCacheTTL()
-		if ttl <= 0 {
-			t.Error("default CacheTTL should be positive")
-		}
-		cfg.CacheTTL = 5 * time.Minute
-		if cfg.getCacheTTL() != 5*time.Minute {
-			t.Errorf("getCacheTTL() = %v, want 5m", cfg.getCacheTTL())
-		}
-	})
 }
 
 // ============================================================================
@@ -629,91 +587,6 @@ func TestDeepCopyValueWithDepth_Complex(t *testing.T) {
 }
 
 // ============================================================================
-// convertToSlice and convertToMap boundary tests (helpers.go: 27%/20% coverage)
-// ============================================================================
-
-func TestConvertToSlice(t *testing.T) {
-	t.Run("valid slice conversion", func(t *testing.T) {
-		input := []any{1, 2, 3}
-		targetType := reflect.TypeOf([]int{})
-		result, ok := convertToSlice(input, targetType)
-		if !ok {
-			t.Fatal("convertToSlice should succeed")
-		}
-		resultSlice := result.([]int)
-		if len(resultSlice) != 3 {
-			t.Errorf("expected 3 elements, got %d", len(resultSlice))
-		}
-	})
-
-	t.Run("non-slice input", func(t *testing.T) {
-		result, ok := convertToSlice("not a slice", reflect.TypeOf([]int{}))
-		if ok {
-			t.Error("convertToSlice should fail for non-slice input")
-		}
-		if result != nil {
-			t.Error("result should be nil on failure")
-		}
-	})
-
-	t.Run("empty slice", func(t *testing.T) {
-		input := []any{}
-		targetType := reflect.TypeOf([]int{})
-		result, ok := convertToSlice(input, targetType)
-		if !ok {
-			t.Fatal("convertToSlice should succeed for empty slice")
-		}
-		resultSlice := result.([]int)
-		if len(resultSlice) != 0 {
-			t.Errorf("expected 0 elements, got %d", len(resultSlice))
-		}
-	})
-
-	t.Run("element conversion failure", func(t *testing.T) {
-		input := []any{1, "not a number", 3}
-		targetType := reflect.TypeOf([]int{})
-		_, ok := convertToSlice(input, targetType)
-		if ok {
-			t.Error("convertToSlice should fail when element conversion fails")
-		}
-	})
-}
-
-func TestConvertToMap(t *testing.T) {
-	t.Run("valid map conversion", func(t *testing.T) {
-		input := map[string]any{"a": 1, "b": 2}
-		targetType := reflect.TypeOf(map[string]int{})
-		result, ok := convertToMap(input, targetType)
-		if !ok {
-			t.Fatal("convertToMap should succeed")
-		}
-		resultMap := result.(map[string]int)
-		if len(resultMap) != 2 {
-			t.Errorf("expected 2 keys, got %d", len(resultMap))
-		}
-	})
-
-	t.Run("non-map input", func(t *testing.T) {
-		result, ok := convertToMap("not a map", reflect.TypeOf(map[string]int{}))
-		if ok {
-			t.Error("convertToMap should fail for non-map input")
-		}
-		if result != nil {
-			t.Error("result should be nil on failure")
-		}
-	})
-
-	t.Run("value conversion failure", func(t *testing.T) {
-		input := map[string]any{"a": 1, "b": "not a number"}
-		targetType := reflect.TypeOf(map[string]int{})
-		_, ok := convertToMap(input, targetType)
-		if ok {
-			t.Error("convertToMap should fail when value conversion fails")
-		}
-	})
-}
-
-// ============================================================================
 // PatternRegistry ListByLevel (security.go: 0% coverage)
 // ============================================================================
 
@@ -992,18 +865,18 @@ func TestProcessor_CompileAndGetCompiledPath(t *testing.T) {
 func TestEvictLRUEntries(t *testing.T) {
 	t.Run("empty cache does nothing", func(t *testing.T) {
 		sv := &securityValidator{
-			validationCache: make(map[string]*validationCacheEntry),
+			validationCache: make(map[validationKey]*validationCacheEntry),
 		}
 		sv.evictLRUEntries() // should not panic
 	})
 
 	t.Run("evicts oldest entries", func(t *testing.T) {
 		sv := &securityValidator{
-			validationCache: make(map[string]*validationCacheEntry),
+			validationCache: make(map[validationKey]*validationCacheEntry),
 		}
 
 		for i := 0; i < 4; i++ {
-			sv.validationCache[fmt.Sprintf("key%d", i)] = &validationCacheEntry{
+			sv.validationCache[validationKey{length: i, h1: uint64(i), h2: uint64(i)}] = &validationCacheEntry{
 				validated:  true,
 				lastAccess: int64(i) * 1000,
 			}

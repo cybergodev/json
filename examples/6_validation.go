@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/cybergodev/json"
@@ -76,8 +77,8 @@ func demonstrateFormatValidation() {
 }
 
 func demonstratePathValidation() {
-	fmt.Println("\n2. Path Validation (via Processor)")
-	fmt.Println("------------------------------------")
+	fmt.Println("\n2. Path Syntax Validation (via Processor)")
+	fmt.Println("-------------------------------------------")
 
 	processor, err := json.New(json.DefaultConfig())
 	if err != nil {
@@ -86,36 +87,35 @@ func demonstratePathValidation() {
 	}
 	defer processor.Close()
 
-	testPaths := []struct {
-		name  string
-		path  string
-		valid bool
-	}{
-		{"Root path", ".", true},
-		{"Simple property", "user.name", true},
-		{"Array index", "users[0]", true},
-		{"Nested array", "data[0].items[1]", true},
-		{"Extraction", "users{name}", true},
-		{"Empty path", "", false},
-		{"Invalid brackets", "user[0", false},
+	sampleJSON := `{"user": {"name": "test"}, "users": [{"name": "a"}], "data": [{"items": [1, 2]}]}`
+
+	// The package exposes no standalone path validator; path syntax is validated
+	// implicitly by operations. Issuing a Get against sample data classifies each
+	// path by the error it returns:
+	//   - nil                 => valid syntax AND the path exists in the sample
+	//   - ErrPathNotFound     => valid syntax, but the path is absent here
+	//   - any other error     => invalid path syntax (rejected by the parser)
+	testPaths := []string{
+		".",                 // root
+		"user.name",         // simple property
+		"users[0]",          // array index
+		"data[0].items[1]",  // nested array
+		"users{name}",       // extraction
+		"data[0].missing",   // valid syntax, not present in the sample
+		"user[",             // invalid: missing closing bracket
+		"users[0",           // invalid: missing closing bracket
 	}
 
-	fmt.Println("   Path validation results (using sample JSON for syntax check):")
-	sampleJSON := `{"user": {"name": "test"}, "users": [{"name": "a"}], "data": [{"items": [1, 2]}]}`
-	for _, tc := range testPaths {
-		if tc.path == "" {
-			fmt.Printf("   X [%s] %s (empty path is invalid)\n", tc.name, tc.path)
-			continue
-		}
-		// Attempt Get on sample JSON: syntax errors surface as ErrInvalidPath,
-		// while valid paths either succeed (path exists) or fail with ErrPathNotFound
-		_, err := processor.Get(sampleJSON, tc.path)
-		if !tc.valid {
-			fmt.Printf("   X [%s] %s (correctly rejected)\n", tc.name, tc.path)
-		} else if err != nil {
-			fmt.Printf("   OK [%s] %s (valid syntax, path not found in sample data)\n", tc.name, tc.path)
-		} else {
-			fmt.Printf("   OK [%s] %s (valid)\n", tc.name, tc.path)
+	fmt.Println("   Classifying each path against sample data:")
+	for _, path := range testPaths {
+		_, err := processor.Get(sampleJSON, path)
+		switch {
+		case err == nil:
+			fmt.Printf("   OK  %-18q valid syntax, path exists\n", path)
+		case errors.Is(err, json.ErrPathNotFound):
+			fmt.Printf("   --  %-18q valid syntax, not in sample\n", path)
+		default:
+			fmt.Printf("   X   %-18q invalid syntax (rejected)\n", path)
 		}
 	}
 }
@@ -173,32 +173,34 @@ func demonstrateSchemaValidation() {
 	}`
 
 	// Validate valid user
+	// NOTE: the result is named validationErrors (not "errors") to avoid
+	// shadowing the imported "errors" package within this function.
 	fmt.Println("   Validating valid user:")
-	errors, err := json.ValidateSchema(validUser, schema)
+	validationErrors, err := json.ValidateSchema(validUser, schema)
 	if err != nil {
 		fmt.Printf("   Validation error: %v\n", err)
-	} else if len(errors) == 0 {
+	} else if len(validationErrors) == 0 {
 		fmt.Println("   User data is valid!")
 	} else {
-		for _, e := range errors {
+		for _, e := range validationErrors {
 			fmt.Printf("   X %s: %s\n", e.Path, e.Message)
 		}
 	}
 
 	// Validate invalid user 1
 	fmt.Println("\n   Validating invalid user (missing required field):")
-	errors, err = json.ValidateSchema(invalidUser1, schema)
+	validationErrors, err = json.ValidateSchema(invalidUser1, schema)
 	if err == nil {
-		for _, e := range errors {
+		for _, e := range validationErrors {
 			fmt.Printf("   X %s: %s\n", e.Path, e.Message)
 		}
 	}
 
 	// Validate invalid user 2
 	fmt.Println("\n   Validating invalid user (wrong types):")
-	errors, err = json.ValidateSchema(invalidUser2, schema)
+	validationErrors, err = json.ValidateSchema(invalidUser2, schema)
 	if err == nil {
-		for _, e := range errors {
+		for _, e := range validationErrors {
 			fmt.Printf("   X %s: %s\n", e.Path, e.Message)
 		}
 	}
@@ -263,8 +265,8 @@ func demonstrateProcessorValidation() {
 		fmt.Printf("   Validated and retrieved: %v\n", name)
 	}
 
-	// Invalid path (will fail validation)
-	_, err = processor.Get(testJSON, "")
+	// A malformed path is rejected by the parser and surfaces as an error
+	_, err = processor.Get(testJSON, "user.name[")
 	if err != nil {
 		fmt.Printf("   Invalid path caught: %v\n", err)
 	}

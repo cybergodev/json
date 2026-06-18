@@ -71,16 +71,6 @@ func BenchmarkPathSegmentPool(b *testing.B) {
 	}
 }
 
-func BenchmarkResourceMonitor(b *testing.B) {
-	rm := newResourceMonitor()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		rm.recordAllocation(1024)
-		rm.recordDeallocation(512)
-	}
-}
-
 func BenchmarkStringBuilderPool(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -172,10 +162,10 @@ func TestConfigConstantsComprehensive(t *testing.T) {
 		helper.AssertTrue(config.EnableCache)
 		helper.AssertTrue(config.MaxCacheSize > 0)
 		helper.AssertTrue(config.CacheTTL > 0)
-		helper.AssertTrue(config.getMaxJSONSize() > 0)
-		helper.AssertTrue(config.getMaxPathDepth() > 0)
-		helper.AssertTrue(config.getMaxConcurrency() > 0)
-		helper.AssertTrue(config.getMaxNestingDepth() >= 0)
+		helper.AssertTrue(config.MaxJSONSize > 0)
+		helper.AssertTrue(config.MaxPathDepth > 0)
+		helper.AssertTrue(config.MaxConcurrency > 0)
+		helper.AssertTrue(config.MaxNestingDepthSecurity >= 0)
 
 		limits := config.getSecurityLimits()
 		helper.AssertNotNil(limits)
@@ -219,13 +209,10 @@ func TestConfigConstantsComprehensive(t *testing.T) {
 	})
 
 	t.Run("Constants", func(t *testing.T) {
-		helper.AssertTrue(defaultBufferSize > 0)
-		helper.AssertTrue(maxPoolBufferSize > minPoolBufferSize)
 		helper.AssertTrue(defaultCacheSize > 0)
 		helper.AssertTrue(DefaultMaxJSONSize > 0)
 		helper.AssertTrue(DefaultMaxNestingDepth > 0)
 		helper.AssertTrue(maxPathLength > 0)
-		helper.AssertTrue(defaultOperationTimeout > 0)
 	})
 
 	t.Run("GlobalProcessor", func(t *testing.T) {
@@ -852,23 +839,23 @@ func TestConvertToUint64(t *testing.T) {
 	}
 }
 
-// TestIsDeletedMarker tests the internal isDeletedMarker function
-// Note: isDeletedMarker is now private, tested indirectly through Delete operations
+// TestIsDeletedMarker tests the internal isDeletedMarker function.
+// Covers both branches: the sentinel itself (true) and everything else (false).
 func TestIsDeletedMarker(t *testing.T) {
-	// Test that isDeletedMarker returns false for nil
-	if isDeletedMarker(nil) {
-		t.Errorf("isDeletedMarker(nil) should return false")
+	// Positive branch: the package-level sentinel must be recognized.
+	if !isDeletedMarker(deletedMarker) {
+		t.Error("isDeletedMarker(deletedMarker) should return true")
+	}
+	// A distinct empty-struct pointer must NOT match (identity, not type).
+	if isDeletedMarker(&struct{}{}) {
+		t.Error("isDeletedMarker must compare by pointer identity, not type")
 	}
 
-	// Test that isDeletedMarker returns false for regular values
-	if isDeletedMarker(1) {
-		t.Errorf("isDeletedMarker(1) should return false")
-	}
-	if isDeletedMarker("test") {
-		t.Errorf("isDeletedMarker(\"test\") should return false")
-	}
-	if isDeletedMarker(map[string]any{"key": "value"}) {
-		t.Errorf("isDeletedMarker(map) should return false")
+	// Negative branch: nil and regular values are not the marker.
+	for _, v := range []any{nil, 1, "test", map[string]any{"key": "value"}} {
+		if isDeletedMarker(v) {
+			t.Errorf("isDeletedMarker(%v) should return false", v)
+		}
 	}
 }
 
@@ -1188,55 +1175,6 @@ func TestErrorScenarios(t *testing.T) {
 			_ = err
 		}
 	})
-}
-
-// TestformatNumber tests number formatting
-func TestFormatNumber(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    any
-		expected string
-	}{
-		{
-			name:     "int",
-			input:    42,
-			expected: "42",
-		},
-		{
-			name:     "int64",
-			input:    int64(1234567890),
-			expected: "1234567890",
-		},
-		{
-			name:     "uint64",
-			input:    uint64(18446744073709551615),
-			expected: "18446744073709551615",
-		},
-		{
-			name:     "float64",
-			input:    3.14159,
-			expected: "3.14159",
-		},
-		{
-			name:     "json.Number",
-			input:    json.Number("2.71828"),
-			expected: "2.71828",
-		},
-		{
-			name:     "other type",
-			input:    "custom",
-			expected: "custom",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := formatNumber(tt.input)
-			if result != tt.expected {
-				t.Errorf("formatNumber(%v) = %s; want %s", tt.input, result, tt.expected)
-			}
-		})
-	}
 }
 
 // TestGetStatsWithResourceManager tests processor GetStats functionality with resource manager
@@ -2075,17 +2013,6 @@ func TestResourceManager(t *testing.T) {
 	})
 }
 
-// TestResourceMonitor_CheckForLeaks tests CheckForLeaks method
-func TestResourceMonitor_CheckForLeaks(t *testing.T) {
-	rm := newResourceMonitor()
-	rm.leakCheckInterval = 0 // Force immediate check
-
-	issues := rm.checkForLeaks()
-	// Should return nil or empty for normal conditions
-	// The actual result depends on current memory/goroutine state
-	t.Logf("CheckForLeaks returned: %v", issues)
-}
-
 // TestRootDataTypeConversionError tests the rootDataTypeConversionError type
 func TestRootDataTypeConversionError(t *testing.T) {
 	err := &rootDataTypeConversionError{
@@ -2104,94 +2031,6 @@ func TestRootDataTypeConversionError(t *testing.T) {
 	// which is always true in Go. The test exists for documentation purposes.
 	var nilErr *rootDataTypeConversionError //nolint:staticcheck // nilness check: intentionally testing nil
 	_ = nilErr                              // use the variable to avoid compiler warnings
-}
-
-// TestsafeConvertToInt64 tests safe int64 conversion with error handling
-func TestSafeConvertToInt64(t *testing.T) {
-	tests := []struct {
-		name        string
-		input       any
-		expected    int64
-		expectError bool
-	}{
-		{
-			name:        "valid conversion",
-			input:       42,
-			expected:    42,
-			expectError: false,
-		},
-		{
-			name:        "invalid conversion",
-			input:       "not a number",
-			expected:    0,
-			expectError: true,
-		},
-		{
-			name:        "float conversion",
-			input:       123.0,
-			expected:    123,
-			expectError: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := safeConvertToInt64(tt.input)
-			if tt.expectError && err == nil {
-				t.Errorf("Expected error for input %v, but got none", tt.input)
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("Unexpected error for input %v: %v", tt.input, err)
-			}
-			if !tt.expectError && result != tt.expected {
-				t.Errorf("safeConvertToInt64(%v) = %d; want %d", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestsafeConvertToUint64 tests safe uint64 conversion with error handling
-func TestSafeConvertToUint64(t *testing.T) {
-	tests := []struct {
-		name        string
-		input       any
-		expected    uint64
-		expectError bool
-	}{
-		{
-			name:        "valid conversion",
-			input:       uint(42),
-			expected:    42,
-			expectError: false,
-		},
-		{
-			name:        "invalid conversion",
-			input:       "not a number",
-			expected:    0,
-			expectError: true,
-		},
-		{
-			name:        "negative number",
-			input:       -1,
-			expected:    0,
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := safeConvertToUint64(tt.input)
-			if tt.expectError && err == nil {
-				t.Errorf("Expected error for input %v, but got none", tt.input)
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("Unexpected error for input %v: %v", tt.input, err)
-			}
-			if !tt.expectError && result != tt.expected {
-				t.Errorf("safeConvertToUint64(%v) = %d; want %d", tt.input, result, tt.expected)
-			}
-		})
-	}
 }
 
 // TestSchemaComprehensive consolidates TestSchema, TestSchema_AllConstraints,

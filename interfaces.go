@@ -29,50 +29,8 @@ import (
 //	cfg.CustomEncoder = &UpperCaseEncoder{}
 type CustomEncoder interface {
 	// Encode converts a Go value to JSON string.
+	// Returns an error if value cannot be encoded.
 	Encode(value any) (string, error)
-}
-
-// encoderConfig provides configuration access for encoders.
-// Implemented by Config struct. Internal interface — not for external use.
-type encoderConfig interface {
-	// HTML escaping
-	isHTMLEscapeEnabled() bool
-
-	// Pretty printing
-	isPrettyEnabled() bool
-	getIndent() string
-	getPrefix() string
-
-	// Key handling
-	isSortKeysEnabled() bool
-
-	// Float handling
-	getFloatPrecision() int
-	isTruncateFloatEnabled() bool
-
-	// Depth control
-	getMaxDepth() int
-
-	// Null handling
-	shouldIncludeNulls() bool
-
-	// UTF-8 validation
-	shouldValidateUTF8() bool
-
-	// Unknown field handling
-	isDisallowUnknownEnabled() bool
-
-	// Unicode escaping
-	shouldEscapeUnicode() bool
-
-	// Slash escaping
-	shouldEscapeSlash() bool
-
-	// Newline escaping
-	shouldEscapeNewlines() bool
-
-	// Tab escaping
-	shouldEscapeTabs() bool
 }
 
 // TypeEncoder handles encoding for specific reflect.Types.
@@ -413,6 +371,7 @@ func (hc hookChain) executeAfter(ctx HookContext, result any, err error) (any, e
 // Implement to provide custom path syntax support.
 type PathParser interface {
 	// ParsePath parses a path string into segments.
+	// Returns an error if path is syntactically invalid.
 	ParsePath(path string) ([]PathSegment, error)
 }
 

@@ -142,15 +142,15 @@ func demonstrateNestedIteration(data string) {
 	// Count specific types
 	fmt.Println("\n   Counting by type:")
 
-	intCount := 0
+	// JSON numbers always decode to float64, so the numeric case matches that.
+	numCount := 0
 	strCount := 0
 	boolCount := 0
 
 	json.ForeachNested(data, func(key any, item *json.IterableValue) {
-		val := item.Get("")
-		switch val.(type) {
-		case int, int64, float64:
-			intCount++
+		switch item.Get("").(type) {
+		case float64:
+			numCount++
 		case string:
 			strCount++
 		case bool:
@@ -158,7 +158,7 @@ func demonstrateNestedIteration(data string) {
 		}
 	})
 
-	fmt.Printf("   Numbers: %d, Strings: %d, Booleans: %d\n", intCount, strCount, boolCount)
+	fmt.Printf("   Numbers: %d, Strings: %d, Booleans: %d\n", numCount, strCount, boolCount)
 }
 
 func demonstrateIterableValueAPI(data string) {

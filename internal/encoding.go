@@ -85,22 +85,6 @@ func PutEncoderBuffer(buf *bytes.Buffer) {
 	}
 }
 
-// PutEncoderBufferSecure returns a buffer to the pool after clearing sensitive data
-// SECURITY: Use this when the buffer may have contained sensitive information
-// PERFORMANCE: Slightly slower than PutEncoderBuffer due to zeroing operation
-func PutEncoderBufferSecure(buf *bytes.Buffer) {
-	if buf != nil {
-		c := buf.Cap()
-		if c >= MinPoolBufferSize && c <= MaxPoolBufferSize/4 {
-			// SECURITY: Zero out the buffer content before returning to pool
-			// This prevents potential data leakage through uninitialized memory
-			clear(buf.Bytes())
-			buf.Reset()
-			encoderBufferPool.Put(buf)
-		}
-	}
-}
-
 // GetByteSliceWithHint gets a byte slice with appropriate capacity hint
 // PERFORMANCE: Uses tiered pools for better memory management
 func GetByteSliceWithHint(hint int) *[]byte {
@@ -129,32 +113,6 @@ func PutByteSlice(b *[]byte) {
 	c := cap(*b)
 	if c > MaxPoolBufferSize {
 		return // Don't pool very large slices
-	}
-	*b = (*b)[:0]
-	switch {
-	case c <= 256:
-		smallByteSlicePool.Put(b)
-	case c <= 1024:
-		mediumByteSlicePool.Put(b)
-	case c <= 8192:
-		largeByteSlicePool.Put(b)
-	}
-}
-
-// PutByteSliceSecure returns a byte slice to the pool after clearing sensitive data
-// SECURITY: Use this when the slice may have contained sensitive information
-// PERFORMANCE: Slightly slower than PutByteSlice due to zeroing operation
-func PutByteSliceSecure(b *[]byte) {
-	if b == nil {
-		return
-	}
-	c := cap(*b)
-	if c > MaxPoolBufferSize {
-		return // Don't pool very large slices
-	}
-	// SECURITY: Zero out the slice content before returning to pool
-	for i := range *b {
-		(*b)[i] = 0
 	}
 	*b = (*b)[:0]
 	switch {

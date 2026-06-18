@@ -947,6 +947,11 @@ func NewNDJSONProcessor(cfg ...Config) *NDJSONProcessor {
 }
 
 // ProcessFile processes an NDJSON file line by line
+//
+// Errors:
+//   - ErrSecurityViolation: filename is rejected by path-traversal validation
+//   - any error from os.Open (e.g. file not found), or any error from ProcessReader
+//     (per-line parse/depth errors or fn errors; see ProcessReader)
 func (np *NDJSONProcessor) ProcessFile(filename string, fn func(lineNum int, obj map[string]any) error) error {
 	if np == nil {
 		return &JsonsError{Op: "ndjson_process", Message: "nil NDJSONProcessor"}
@@ -967,6 +972,12 @@ func (np *NDJSONProcessor) ProcessFile(filename string, fn func(lineNum int, obj
 
 // ProcessReader processes NDJSON from a reader.
 // Enforces per-line size limits and nesting depth checks to prevent DoS attacks.
+//
+// Errors:
+//   - a per-line error, wrapped with the line number, when a line exceeds the
+//     nesting-depth limit or fails to parse (skipped when JSONLContinueOnErr is set)
+//   - any error returned by fn, or while reading reader
+//     (including bufio.ErrTooLong when a line exceeds MaxJSONSize)
 func (np *NDJSONProcessor) ProcessReader(reader io.Reader, fn func(lineNum int, obj map[string]any) error) error {
 	maxLineSize := np.config.MaxJSONSize
 	if maxLineSize <= 0 {
@@ -1066,6 +1077,11 @@ func checkNestingDepth(data []byte, maxDepth int) error {
 //	    fmt.Println(item.GetString("name"))
 //	    return nil // continue
 //	})
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - errors from LoadFromFile (ErrSecurityViolation, file read, ErrSizeLimit, ErrInvalidJSON)
+//   - any error returned by fn (item.Break() stops iteration without an error)
 func (p *Processor) ForeachFile(filePath string, fn func(key any, item *IterableValue) error) error {
 	if err := p.checkClosed(); err != nil {
 		return err
@@ -1087,6 +1103,12 @@ func (p *Processor) ForeachFile(filePath string, fn func(key any, item *Iterable
 //	    fmt.Println(item.GetString("name"))
 //	    return nil
 //	})
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - errors from LoadFromFile (ErrSecurityViolation, file read, ErrSizeLimit, ErrInvalidJSON)
+//   - errors from resolving path (ErrPathNotFound, ErrTypeMismatch)
+//   - any error returned by fn (item.Break() stops iteration without an error)
 func (p *Processor) ForeachFileWithPath(filePath, path string, fn func(key any, item *IterableValue) error) error {
 	if err := p.checkClosed(); err != nil {
 		return err
@@ -1112,6 +1134,12 @@ func (p *Processor) ForeachFileWithPath(filePath, path string, fn func(key any, 
 //	    }
 //	    return nil
 //	})
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - errors from LoadFromFile (ErrSecurityViolation, file read, ErrSizeLimit, ErrInvalidJSON)
+//   - ErrTypeMismatch: the root value is not a JSON array
+//   - any error returned by fn (item.Break() stops iteration without an error)
 func (p *Processor) ForeachFileChunked(filePath string, chunkSize int, fn func(chunk []*IterableValue) error) error {
 	if err := p.checkClosed(); err != nil {
 		return err
@@ -1182,6 +1210,11 @@ func (p *Processor) ForeachFileChunked(filePath string, chunkSize int, fn func(c
 //	    fmt.Printf("Key: %v, Type: %T\n", key, item.Value)
 //	    return nil
 //	})
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - errors from LoadFromFile (ErrSecurityViolation, file read, ErrSizeLimit, ErrInvalidJSON)
+//   - any error returned by fn (item.Break() stops iteration without an error)
 func (p *Processor) ForeachFileNested(filePath string, fn func(key any, item *IterableValue) error) error {
 	if err := p.checkClosed(); err != nil {
 		return err
@@ -1211,6 +1244,8 @@ func (p *Processor) ForeachFileNested(filePath string, fn func(key any, item *It
 //	    fmt.Println(item.GetString("name"))
 //	    return nil // continue
 //	})
+//
+// Errors: see Processor.ForeachFile.
 func ForeachFile(filePath string, fn func(key any, item *IterableValue) error) error {
 	return withProcessorError(func(p *Processor) error {
 		return p.ForeachFile(filePath, fn)
@@ -1225,6 +1260,8 @@ func ForeachFile(filePath string, fn func(key any, item *IterableValue) error) e
 //	    fmt.Println(item.GetString("name"))
 //	    return nil
 //	})
+//
+// Errors: see Processor.ForeachFileWithPath.
 func ForeachFileWithPath(filePath, path string, fn func(key any, item *IterableValue) error) error {
 	return withProcessorError(func(p *Processor) error {
 		return p.ForeachFileWithPath(filePath, path, fn)
@@ -1243,6 +1280,8 @@ func ForeachFileWithPath(filePath, path string, fn func(key any, item *IterableV
 //	    }
 //	    return nil
 //	})
+//
+// Errors: see Processor.ForeachFileChunked.
 func ForeachFileChunked(filePath string, chunkSize int, fn func(chunk []*IterableValue) error) error {
 	return withProcessorError(func(p *Processor) error {
 		return p.ForeachFileChunked(filePath, chunkSize, fn)
@@ -1257,6 +1296,8 @@ func ForeachFileChunked(filePath string, chunkSize int, fn func(chunk []*Iterabl
 //	    fmt.Printf("Key: %v, Type: %T\n", key, item.Value)
 //	    return nil
 //	})
+//
+// Errors: see Processor.ForeachFileNested.
 func ForeachFileNested(filePath string, fn func(key any, item *IterableValue) error) error {
 	return withProcessorError(func(p *Processor) error {
 		return p.ForeachFileNested(filePath, fn)

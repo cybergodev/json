@@ -145,6 +145,10 @@ func (it *ParallelIterator) ForEachWithContext(ctx context.Context, fn func(int,
 
 // ForEachBatch processes elements in batches in parallel
 // Each batch is processed by a single goroutine
+//
+// Errors:
+//   - the first error returned by fn across all batches
+//   - nil if all batches succeed, or if the iterator has been closed
 func (it *ParallelIterator) ForEachBatch(batchSize int, fn func(int, []any) error) error {
 	return it.ForEachBatchWithContext(context.Background(), batchSize, fn)
 }
@@ -152,6 +156,11 @@ func (it *ParallelIterator) ForEachBatch(batchSize int, fn func(int, []any) erro
 // ForEachBatchWithContext processes elements in batches with context support for cancellation
 // Each batch is processed by a single goroutine
 // RESOURCE FIX: Added context support for graceful goroutine termination
+//
+// Errors:
+//   - the first error returned by fn across all batches
+//   - ctx.Err() if the context is cancelled before completion
+//   - nil if all batches succeed, or if the iterator has been closed
 func (it *ParallelIterator) ForEachBatchWithContext(ctx context.Context, batchSize int, fn func(int, []any) error) error {
 	if batchSize <= 0 {
 		batchSize = 100
@@ -237,6 +246,10 @@ func (it *ParallelIterator) ForEachBatchWithContext(ctx context.Context, batchSi
 
 // Map applies a transformation function to each element in parallel
 // Returns a new slice with the transformed values
+//
+// Errors:
+//   - the first error returned by transform (returned with a nil slice)
+//   - nil if all elements transform successfully
 func (it *ParallelIterator) Map(transform func(int, any) (any, error)) ([]any, error) {
 	result := make([]any, len(it.data))
 	var mu sync.Mutex

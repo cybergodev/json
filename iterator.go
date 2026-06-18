@@ -27,7 +27,8 @@ const (
 type IteratorControl int
 
 const (
-	IteratorNormal IteratorControl = iota // continue normally
+	// IteratorNormal continues iteration normally (the default control value).
+	IteratorNormal IteratorControl = iota
 	// IteratorContinue skips the current item and continues iteration
 	IteratorContinue
 	// IteratorBreak stops iteration entirely
@@ -345,6 +346,10 @@ func (it *Iterator) ResetWith(data any) {
 // ForeachWithPathAndControl iterates over JSON arrays or objects and applies a function.
 // This is the 3-parameter version used by most code.
 // Accepts optional Config for consistency with Processor.ForeachWithPathAndControl.
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - errors from resolving path (ErrInvalidJSON, ErrPathNotFound, ErrSizeLimit)
 func ForeachWithPathAndControl(jsonStr, path string, fn func(key any, value any) IteratorControl, cfg ...Config) error {
 	processor := getDefaultProcessor()
 	if processor == nil {
@@ -403,6 +408,10 @@ func foreachWithIterableValue(data any, fn func(key any, item *IterableValue)) {
 
 // ForeachWithPath iterates over JSON arrays or objects with simplified signature (for test compatibility).
 // Accepts optional Config for consistency with Processor.ForeachWithPath.
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - errors from resolving path (ErrInvalidJSON, ErrPathNotFound, ErrSizeLimit)
 func ForeachWithPath(jsonStr, path string, fn func(key any, item *IterableValue), cfg ...Config) error {
 	processor := getDefaultProcessor()
 	if processor == nil {
@@ -469,6 +478,10 @@ func foreachWithPathIterableValue(data any, currentPath string, fn func(key any,
 
 // ForeachReturn is a variant that returns error (for compatibility with test expectations).
 // Accepts optional Config for consistency with Processor.ForeachReturn.
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - errors from parsing the root (ErrInvalidJSON, ErrSizeLimit)
 func ForeachReturn(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config) (string, error) {
 	processor := getDefaultProcessor()
 	if processor == nil {
@@ -926,6 +939,10 @@ func ForeachWithError(jsonStr, path string, fn func(key any, item *IterableValue
 //	    fmt.Printf("Key: %v\n", key)
 //	    return nil
 //	})
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - any error returned by fn, or ErrInvalidJSON if jsonStr is not valid JSON
 func ForeachNestedWithError(jsonStr string, fn func(key any, item *IterableValue) error) error {
 	return withProcessorError(func(p *Processor) error {
 		return p.ForeachNestedWithError(jsonStr, fn)
@@ -941,6 +958,10 @@ func ForeachNestedWithError(jsonStr string, fn func(key any, item *IterableValue
 //	    fmt.Printf("Path: %s, Key: %v\n", currentPath, key)
 //	    return json.IteratorNormal // continue
 //	})
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - errors from resolving path (ErrInvalidJSON, ErrPathNotFound, ErrSizeLimit)
 func ForeachWithPathAndIterator(jsonStr, path string, fn func(key any, item *IterableValue, currentPath string) IteratorControl) error {
 	return withProcessorError(func(p *Processor) error {
 		return p.ForeachWithPathAndIterator(jsonStr, path, fn)

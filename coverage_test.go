@@ -645,10 +645,21 @@ func TestGetProcessorWithConfig(t *testing.T) {
 
 // TestWithProcessorErrorPaths tests error handling paths
 func TestWithProcessorErrorPaths(t *testing.T) {
-	t.Run("ConfigValidation", func(t *testing.T) {
+	t.Run("ConfigValidation clamps invalid values", func(t *testing.T) {
 		cfg := Config{MaxJSONSize: -1}
-		err := cfg.Validate()
-		_ = err
+		// Validate mutates in place, clamping invalid values, and returns nil.
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate returned unexpected error: %v", err)
+		}
+		if cfg.MaxJSONSize <= 0 {
+			t.Errorf("MaxJSONSize not clamped to a valid minimum, got %d", cfg.MaxJSONSize)
+		}
+
+		// ValidateWithWarnings reports the correction Validate applied silently.
+		cfg2 := Config{MaxJSONSize: -1}
+		if warnings := cfg2.ValidateWithWarnings(); len(warnings) == 0 {
+			t.Error("expected at least one warning for MaxJSONSize=-1")
+		}
 	})
 }
 
@@ -782,12 +793,6 @@ func TestHelperFunctions(t *testing.T) {
 		}
 		if isValidJSON(`{invalid}`) {
 			t.Error("isValidJSON should return false for invalid JSON")
-		}
-	})
-
-	t.Run("isValidPath", func(t *testing.T) {
-		if !isValidPath("key.nested") {
-			t.Error("isValidPath should return true for valid path")
 		}
 	})
 
@@ -2428,99 +2433,72 @@ func TestStringFormatValidation(t *testing.T) {
 // TOP-LEVEL API FUNCTIONS - Missing coverage tests
 // ============================================================================
 
-// TestGetStringDefault tests the top-level GetString function with default values
-func TestGetStringDefault(t *testing.T) {
-	tests := []struct {
-		name         string
-		jsonStr      string
-		path         string
-		defaultValue string
-		expected     string
-	}{
-		{"Found", `{"name":"Alice"}`, "name", "default", "Alice"},
-		{"NotFound", `{"name":"Alice"}`, "missing", "default", "default"},
-		{"InvalidJSON", `{invalid}`, "name", "default", "default"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := GetString(tt.jsonStr, tt.path, tt.defaultValue)
-			if result != tt.expected {
-				t.Errorf("GetString() = %q, want %q", result, tt.expected)
+// TestTypedGetters_DefaultContract consolidates the former per-type
+// TestGetStringDefault / TestGetIntDefault / TestGetFloatDefault /
+// TestGetBoolDefault. All four package-level getters delegate to
+// withTypedGetter, so this single table-driven test covers their shared
+// found / not-found / invalid-JSON -> default contract plus each type's
+// coercion edge.
+func TestTypedGetters_DefaultContract(t *testing.T) {
+	t.Run("string", func(t *testing.T) {
+		cases := []struct{ name, in, path, def, want string }{
+			{"Found", `{"name":"Alice"}`, "name", "default", "Alice"},
+			{"NotFound", `{"name":"Alice"}`, "missing", "default", "default"},
+			{"InvalidJSON", `{invalid}`, "name", "default", "default"},
+		}
+		for _, c := range cases {
+			if got := GetString(c.in, c.path, c.def); got != c.want {
+				t.Errorf("%s: GetString = %q, want %q", c.name, got, c.want)
 			}
-		})
-	}
-}
+		}
+	})
 
-// TestGetIntDefault tests the top-level GetInt function with default values
-func TestGetIntDefault(t *testing.T) {
-	tests := []struct {
-		name         string
-		jsonStr      string
-		path         string
-		defaultValue int
-		expected     int
-	}{
-		{"Found", `{"count":42}`, "count", -1, 42},
-		{"NotFound", `{"count":42}`, "missing", -1, -1},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := GetInt(tt.jsonStr, tt.path, tt.defaultValue)
-			if result != tt.expected {
-				t.Errorf("GetInt() = %d, want %d", result, tt.expected)
+	t.Run("int", func(t *testing.T) {
+		cases := []struct {
+			name, in, path string
+			def, want      int
+		}{
+			{"Found", `{"count":42}`, "count", -1, 42},
+			{"NotFound", `{"count":42}`, "missing", -1, -1},
+		}
+		for _, c := range cases {
+			if got := GetInt(c.in, c.path, c.def); got != c.want {
+				t.Errorf("%s: GetInt = %d, want %d", c.name, got, c.want)
 			}
-		})
-	}
-}
+		}
+	})
 
-// TestGetFloatDefault tests the top-level GetFloat function with default values
-func TestGetFloatDefault(t *testing.T) {
-	tests := []struct {
-		name         string
-		jsonStr      string
-		path         string
-		defaultValue float64
-		expected     float64
-	}{
-		{"Found", `{"value":3.14}`, "value", -1.0, 3.14},
-		{"NotFound", `{"value":3.14}`, "missing", -1.0, -1.0},
-		{"IntToFloat", `{"count":42}`, "count", -1.0, 42.0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := GetFloat(tt.jsonStr, tt.path, tt.defaultValue)
-			if result != tt.expected {
-				t.Errorf("GetFloat() = %f, want %f", result, tt.expected)
+	t.Run("float", func(t *testing.T) {
+		cases := []struct {
+			name, in, path string
+			def, want      float64
+		}{
+			{"Found", `{"value":3.14}`, "value", -1.0, 3.14},
+			{"NotFound", `{"value":3.14}`, "missing", -1.0, -1.0},
+			{"IntToFloat", `{"count":42}`, "count", -1.0, 42.0},
+		}
+		for _, c := range cases {
+			if got := GetFloat(c.in, c.path, c.def); got != c.want {
+				t.Errorf("%s: GetFloat = %v, want %v", c.name, got, c.want)
 			}
-		})
-	}
-}
+		}
+	})
 
-// TestGetBoolDefault tests the top-level GetBool function with default values
-func TestGetBoolDefault(t *testing.T) {
-	tests := []struct {
-		name         string
-		jsonStr      string
-		path         string
-		defaultValue bool
-		expected     bool
-	}{
-		{"FoundTrue", `{"active":true}`, "active", false, true},
-		{"FoundFalse", `{"active":false}`, "active", true, false},
-		{"NotFound", `{"active":true}`, "missing", false, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := GetBool(tt.jsonStr, tt.path, tt.defaultValue)
-			if result != tt.expected {
-				t.Errorf("GetBool() = %v, want %v", result, tt.expected)
+	t.Run("bool", func(t *testing.T) {
+		cases := []struct {
+			name, in, path string
+			def, want      bool
+		}{
+			{"FoundTrue", `{"active":true}`, "active", false, true},
+			{"FoundFalse", `{"active":false}`, "active", true, false},
+			{"NotFound", `{"active":true}`, "missing", false, false},
+		}
+		for _, c := range cases {
+			if got := GetBool(c.in, c.path, c.def); got != c.want {
+				t.Errorf("%s: GetBool = %v, want %v", c.name, got, c.want)
 			}
-		})
-	}
+		}
+	})
 }
 
 // TestValidString tests the validString function
@@ -2616,121 +2594,6 @@ func TestParseTopLevel(t *testing.T) {
 	})
 }
 
-// ============================================================================
-// CONFIG ENCODING METHODS - Missing coverage tests
-// ============================================================================
-
-// TestConfigEncodingMethods tests Config encoding-related methods
-func TestConfigEncodingMethods(t *testing.T) {
-	cfg := Config{
-		Pretty:          true,
-		Indent:          "  ",
-		Prefix:          "> ",
-		EscapeHTML:      true,
-		SortKeys:        true,
-		FloatPrecision:  4,
-		FloatTruncate:   true,
-		MaxDepth:        50,
-		IncludeNulls:    true,
-		ValidateUTF8:    true,
-		DisallowUnknown: true,
-	}
-
-	t.Run("IsHTMLEscapeEnabled", func(t *testing.T) {
-		if !cfg.isHTMLEscapeEnabled() {
-			t.Error("IsHTMLEscapeEnabled should return true")
-		}
-	})
-
-	t.Run("IsPrettyEnabled", func(t *testing.T) {
-		if !cfg.isPrettyEnabled() {
-			t.Error("IsPrettyEnabled should return true")
-		}
-	})
-
-	t.Run("GetIndent", func(t *testing.T) {
-		if cfg.getIndent() != "  " {
-			t.Errorf("GetIndent = %q, want %q", cfg.getIndent(), "  ")
-		}
-	})
-
-	t.Run("GetPrefix", func(t *testing.T) {
-		if cfg.getPrefix() != "> " {
-			t.Errorf("GetPrefix = %q, want %q", cfg.getPrefix(), "> ")
-		}
-	})
-
-	t.Run("IsSortKeysEnabled", func(t *testing.T) {
-		if !cfg.isSortKeysEnabled() {
-			t.Error("IsSortKeysEnabled should return true")
-		}
-	})
-
-	t.Run("GetFloatPrecision", func(t *testing.T) {
-		if cfg.getFloatPrecision() != 4 {
-			t.Errorf("GetFloatPrecision = %d, want 4", cfg.getFloatPrecision())
-		}
-	})
-
-	t.Run("IsTruncateFloatEnabled", func(t *testing.T) {
-		if !cfg.isTruncateFloatEnabled() {
-			t.Error("IsTruncateFloatEnabled should return true")
-		}
-	})
-
-	t.Run("GetMaxDepth", func(t *testing.T) {
-		if cfg.getMaxDepth() != 50 {
-			t.Errorf("GetMaxDepth = %d, want 50", cfg.getMaxDepth())
-		}
-	})
-
-	t.Run("ShouldIncludeNulls", func(t *testing.T) {
-		if !cfg.shouldIncludeNulls() {
-			t.Error("ShouldIncludeNulls should return true")
-		}
-	})
-
-	t.Run("ShouldValidateUTF8", func(t *testing.T) {
-		if !cfg.shouldValidateUTF8() {
-			t.Error("ShouldValidateUTF8 should return true")
-		}
-	})
-
-	t.Run("IsDisallowUnknownEnabled", func(t *testing.T) {
-		if !cfg.isDisallowUnknownEnabled() {
-			t.Error("IsDisallowUnknownEnabled should return true")
-		}
-	})
-}
-
-// TestConfigEncodingMethodsDefaults tests default values
-func TestConfigEncodingMethodsDefaults(t *testing.T) {
-	cfg := Config{} // Zero value
-
-	t.Run("DefaultIsHTMLEscapeEnabled", func(t *testing.T) {
-		if cfg.isHTMLEscapeEnabled() {
-			t.Error("Zero-value IsHTMLEscapeEnabled should return false")
-		}
-	})
-
-	t.Run("DefaultIsPrettyEnabled", func(t *testing.T) {
-		if cfg.isPrettyEnabled() {
-			t.Error("Zero-value IsPrettyEnabled should return false")
-		}
-	})
-
-	t.Run("DefaultGetIndent", func(t *testing.T) {
-		if cfg.getIndent() != "" {
-			t.Errorf("Zero-value GetIndent = %q, want empty", cfg.getIndent())
-		}
-	})
-
-	t.Run("DefaultGetPrefix", func(t *testing.T) {
-		if cfg.getPrefix() != "" {
-			t.Errorf("Zero-value GetPrefix = %q, want empty", cfg.getPrefix())
-		}
-	})
-}
 
 // ============================================================================
 // TOP-LEVEL FILE FUNCTIONS - Missing coverage tests

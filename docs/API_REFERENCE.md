@@ -35,6 +35,7 @@
 - [Schema Type](#schema-type)
 - [Iterator Control](#iterator-control)
 - [Additional Types](#additional-types)
+- [Extension Interfaces](#extension-interfaces)
 - [Path Expression Syntax](#path-expression-syntax)
 
 ---
@@ -1666,7 +1667,6 @@ func (p *Processor) GetArray(jsonStr, path string, defaultValue ...[]any) []any
 func (p *Processor) GetObject(jsonStr, path string, defaultValue ...map[string]any) map[string]any
 func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (map[string]any, error)
 func (p *Processor) SafeGet(jsonStr, path string, cfg ...Config) AccessResult
-func (p *Processor) GetTyped[T any](jsonStr, path string, defaultValue ...T) T
 func (p *Processor) GetFromParsed(parsed *ParsedJSON, path string, cfg ...Config) (any, error)
 func (p *Processor) GetCompiled(jsonStr string, cp *CompiledPath) (any, error)
 func (p *Processor) CompilePath(path string) (*CompiledPath, error)
@@ -2257,7 +2257,6 @@ func (it *StreamIterator) Next() bool
 func (it *StreamIterator) Value() any
 func (it *StreamIterator) Index() int
 func (it *StreamIterator) Err() error
-func (it *StreamIterator) Reset(reader io.Reader)
 ```
 
 Provides memory-efficient iteration over large JSON arrays. Processes elements one at a time without loading the entire array into memory. The optional `cfg` parameter allows customization (e.g., `BufferSize`).
@@ -2300,6 +2299,138 @@ err := iter.ForEach(func(idx int, val any) error {
 
 ---
 
+### StreamObjectIterator
+
+```go
+type StreamObjectIterator struct { /* unexported fields */ }
+
+func NewStreamObjectIterator(reader io.Reader, cfg ...Config) *StreamObjectIterator
+func (soi *StreamObjectIterator) Next() bool
+func (soi *StreamObjectIterator) Key() string
+func (soi *StreamObjectIterator) Value() any
+func (soi *StreamObjectIterator) Err() error
+```
+
+Provides memory-efficient iteration over a JSON object's key/value pairs.
+Processes one entry at a time without loading the entire object into memory.
+The optional `cfg` parameter allows customization (e.g., `BufferSize`).
+
+**Example:**
+```go
+reader := strings.NewReader(`{"name": "Alice", "age": 30, "active": true}`)
+iter := json.NewStreamObjectIterator(reader)
+for iter.Next() {
+    fmt.Printf("Key %q = %v\n", iter.Key(), iter.Value())
+}
+if err := iter.Err(); err != nil {
+    log.Fatal(err)
+}
+```
+
+---
+
+## Extension Interfaces
+
+These exported interfaces and types support customizing encoding, validation,
+hooking, and path parsing. They are registered via fields on `Config` (e.g.,
+`CustomEncoder`, `CustomTypeEncoders`, `CustomValidators`, `Hooks`,
+`AdditionalDangerousPatterns`) or `Processor.AddHook`.
+
+```go
+// CustomEncoder replaces the default encoder for all values.
+// Register via Config.CustomEncoder.
+type CustomEncoder interface {
+    Encode(value any) (string, error)
+}
+
+// TypeEncoder handles encoding for a specific reflect.Type.
+// Register via Config.CustomTypeEncoders (map[reflect.Type]TypeEncoder).
+type TypeEncoder interface {
+    Encode(v reflect.Value) (string, error)
+}
+
+// Validator validates a JSON string before processing.
+// Register via Config.AddValidator; all registered validators must pass.
+type Validator interface {
+    Validate(jsonStr string) error
+}
+
+// PathParser parses a path string into segments.
+// Implement to provide custom path syntax support.
+type PathParser interface {
+    ParsePath(path string) ([]PathSegment, error)
+}
+```
+
+### PatternLevel
+
+`PatternLevel` represents the severity of a `DangerousPattern`. Used by
+`RegisterDangerousPattern` and `Config.AddDangerousPattern`.
+
+```go
+type PatternLevel int
+
+const (
+    PatternLevelCritical PatternLevel = iota  // Always blocks the operation
+    PatternLevelWarning                       // Blocks in strict mode; warns otherwise
+    PatternLevelInfo                          // Logs but never blocks
+)
+```
+
+### SecurityLimits
+
+```go
+type SecurityLimits struct {
+    MaxNestingDepth            int
+    MaxSecurityValidationSize  int64
+    MaxObjectKeys              int
+    MaxArrayElements           int
+    MaxJSONSize                int64
+    MaxPathDepth               int
+}
+```
+
+A read-only summary of the security-relevant limits on a `Config`. Returned by
+the unexported `(*Config).getSecurityLimits()` helper; the same values are
+available directly on `Config` (e.g., `config.MaxJSONSize`,
+`config.MaxNestingDepthSecurity`).
+
+### Hook, HookContext, and HookFunc
+
+```go
+// HookContext provides context for operation hooks.
+type HookContext struct {
+    Operation string    // "get", "set", "delete", "marshal", "unmarshal"
+    JSONStr   string    // Input JSON (may contain sensitive data — do not log)
+    Path      string
+    Value     any
+    Config    *Config
+    StartTime time.Time
+}
+
+// Hook intercepts operations before/after execution.
+type Hook interface {
+    Before(ctx HookContext) error
+    After(ctx HookContext, result any, err error) (any, error)
+}
+
+// HookFunc adapts ordinary functions into a Hook (either BeforeFn or AfterFn
+// may be nil). Useful for hooks that only need one side.
+type HookFunc struct {
+    BeforeFn func(ctx HookContext) error
+    AfterFn  func(ctx HookContext, result any, err error) (any, error)
+}
+```
+
+Register hooks via `Config.AddHook(hook)` or `Processor.AddHook(hook)`.
+Convenience constructors (`LoggingHook`, `TimingHook`, `ValidationHook`,
+`ErrorHook`) are documented under [Hook Constructors](#hook-constructors).
+
+> **Security:** `HookContext.JSONStr` may contain sensitive data. Use only
+> `Operation` and `Path` for logging — never log the raw `JSONStr`.
+
+---
+
 ## Path Expression Syntax
 
 | Syntax | Description | Example | Result |
@@ -2312,7 +2443,10 @@ err := iter.ForEach(func(idx int, val any) error {
 | `{field}` | Batch extract | `users{name}` | All user names |
 | `{flat:field}` | Flatten extract | `users{flat:skills}` | All skills flattened |
 | `[+]` | Array append (Set only) | `items[+]` | Append value to array |
-| `$` | Root reference | `$` | Entire JSON document |
+
+> **Note:** To access the entire JSON document, pass an empty path `""`
+> (e.g., `json.Get(data, "")` returns the full document). The `$` symbol is
+> **not** supported as a root reference and will return a "path not found" error.
 
 ---
 

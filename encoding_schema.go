@@ -2,6 +2,7 @@ package json
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -25,13 +26,18 @@ var (
 	uuidRegex = sync.OnceValue(func() *regexp.Regexp {
 		return regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	})
-	// ipv6Regex validates IPv6 address format
-	ipv6Regex = sync.OnceValue(func() *regexp.Regexp {
-		return regexp.MustCompile(`^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$`)
-	})
 )
 
-// ValidateSchema validates JSON data against a schema
+// ValidateSchema validates JSON data against a schema.
+//
+// Schema violations are reported as the returned []ValidationError slice;
+// the error return value is non-nil only for parse or setup failures.
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - ErrInvalidJSON: jsonStr is not valid JSON
+//   - ErrSizeLimit: jsonStr exceeds MaxJSONSize
+//   - a JsonsError (errOperationFailed) when schema is nil
 func (p *Processor) ValidateSchema(jsonStr string, schema *Schema, cfg ...Config) ([]ValidationError, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
@@ -250,27 +256,26 @@ func (p *Processor) validateString(str string, schema *Schema, path string, erro
 	}
 
 	// Pattern validation (regular expression)
-	// Lazily compile and cache the regex to prevent recompilation on every call
+	// Lazily compile and cache the regex via sync.Once so a shared *Schema is safe
+	// for concurrent validation. (*regexp.Regexp).MatchString is itself goroutine-safe,
+	// so only the one-time compile needs guarding. A compile error is cached and
+	// re-reported on every validation rather than silently passing.
 	if schema.Pattern != "" {
-		if !schema.patternCompiled {
-			re, err := regexp.Compile(schema.Pattern)
-			if err != nil {
-				*errors = append(*errors, ValidationError{
-					Path:    path,
-					Message: fmt.Sprintf("invalid pattern '%s': %v", schema.Pattern, err),
-				})
-				return
-			}
-			schema.compiledPattern = re
-			schema.patternCompiled = true
+		schema.patternOnce.Do(func() {
+			schema.compiledPattern, schema.patternErr = regexp.Compile(schema.Pattern)
+		})
+		if schema.patternErr != nil {
+			*errors = append(*errors, ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("invalid pattern '%s': %v", schema.Pattern, schema.patternErr),
+			})
+			return
 		}
-		if schema.compiledPattern != nil {
-			if !schema.compiledPattern.MatchString(str) {
-				*errors = append(*errors, ValidationError{
-					Path:    path,
-					Message: fmt.Sprintf("string '%s' does not match pattern '%s'", str, schema.Pattern),
-				})
-			}
+		if !schema.compiledPattern.MatchString(str) {
+			*errors = append(*errors, ValidationError{
+				Path:    path,
+				Message: fmt.Sprintf("string '%s' does not match pattern '%s'", str, schema.Pattern),
+			})
 		}
 	}
 
@@ -560,19 +565,13 @@ func (p *Processor) validateIPv4Format(ip, path string, errors *[]ValidationErro
 	return nil
 }
 
-// validateIPv6Format validates IPv6 format
+// validateIPv6Format validates IPv6 format.
+// Delegates to the standard library so every legal form — including zero-compression
+// ("::"), e.g. "fe80::1" or "2001:db8::1" — is accepted, while IPv4 and non-IP
+// strings are rejected.
 func (p *Processor) validateIPv6Format(ip, path string, errors *[]ValidationError) error {
-	// Simple IPv6 validation - check for colons and hex characters
-	if !strings.Contains(ip, ":") {
-		*errors = append(*errors, ValidationError{
-			Path:    path,
-			Message: fmt.Sprintf("'%s' is not a valid IPv6 format", ip),
-		})
-		return nil
-	}
-
-	// Use lazy-initialized regex for validation
-	if !ipv6Regex().MatchString(ip) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.To4() != nil || !strings.Contains(ip, ":") {
 		*errors = append(*errors, ValidationError{
 			Path:    path,
 			Message: fmt.Sprintf("'%s' is not a valid IPv6 format", ip),

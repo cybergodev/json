@@ -7,7 +7,6 @@ import (
 	"io"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -92,29 +91,6 @@ func withTypedGetter[T any](fn func(*Processor, string, string, ...T) T, jsonStr
 	return fn(p, jsonStr, path, defaultValue...)
 }
 
-// withConfigProcessor handles the config-extract-and-processor pattern for
-// config-aware API functions. Eliminates boilerplate in EncodeBatch, EncodeFields, EncodeStream.
-func withConfigProcessor[T any](cfg []Config, fn func(*Processor, Config) (T, error)) (T, error) {
-	c := getConfigOrDefault(cfg...)
-	p, err := getProcessorWithConfig(c)
-	if err != nil {
-		var zero T
-		return zero, err
-	}
-	return fn(p, c)
-}
-
-// withConfigProcessorError handles config-aware functions that only return an error.
-// Eliminates boilerplate in SaveToFile, MarshalToFile, SaveToWriter.
-func withConfigProcessorError(cfg []Config, fn func(*Processor, Config) error) error {
-	c := getConfigOrDefault(cfg...)
-	p, err := getProcessorWithConfig(c)
-	if err != nil {
-		return err
-	}
-	return fn(p, c)
-}
-
 // hashConfig generates a cache key for Config for processor caching.
 //
 // ROBUSTNESS: Uses field-by-field hashing to include ALL Config fields.
@@ -133,7 +109,7 @@ func hashConfig(cfg Config) uint64 {
 }
 
 // isDefaultConfig checks if the config matches the default configuration.
-// Performs complete comparison including Context field (which JSON ignores).
+// Performs complete comparison across every Config field via configFieldsEqual.
 // PERFORMANCE: Uses short-circuit evaluation for common mismatches first.
 func isDefaultConfig(cfg Config) bool {
 	// Fast checks for common non-default values
@@ -381,11 +357,20 @@ var configFieldList = []configFieldAccessor{
 		},
 		func(h uint64, c Config) uint64 {
 			h = internal.HashInt(h, len(c.CustomTypeEncoders))
+			// DETERMINISM FIX: map iteration order is random, so combining per-entry
+			// sub-hashes with XOR (commutative & associative) yields a stable key
+			// regardless of iteration order. Each sub-hash incorporates the encoder's
+			// concrete type (not just nil-ness) to reduce collisions between distinct
+			// encoder functions. (Same residual instance-collision limitation as
+			// CustomEncoder/Hooks above.)
+			var combined uint64
 			for typ, enc := range c.CustomTypeEncoders {
-				h = internal.HashString(h, typ.String())
-				h = internal.HashBool(h, enc != nil)
+				eh := internal.FNVOffsetBasis
+				eh = internal.HashString(eh, typ.String())
+				eh = internal.HashString(eh, fmt.Sprintf("%T", enc))
+				combined ^= eh
 			}
-			return h
+			return internal.HashUint64(h, combined)
 		}},
 	{"CustomValidators",
 		func(a, b Config) bool {
@@ -401,8 +386,11 @@ var configFieldList = []configFieldAccessor{
 		},
 		func(h uint64, c Config) uint64 {
 			h = internal.HashInt(h, len(c.CustomValidators))
+			// Incorporate each validator's concrete type (not just nil-ness) to reduce
+			// collisions between distinct validator functions. Slice order is stable,
+			// so order-dependent folding is safe here (unlike the map cases above).
 			for _, v := range c.CustomValidators {
-				h = internal.HashBool(h, v != nil)
+				h = internal.HashString(h, fmt.Sprintf("%T", v))
 			}
 			return h
 		}},
@@ -1040,8 +1028,8 @@ func Parse(jsonStr string, target any, cfg ...Config) error {
 //	cfg := json.PrettyConfig()
 //	err := json.SaveToFile("data.json", data, cfg)
 func SaveToFile(filePath string, data any, cfg ...Config) error {
-	return withConfigProcessorError(cfg, func(p *Processor, c Config) error {
-		return p.SaveToFile(filePath, data, c)
+	return withProcessorError(func(p *Processor) error {
+		return p.SaveToFile(filePath, data, cfg...)
 	})
 }
 
@@ -1052,8 +1040,8 @@ func SaveToFile(filePath string, data any, cfg ...Config) error {
 //
 //	err := json.MarshalToFile("data.json", myStruct, json.PrettyConfig())
 func MarshalToFile(filePath string, data any, cfg ...Config) error {
-	return withConfigProcessorError(cfg, func(p *Processor, c Config) error {
-		return p.MarshalToFile(filePath, data, c)
+	return withProcessorError(func(p *Processor) error {
+		return p.MarshalToFile(filePath, data, cfg...)
 	})
 }
 
@@ -1065,8 +1053,8 @@ func MarshalToFile(filePath string, data any, cfg ...Config) error {
 //	var buf bytes.Buffer
 //	err := json.SaveToWriter(&buf, data, json.PrettyConfig())
 func SaveToWriter(writer io.Writer, data any, cfg ...Config) error {
-	return withConfigProcessorError(cfg, func(p *Processor, c Config) error {
-		return p.SaveToWriter(writer, data, c)
+	return withProcessorError(func(p *Processor) error {
+		return p.SaveToWriter(writer, data, cfg...)
 	})
 }
 
@@ -1077,8 +1065,8 @@ func SaveToWriter(writer io.Writer, data any, cfg ...Config) error {
 //
 //	result, err := json.EncodeBatch(map[string]any{"name": "Alice", "age": 30})
 func EncodeBatch(pairs map[string]any, cfg ...Config) (string, error) {
-	return withConfigProcessor(cfg, func(p *Processor, c Config) (string, error) {
-		return p.EncodeBatch(pairs, c)
+	return withProcessor(func(p *Processor) (string, error) {
+		return p.EncodeBatch(pairs, cfg...)
 	})
 }
 
@@ -1089,8 +1077,8 @@ func EncodeBatch(pairs map[string]any, cfg ...Config) (string, error) {
 //
 //	result, err := json.EncodeFields(user, []string{"name", "email"})
 func EncodeFields(value any, fields []string, cfg ...Config) (string, error) {
-	return withConfigProcessor(cfg, func(p *Processor, c Config) (string, error) {
-		return p.EncodeFields(value, fields, c)
+	return withProcessor(func(p *Processor) (string, error) {
+		return p.EncodeFields(value, fields, cfg...)
 	})
 }
 
@@ -1101,8 +1089,8 @@ func EncodeFields(value any, fields []string, cfg ...Config) (string, error) {
 //
 //	result, err := json.EncodeStream([]any{1, 2, 3}, json.PrettyConfig())
 func EncodeStream(values any, cfg ...Config) (string, error) {
-	return withConfigProcessor(cfg, func(p *Processor, c Config) (string, error) {
-		return p.EncodeStream(values, c)
+	return withProcessor(func(p *Processor) (string, error) {
+		return p.EncodeStream(values, cfg...)
 	})
 }
 
@@ -1110,20 +1098,21 @@ func EncodeStream(values any, cfg ...Config) (string, error) {
 // goroutine growth when many stale processors are replaced simultaneously.
 var asyncCloseSem = make(chan struct{}, maxConcurrentCloses)
 
-// asyncCloseProcessor closes a processor asynchronously with timeout and semaphore.
+// asyncCloseProcessor closes a processor asynchronously with bounded concurrency.
+//
+// Close() is internally bounded by waitForActiveOps(closeOperationTimeout), so a
+// synchronous call here cannot hang indefinitely. The previous design spawned a
+// second goroutine to run Close() and raced it against an inner time.After: when
+// the timeout fired, the outer goroutine released the semaphore and exited while
+// the inner Close() goroutine was orphaned with no one to join it — an unbounded
+// goroutine leak under cache-churn eviction (maybeEvictConfigCache calls this on
+// every pressure event). Collapsing to a single synchronous Close() removes the
+// leak and the redundant double-timeout.
 func asyncCloseProcessor(p *Processor) {
 	asyncCloseSem <- struct{}{}
 	go func() {
 		defer func() { <-asyncCloseSem }()
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			_ = p.Close() // best-effort cleanup; async context ignores errors
-		}()
-		select {
-		case <-done:
-		case <-time.After(closeOperationTimeout):
-		}
+		_ = p.Close() // best-effort; bounded internally by closeOperationTimeout
 	}()
 }
 
@@ -1191,9 +1180,13 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 		return p, nil
 	}
 
-	// All attempts exhausted - close the orphaned processor
-	_ = p.Close() // best-effort cleanup; all retries exhausted
-	return nil, newOperationError("get_processor", "failed to store processor in cache after retries", errOperationFailed)
+	// All attempts exhausted under heavy contention. The processor cache is only
+	// a performance optimization — it must never fail the caller's operation.
+	// Return the freshly-built processor uncached instead of erroring out. It is
+	// GC-collected once the caller drops the reference (its cache cleanup
+	// goroutines are transient), so this does not leak under the extreme churn
+	// required to actually reach this branch.
+	return p, nil
 }
 
 // maybeEvictConfigCache checks if the cache exceeds the size limit and evicts if needed.
@@ -1208,7 +1201,6 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 // to ensure consistent behavior across runs.
 func maybeEvictConfigCache() {
 	configProcessorCacheMu.Lock()
-	defer configProcessorCacheMu.Unlock()
 
 	var count int
 	configProcessorCache.Range(func(_, _ any) bool {
@@ -1217,6 +1209,7 @@ func maybeEvictConfigCache() {
 	})
 
 	if count < configProcessorCacheLimit {
+		configProcessorCacheMu.Unlock()
 		return
 	}
 
@@ -1254,6 +1247,7 @@ func maybeEvictConfigCache() {
 
 	// If still over limit, evict entries using deterministic hash-based order
 	// This ensures consistent eviction behavior across runs
+	var toClose []*Processor
 	if len(validEntries) >= configProcessorCacheLimit {
 		// Sort by key hash to get deterministic eviction order
 		// Keys with lower hash values are evicted first
@@ -1270,17 +1264,24 @@ func maybeEvictConfigCache() {
 			return 0
 		})
 
-		var toClose []*Processor
 		evictCount := min(configProcessorCacheEvictNum, len(validEntries))
 
 		for i := range evictCount {
 			configProcessorCache.Delete(validEntries[i].key)
 			toClose = append(toClose, validEntries[i].proc)
 		}
+	}
 
-		// Close evicted processors with bounded concurrency
-		for _, proc := range toClose {
-			asyncCloseProcessor(proc)
-		}
+	// Release the cache mutex BEFORE the async close sends on asyncCloseSem.
+	// Each asyncCloseProcessor blocks acquiring a slot on the 8-slot
+	// asyncCloseSem; holding configProcessorCacheMu across those sends would
+	// stall every getProcessorWithConfig slow-path (and thus every
+	// config-based package-level call) for up to ~5s when the semaphore is
+	// saturated under churn.
+	configProcessorCacheMu.Unlock()
+
+	// Close evicted processors with bounded concurrency
+	for _, proc := range toClose {
+		asyncCloseProcessor(proc)
 	}
 }
