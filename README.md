@@ -111,6 +111,7 @@ func main() {
 | `[+]` | Append to array | `items[+]` -> append position |
 | `{field}` | Extract field from all elements | `users{name}` -> ["Alice", "Bob"] |
 | `{flat:field}` | Flatten nested arrays | `users{flat:tags}` -> merge all tags |
+| `{f1,f2,...}` | Multi-field extraction (subset object) | `address{city,zip}` -> `{"city":...,"zip":...}` |
 | `/pointer` | JSON Pointer (RFC 6901) | `/users/0/name` -> "Alice" |
 
 ---
@@ -336,6 +337,49 @@ cfg := json.DefaultConfig()   // balanced defaults
 
 ## Advanced Features
 
+### Multi-field Extraction
+
+Extract a subset of fields from an object (or from every object in an array) using
+comma-separated names inside `{}`. Unlisted fields are dropped; fields that don't
+exist are silently skipped. Whitespace around the names is tolerated
+(`{a, b, c}` is normalized to `{a,b,c}`).
+
+```go
+data := `{
+    "address": {
+        "city": "Metro City",
+        "zip": "12345",
+        "country": "Sample Country",
+        "street": "1 Main Street"
+    }
+}`
+
+// Extract only "city" and "zip" into a new object (country and street are dropped)
+subset, _ := json.Get(data, "address{city,zip}")
+// subset -> map[string]any{"city": "Metro City", "zip": "12345"}
+
+// GetObject / GetTyped are the typed getters for the resulting map:
+addr := json.GetObject(data, "address{city,zip}")
+fmt.Println(addr["city"], addr["zip"]) // Metro City 12345
+```
+
+It applies to every element when the target is an array:
+
+```go
+arr := `{"users":[
+    {"id":1,"name":"Alice","email":"a@x.com"},
+    {"id":2,"name":"Bob","email":"b@x.com"}
+]}`
+names, _ := json.Get(arr, "users{id,name}")
+// names -> [{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]
+```
+
+> **Note** — multi-field extraction returns an *object* (`map[string]any`), so prefer
+> `Get` / `GetObject`. Calling `GetString` on it falls back to Go's default formatting:
+> `json.GetString(data, "address{city,zip}", "")` returns `"map[city:Metro City zip:12345]"`,
+> not a JSON string. A single field, `{city}`, is different — it returns the raw value
+> (`"Metro City"`), not a wrapped object.
+
 ### Iteration
 
 ```go
@@ -407,8 +451,6 @@ schema := &json.Schema{
 
 validationErrors, err := json.ValidateSchema(jsonStr, schema)
 ```
-
-The `Schema` type supports JSON Schema Draft 7 subset fields: `Type`, `Properties`, `Required`, `Items`, `Pattern`, `AdditionalProperties`, `Enum`, `Const`, `Format`, `MinLength`, `MaxLength`, `Minimum`, `Maximum`, `ExclusiveMinimum`, `ExclusiveMaximum`, `MultipleOf`, `MinItems`, `MaxItems`, `UniqueItems`, `Title`, `Description`, `Default`.
 
 ### PreParse and CompiledPath
 

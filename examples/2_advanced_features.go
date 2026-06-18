@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/cybergodev/json"
 )
@@ -16,6 +17,7 @@ import (
 //
 // Topics covered:
 // - Complex path queries and nested extraction
+// - Multi-field extraction (subset objects)
 // - Flat extraction from deeply nested structures
 // - Iteration and transformation
 // - Working with deeply nested data
@@ -77,13 +79,16 @@ func main() {
 	// 2. NESTED EXTRACTION
 	demonstrateExtraction(complexData)
 
-	// 3. FLAT EXTRACTION
+	// 3. MULTI-FIELD EXTRACTION (SUBSET OBJECTS)
+	demonstrateMultiFieldExtraction(complexData)
+
+	// 4. FLAT EXTRACTION
 	demonstrateFlatExtraction(complexData)
 
-	// 4. DEEP MODIFICATIONS
+	// 5. DEEP MODIFICATIONS
 	demonstrateDeepModifications(complexData)
 
-	// 5. BATCH OPERATIONS
+	// 6. BATCH OPERATIONS
 	demonstrateBatchOperations(complexData)
 
 	fmt.Println("\nAdvanced features complete!")
@@ -135,8 +140,37 @@ func demonstrateExtraction(data string) {
 	fmt.Printf("   Member roles: %v\n", memberRoles)
 }
 
+func demonstrateMultiFieldExtraction(data string) {
+	fmt.Println("\n3. Multi-field Extraction (Subset Objects)")
+	fmt.Println("------------------------------------------")
+
+	// Extract a subset of fields from a single object.
+	// Only the listed fields are kept; everything else is dropped.
+	member := json.GetObject(data, "departments[0].teams[0].members[0]{name,role}")
+	fmt.Printf("   Single member {name,role}: %v\n", member)
+
+	// Apply the same subset to every object in an array.
+	backendMembers, _ := json.Get(data, "departments[0].teams[0].members{name,role}")
+	fmt.Printf("   Backend team {name,role}: %v\n", backendMembers)
+
+	// Whitespace inside {} is tolerated: {name, role} normalizes to {name,role}.
+	withSpaces, _ := json.Get(data, "departments[0].teams[0].members{name, role}")
+	fmt.Printf("   With spaces {name, role}: %v\n", withSpaces)
+
+	// Mix with indexing: subset fields from a specific element.
+	second := json.GetObject(data, "departments[0].teams[0].members[1]{name,role}")
+	fmt.Printf("   Second member {name,role}: %v\n", second)
+
+	os.Exit(1)
+
+	// Note: multi-field extraction returns an object (map[string]any), so prefer
+	// Get/GetObject. Calling GetString would format the map via Go's default
+	// formatting, not return JSON. A single field like {name} is different — it
+	// returns the raw value, not a wrapped object.
+}
+
 func demonstrateFlatExtraction(data string) {
-	fmt.Println("\n3. Flat Extraction")
+	fmt.Println("\n4. Flat Extraction")
 	fmt.Println("------------------")
 
 	// Flat extraction - flattens all nested arrays into single array
@@ -159,7 +193,7 @@ func demonstrateFlatExtraction(data string) {
 }
 
 func demonstrateDeepModifications(data string) {
-	fmt.Println("\n4. Deep Modifications")
+	fmt.Println("\n5. Deep Modifications")
 	fmt.Println("---------------------")
 
 	// Modify deep nested value
@@ -189,7 +223,7 @@ func demonstrateDeepModifications(data string) {
 }
 
 func demonstrateBatchOperations(data string) {
-	fmt.Println("\n5. Batch Operations")
+	fmt.Println("\n6. Batch Operations")
 	fmt.Println("-------------------")
 
 	// Batch update multiple deep paths

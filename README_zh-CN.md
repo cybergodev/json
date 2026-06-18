@@ -111,6 +111,7 @@ func main() {
 | `[+]` | 追加到数组 | `items[+]` -> 追加位置 |
 | `{field}` | 提取所有元素的字段 | `users{name}` -> ["Alice", "Bob"] |
 | `{flat:field}` | 扁平化嵌套数组 | `users{flat:tags}` -> 合并所有标签 |
+| `{字段1,字段2}` | 多字段提取（子集对象） | `address{city,zip}` -> `{"city":...,"zip":...}` |
 | `/pointer` | JSON Pointer (RFC 6901) | `/users/0/name` -> "Alice" |
 
 ---
@@ -336,6 +337,48 @@ cfg := json.DefaultConfig()   // 平衡的默认配置
 
 ## 高级功能
 
+### 多字段提取
+
+使用 `{}` 内的逗号分隔字段名，从对象（或数组中的每个对象）中提取字段子集。
+未列出的字段会被丢弃，不存在的字段会被静默跳过；字段名两侧的空格会被容忍
+（`{a, b, c}` 会被规范化为 `{a,b,c}`）。
+
+```go
+data := `{
+    "address": {
+        "city": "Metro City",
+        "zip": "12345",
+        "country": "Sample Country",
+        "street": "1 Main Street"
+    }
+}`
+
+// 仅提取 "city" 和 "zip" 生成新对象（country 和 street 被丢弃）
+subset, _ := json.Get(data, "address{city,zip}")
+// subset -> map[string]any{"city": "Metro City", "zip": "12345"}
+
+// GetObject / GetTyped 是结果 map 对应的类型化获取器：
+addr := json.GetObject(data, "address{city,zip}")
+fmt.Println(addr["city"], addr["zip"]) // Metro City 12345
+```
+
+当目标为数组时，会对每个元素应用提取：
+
+```go
+arr := `{"users":[
+    {"id":1,"name":"Alice","email":"a@x.com"},
+    {"id":2,"name":"Bob","email":"b@x.com"}
+]}`
+names, _ := json.Get(arr, "users{id,name}")
+// names -> [{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]
+```
+
+> **注意** —— 多字段提取返回的是*对象*（`map[string]any`），因此请优先使用
+> `Get` / `GetObject`。对其调用 `GetString` 会回退到 Go 的默认格式化：
+> `json.GetString(data, "address{city,zip}", "")` 返回 `"map[city:Metro City zip:12345]"`，
+> 而非 JSON 字符串。单字段 `{city}` 则不同 —— 它返回原始值（`"Metro City"`），
+> 而非包装后的对象。
+
 ### 数据迭代
 
 ```go
@@ -407,8 +450,6 @@ schema := &json.Schema{
 
 validationErrors, err := json.ValidateSchema(jsonStr, schema)
 ```
-
-`Schema` 类型支持 JSON Schema Draft 7 子集字段：`Type`、`Properties`、`Required`、`Items`、`Pattern`、`AdditionalProperties`、`Enum`、`Const`、`Format`、`MinLength`、`MaxLength`、`Minimum`、`Maximum`、`ExclusiveMinimum`、`ExclusiveMaximum`、`MultipleOf`、`MinItems`、`MaxItems`、`UniqueItems`、`Title`、`Description`、`Default`。
 
 ### PreParse 与 CompiledPath
 
