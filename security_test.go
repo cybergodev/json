@@ -1539,3 +1539,68 @@ func TestPanicProtectionNilProcessor(t *testing.T) {
 		}
 	})
 }
+
+// TestPanicProtectionNilProcessorFullSurface extends the nil-receiver coverage
+// to the rest of the public Processor API. Every public method on a nil
+// *Processor MUST either return an error (mutating/query ops) or a safe zero
+// value (typed getters, stats, config) — never a nil-pointer panic.
+// Guards are centralized in checkClosed(); this test pins them so a future
+// refactor cannot silently regress SEC-003.
+func TestPanicProtectionNilProcessorFullSurface(t *testing.T) {
+	var p *Processor // intentionally nil
+
+	// Mutating / query operations: a nil receiver must surface an error,
+	// not panic. (Go fails the subtest on panic, so a direct call is a valid
+	// "must not panic" assertion.)
+	t.Run("Delete", func(t *testing.T) {
+		if _, err := p.Delete(`{"a":1}`, "a"); err == nil {
+			t.Error("expected error when calling Delete on nil Processor")
+		}
+	})
+	t.Run("Marshal", func(t *testing.T) {
+		if _, err := p.Marshal(map[string]any{"a": 1}); err == nil {
+			t.Error("expected error when calling Marshal on nil Processor")
+		}
+	})
+	t.Run("MarshalIndent", func(t *testing.T) {
+		if _, err := p.MarshalIndent(map[string]any{"a": 1}, "", "  "); err == nil {
+			t.Error("expected error when calling MarshalIndent on nil Processor")
+		}
+	})
+	t.Run("Unmarshal", func(t *testing.T) {
+		var v any
+		if err := p.Unmarshal([]byte(`{"a":1}`), &v); err == nil {
+			t.Error("expected error when calling Unmarshal on nil Processor")
+		}
+	})
+	t.Run("StreamJSONL", func(t *testing.T) {
+		if err := p.StreamJSONL(strings.NewReader(`{"a":1}`), func(int, *IterableValue) error { return nil }); err == nil {
+			t.Error("expected error when calling StreamJSONL on nil Processor")
+		}
+	})
+
+	// Typed getters: return the provided default (or zero value), no panic.
+	t.Run("GetString", func(t *testing.T) {
+		if got := p.GetString(`{"a":1}`, "a", "fallback"); got != "fallback" {
+			t.Errorf("GetString on nil Processor = %q, want default %q", got, "fallback")
+		}
+	})
+
+	// Information accessors: return a safe zero-value state, no panic.
+	t.Run("GetStats", func(t *testing.T) {
+		if stats := p.GetStats(); stats.IsClosed {
+			t.Errorf("GetStats on nil Processor reports IsClosed=true; want zero-value Stats")
+		}
+	})
+	t.Run("GetHealthStatus", func(t *testing.T) {
+		if hs := p.GetHealthStatus(); hs.Healthy {
+			t.Error("GetHealthStatus on nil Processor reports Healthy=true; want unhealthy")
+		}
+	})
+	t.Run("GetConfig", func(t *testing.T) {
+		_ = p.GetConfig() // must not panic; zero-value Config is acceptable
+	})
+	t.Run("SetLogger", func(t *testing.T) {
+		p.SetLogger(nil) // no-op on nil receiver; must not panic
+	})
+}

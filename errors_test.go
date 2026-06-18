@@ -130,7 +130,7 @@ func TestRedactedPath(t *testing.T) {
 		{"empty returns empty", "", ""},
 		{"short path returns masked", "users.name", "***"},
 		{"exactly 32 returns masked", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "***"},
-		{"long path returns truncated", "this.is.a.very.long.path.that.exceeds.thirty.two.characters", "this.is....aracters"},
+		{"long path returns fully masked", "this.is.a.very.long.path.that.exceeds.thirty.two.characters", "***"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

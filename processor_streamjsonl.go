@@ -170,10 +170,15 @@ func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader i
 				}
 				item := newIterableValue(job.data)
 				if jobErr := fn(job.lineNum, item); jobErr != nil {
-					if !errors.Is(jobErr, errBreak) {
-						if atomic.CompareAndSwapInt32(&errCount, 0, 1) {
-							firstErr.Store(&jobErr)
-						}
+					if errors.Is(jobErr, errBreak) {
+						// Clean stop: signal the feed loop and other workers to
+						// drain via errCount, mirroring serial StreamJSONL where
+						// errBreak maps to a nil return. Do NOT store firstErr,
+						// so the final return is nil (not an error). CAS keeps a
+						// real error dominant if one was already recorded.
+						atomic.CompareAndSwapInt32(&errCount, 0, 1)
+					} else if atomic.CompareAndSwapInt32(&errCount, 0, 1) {
+						firstErr.Store(&jobErr)
 					}
 				}
 			}

@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
-	"runtime"
 	"strconv"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/cybergodev/json/internal"
@@ -512,187 +511,6 @@ func (e *rootDataTypeConversionError) Error() string {
 		e.currentType, e.requiredType, e.requiredSize)
 }
 
-// Resource monitoring thresholds (internal)
-const (
-	// highMemoryThreshold is the threshold for high memory usage warning (100MB)
-	highMemoryThreshold = 100 * 1024 * 1024
-	// highGoroutineThreshold is the threshold for high goroutine count warning
-	highGoroutineThreshold = 1000
-	// minPoolOperationsForEfficiencyCheck is the minimum operations before checking pool efficiency
-	minPoolOperationsForEfficiencyCheck = 1000
-)
-
-// resourceMonitor provides resource monitoring and leak detection
-type resourceMonitor struct {
-	allocatedBytes    int64
-	freedBytes        int64
-	peakMemoryUsage   int64
-	poolHits          int64
-	poolMisses        int64
-	poolEvictions     int64
-	maxGoroutines     int64
-	currentGoroutines int64
-	lastLeakCheck     int64
-	leakCheckInterval int64
-	avgResponseTime   int64
-	totalOperations   int64
-}
-
-// newResourceMonitor creates a new resource monitor
-func newResourceMonitor() *resourceMonitor {
-	return &resourceMonitor{
-		leakCheckInterval: 300, // 5 minutes
-		lastLeakCheck:     time.Now().Unix(),
-	}
-}
-
-// RecordAllocation records an allocation of the specified size.
-// Note: the peak memory calculation uses a snapshot of allocated/freed counters,
-// so it is approximate under high concurrency. This is acceptable for monitoring.
-// FIX: Limited CAS retries to prevent unbounded loops under high contention.
-// After maxCASRetries, we accept a slightly stale peak value for better throughput.
-func (rm *resourceMonitor) recordAllocation(bytes int64) {
-	// Atomically update allocation counter
-	atomic.AddInt64(&rm.allocatedBytes, bytes)
-
-	// FIX: Limit CAS retries to prevent unbounded loops under high contention
-	// This is a reasonable trade-off: we accept slightly stale peak values
-	// in exchange for better throughput and avoiding goroutine starvation
-	const maxCASRetries = 3
-
-	for range maxCASRetries {
-		allocated := atomic.LoadInt64(&rm.allocatedBytes)
-		freed := atomic.LoadInt64(&rm.freedBytes)
-		current := allocated - freed
-
-		peak := atomic.LoadInt64(&rm.peakMemoryUsage)
-		if current <= peak {
-			return // Current is not higher than peak, no update needed
-		}
-
-		if atomic.CompareAndSwapInt64(&rm.peakMemoryUsage, peak, current) {
-			return // Successfully updated peak
-		}
-		// CAS failed - another goroutine updated peak, retry with fresh values
-	}
-	// After maxCASRetries, accept the current peak value
-	// This is acceptable for monitoring purposes where exact precision is not critical
-}
-
-// RecordDeallocation records a deallocation of the specified size
-func (rm *resourceMonitor) recordDeallocation(bytes int64) {
-	atomic.AddInt64(&rm.freedBytes, bytes)
-}
-
-// RecordPoolHit records a pool cache hit
-func (rm *resourceMonitor) recordPoolHit() {
-	atomic.AddInt64(&rm.poolHits, 1)
-}
-
-// RecordPoolMiss records a pool cache miss
-func (rm *resourceMonitor) recordPoolMiss() {
-	atomic.AddInt64(&rm.poolMisses, 1)
-}
-
-// RecordPoolEviction records a pool eviction
-func (rm *resourceMonitor) recordPoolEviction() {
-	atomic.AddInt64(&rm.poolEvictions, 1)
-}
-
-// RecordOperation records an operation with its duration.
-// FIX: Limited CAS retries to prevent unbounded loops under high contention.
-// After maxCASRetries, we accept a slightly stale average for better throughput.
-func (rm *resourceMonitor) recordOperation(duration time.Duration) {
-	atomic.AddInt64(&rm.totalOperations, 1)
-
-	newTime := duration.Nanoseconds()
-	const maxCASRetries = 3
-
-	for range maxCASRetries {
-		oldAvg := atomic.LoadInt64(&rm.avgResponseTime)
-		newAvg := oldAvg + (newTime-oldAvg)/10
-		if atomic.CompareAndSwapInt64(&rm.avgResponseTime, oldAvg, newAvg) {
-			return
-		}
-	}
-	// After maxCASRetries, accept slightly stale average — acceptable for monitoring
-}
-
-// CheckForLeaks checks for potential resource leaks.
-// FIX: Limited CAS retries to prevent unbounded loops under high contention.
-func (rm *resourceMonitor) checkForLeaks() []string {
-	const maxCASRetries = 3
-
-	// Try to update lastLeakCheck timestamp via CAS; proceed if interval elapsed.
-	casSucceeded := false
-	for range maxCASRetries {
-		now := time.Now().Unix()
-		lastCheck := atomic.LoadInt64(&rm.lastLeakCheck)
-
-		if now-lastCheck < rm.leakCheckInterval {
-			return nil
-		}
-
-		if atomic.CompareAndSwapInt64(&rm.lastLeakCheck, lastCheck, now) {
-			casSucceeded = true
-			break
-		}
-		// CAS failed - another goroutine updated, retry with fresh values
-	}
-	// After maxCASRetries without successful CAS, another goroutine won and will run the check.
-	if !casSucceeded {
-		return nil
-	}
-
-	var issues []string
-
-	allocated := atomic.LoadInt64(&rm.allocatedBytes)
-	freed := atomic.LoadInt64(&rm.freedBytes)
-	netMemory := allocated - freed
-
-	if netMemory > highMemoryThreshold {
-		issues = append(issues, "High memory usage detected")
-	}
-
-	currentGoroutines := int64(runtime.NumGoroutine())
-	atomic.StoreInt64(&rm.currentGoroutines, currentGoroutines)
-
-	maxGoroutines := atomic.LoadInt64(&rm.maxGoroutines)
-	if currentGoroutines > maxGoroutines {
-		atomic.StoreInt64(&rm.maxGoroutines, currentGoroutines)
-	}
-
-	if currentGoroutines > highGoroutineThreshold {
-		issues = append(issues, "High goroutine count detected")
-	}
-
-	hits := atomic.LoadInt64(&rm.poolHits)
-	misses := atomic.LoadInt64(&rm.poolMisses)
-
-	if hits+misses > minPoolOperationsForEfficiencyCheck && hits < misses {
-		issues = append(issues, "Poor pool cache efficiency")
-	}
-
-	return issues
-}
-
-// Reset resets all resource statistics.
-// NOTE: Not thread-safe — each field is stored atomically but the reset as a whole
-// is not atomic. Use only in tests or single-goroutine teardown contexts.
-func (rm *resourceMonitor) reset() {
-	atomic.StoreInt64(&rm.allocatedBytes, 0)
-	atomic.StoreInt64(&rm.freedBytes, 0)
-	atomic.StoreInt64(&rm.peakMemoryUsage, 0)
-	atomic.StoreInt64(&rm.poolHits, 0)
-	atomic.StoreInt64(&rm.poolMisses, 0)
-	atomic.StoreInt64(&rm.poolEvictions, 0)
-	atomic.StoreInt64(&rm.maxGoroutines, 0)
-	atomic.StoreInt64(&rm.currentGoroutines, 0)
-	atomic.StoreInt64(&rm.avgResponseTime, 0)
-	atomic.StoreInt64(&rm.totalOperations, 0)
-	atomic.StoreInt64(&rm.lastLeakCheck, time.Now().Unix())
-}
-
 // Schema represents a JSON schema for validation.
 // Supports a subset of JSON Schema Draft 7 for validating JSON structures.
 //
@@ -787,8 +605,13 @@ type Schema struct {
 	hasMaxItems  bool
 
 	// compiledPattern is the lazily pre-compiled regex for Pattern.
+	// patternOnce serializes the one-time compile so a shared *Schema is safe for
+	// concurrent validation; patternErr caches a compile failure so it can be
+	// re-reported on every validation. (*regexp.Regexp).MatchString is itself
+	// goroutine-safe, so only the compile step needs guarding.
 	compiledPattern *regexp.Regexp
-	patternCompiled bool
+	patternOnce     sync.Once
+	patternErr      error
 }
 
 // ValidationError represents a schema validation error.
@@ -842,7 +665,9 @@ type Result[T any] struct {
 func (r Result[T]) Ok() bool { return r.Error == nil && r.Exists }
 
 // Unwrap returns the value or zero value if there's an error or value doesn't exist.
-// For panic behavior, use Must() instead.
+// It never panics (SEC-003): on error or missing path it returns the zero value of T.
+// To distinguish a genuine zero value from a missing/error case, inspect the Error
+// and Exists fields directly, or use UnwrapOr to supply a default.
 func (r Result[T]) Unwrap() T {
 	if r.Error != nil || !r.Exists {
 		var zero T

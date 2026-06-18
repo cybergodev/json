@@ -329,7 +329,7 @@ func (p *Processor) logError(ctx context.Context, operation, path string, err er
 		slog.Int64("error_count", atomic.LoadInt64(&p.metrics.errorCount)),
 		slog.String("processor_id", p.getProcessorID()),
 		slog.Bool("cache_enabled", p.config.EnableCache),
-		slog.Int64("concurrent_ops", atomic.LoadInt64(&p.metrics.operationCount)),
+		slog.Int64("concurrent_ops", atomic.LoadInt64(&p.metrics.concurrentOps)),
 	)
 }
 

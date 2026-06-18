@@ -54,7 +54,7 @@ These are backward-compatible: existing call sites compile without changes. Howe
 | `(*Encoder).SetIndent(prefix, indent string)` | ✅      | Same indentation control   |
 | `(*Decoder).Decode(v any) error`              | ✅      | Same decoding behavior     |
 | `(*Decoder).UseNumber()`                      | ✅      | Same number handling       |
-| `(*Decoder).DisallowUnknownFields()`          | ✅      | Fully functional; delegates to `encoding/json` Decoder internally |
+| `(*Decoder).DisallowUnknownFields()`          | ✅      | Fully functional; implemented in this package's own streaming Decoder (not a wrapper around `encoding/json`) |
 | `(*Decoder).More() bool`                      | ✅      | Same stream state checking |
 | `(*Decoder).Token() (Token, error)`           | ✅      | Same token parsing         |
 | `(*Decoder).Buffered() io.Reader`             | ✅      | Same buffer access         |

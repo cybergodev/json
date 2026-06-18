@@ -148,6 +148,10 @@ func (mc *MetricsCollector) GetMetrics() Metrics {
 		}
 		return true
 	})
+	// Read startTime under the same RLock that guards Reset()'s write to it.
+	// time.Time is a multi-word struct; reading it without synchronization races
+	// with Reset()'s assignment and can produce a torn read (DATA RACE).
+	uptime := time.Since(mc.startTime)
 	mc.errorsMu.RUnlock()
 
 	metrics := Metrics{
@@ -165,7 +169,7 @@ func (mc *MetricsCollector) GetMetrics() Metrics {
 		CurrentMemoryUsage:   atomic.LoadInt64(&mc.cumulativeMemoryUsage),
 		ActiveConcurrentOps:  atomic.LoadInt64(&mc.activeConcurrentOps),
 		MaxConcurrentOps:     atomic.LoadInt64(&mc.maxConcurrentOps),
-		Uptime:               time.Since(mc.startTime),
+		Uptime:               uptime,
 		ErrorsByType:         errorsByType,
 	}
 
@@ -192,11 +196,13 @@ func (mc *MetricsCollector) Reset() {
 	atomic.StoreInt64(&mc.cumulativeMemoryUsage, 0)
 	atomic.StoreInt64(&mc.activeConcurrentOps, 0)
 	atomic.StoreInt64(&mc.maxConcurrentOps, 0)
-	// Atomically replace errorsByType to prevent race with concurrent RecordError
+	// Replace errorsByType and startTime atomically. GetMetrics() reads both
+	// under errorsMu.RLock(), so the writes must occur under the matching Lock
+	// to avoid a torn read of the multi-word time.Time (DATA RACE).
 	mc.errorsMu.Lock()
 	mc.errorsByType = sync.Map{}
-	mc.errorsMu.Unlock()
 	mc.startTime = time.Now()
+	mc.errorsMu.Unlock()
 }
 
 // GetSummary returns a formatted summary of metrics

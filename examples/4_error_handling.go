@@ -90,7 +90,7 @@ func demonstrateErrorClassification() {
 		{"Path not found", json.ErrPathNotFound},
 		{"Type mismatch", json.ErrTypeMismatch},
 		{"Security violation", json.ErrSecurityViolation},
-		{"Operation timeout", json.ErrOperationTimeout},
+		{"Size limit", json.ErrSizeLimit},
 	}
 
 	fmt.Println("   Error classification results:")
@@ -99,7 +99,9 @@ func demonstrateErrorClassification() {
 		isUser := errors.Is(tc.err, json.ErrInvalidJSON) || errors.Is(tc.err, json.ErrPathNotFound) ||
 			errors.Is(tc.err, json.ErrTypeMismatch) || errors.Is(tc.err, json.ErrInvalidPath) ||
 			errors.Is(tc.err, json.ErrUnsupportedPath)
-		isRetryable := errors.Is(tc.err, json.ErrOperationTimeout) || errors.Is(tc.err, json.ErrConcurrencyLimit)
+		// Retryable: the caller can raise a Config limit (MaxJSONSize /
+		// MaxNestingDepthSecurity) and retry the same input successfully.
+		isRetryable := errors.Is(tc.err, json.ErrSizeLimit) || errors.Is(tc.err, json.ErrDepthLimit)
 
 		fmt.Printf("   [%s]\n", tc.name)
 		fmt.Printf("     Security-related: %t\n", isSecurity)
@@ -140,23 +142,28 @@ func demonstrateRetryLogic() {
 	fmt.Println("\n4. Retry Logic")
 	fmt.Println("---------------")
 
-	// Simulate errors and check retry ability
+	// This library is synchronous and local, so a true "transient fault" rarely
+	// occurs. "Retryable" here means the caller can change something and try
+	// again: size/depth limits are configurable — raise them in Config and retry
+	// the same input. Malformed input, a missing path, or a security violation
+	// is permanent and will not succeed no matter how many times it is retried.
 	testErrors := []struct {
 		name string
 		err  error
 	}{
-		{"Timeout error", json.ErrOperationTimeout},
-		{"Concurrency limit", json.ErrConcurrencyLimit},
 		{"Invalid JSON", json.ErrInvalidJSON},
 		{"Path not found", json.ErrPathNotFound},
+		{"Size limit", json.ErrSizeLimit},
+		{"Depth limit", json.ErrDepthLimit},
+		{"Security violation", json.ErrSecurityViolation},
 	}
 
 	fmt.Println("   Retry decision for each error:")
 	for _, test := range testErrors {
-		retryable := errors.Is(test.err, json.ErrOperationTimeout) || errors.Is(test.err, json.ErrConcurrencyLimit)
-		action := "Skip retry"
-		if retryable {
-			action = "Attempt retry"
+		configurable := errors.Is(test.err, json.ErrSizeLimit) || errors.Is(test.err, json.ErrDepthLimit)
+		action := "Skip retry (permanent)"
+		if configurable {
+			action = "Retry with raised Config limit"
 		}
 		fmt.Printf("   [%s]: %s\n", test.name, action)
 	}

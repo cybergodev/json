@@ -4,6 +4,56 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.4.3 - Performance, Quality, Security & Concurrency Improvements (2026-06-19)
+
+### Breaking Changes
+
+- None — no exported symbol removed or signature changed; fully backward compatible
+
+### Fixed
+
+- `Schema.Pattern` lazy-compile data race serialized via `sync.Once`; a shared `*Schema` validated concurrently no longer races
+- `validateIPv6Format` accepts zero-compressed IPv6 (`fe80::1`, `2001:db8::1`); the hand-rolled regex previously rejected every `::` form, now delegates to `net.ParseIP`
+- `SetMultiple` invalidates the JSON cache before marshalling (matches `Set`), preventing stale Get/parse results for the same input
+- `Delete` returns the original `jsonStr` on failure instead of `""`, honoring the documented "input unchanged" contract
+- `SkipValidation` still validates path syntax — `arr[xyz]` is rejected instead of coerced to index 0
+- JSON Pointer out-of-bounds array set returns a clear error instead of silently dropping the value
+- `Foreach`/`ForeachWithPath`/`ForeachNested` and error-returning variants deep-copy the `Get()` result before iterating; a mutation callback could previously corrupt the cached parse object (a data race under concurrency)
+- `MetricsCollector.Reset()`/`GetMetrics()` no longer race on the multi-word `startTime`; torn reads corrupting `Uptime` fixed
+- Document get/parse/encode cache hash now covers the full document (was sampled on >4KB docs, colliding and serving one document's cached result for another)
+- On config-processor-cache contention, `getProcessorWithConfig` returns a freshly-built processor uncached instead of failing the caller's Get/Set/Parse/JSONL operation (the cache is an optimization and must never break user-facing calls)
+- `Close()` no longer drains the shared concurrency semaphore (could steal an in-flight op's release token → shutdown hang); tracks in-flight ops via an atomic counter and preserves resources on timeout instead of tearing down mid-flight ops
+- `asyncCloseProcessor` goroutine leak fixed; `maybeEvictConfigCache` releases the cache lock before the async close send (was stalling every config-based call under churn)
+- `SetGlobalProcessor`/`ShutdownGlobalProcessor` now swap under the global lock and close the old processor outside it; `Break()` on the parallel `StreamJSONL` path now stops other workers (stop signal was lost)
+- `CustomTypeEncoders`/`CustomValidators` config-cache hash made deterministic (was iterating a map in random order and collapsing encoder identity to a bool)
+- `logError` "concurrent_ops" field now loads the correct counter
+
+### Security
+
+- Array extension by a huge index (e.g. `"/a/99999999"`, `"a[0:999999999]"`) is now bounded (`maxArrayExtension = 1,000,000`) in both dot-notation and JSON Pointer paths — previously called `make([]any, index+1)`, risking OOM
+- Validation cache no longer trusts the non-cryptographic FNV hash as identity: it compares the exact validated input before skipping checks (a hash collision previously skipped all UTF-8/BOM/structure/security checks)
+- `RedactedPath` masks every non-empty path to `"***"` (was leaking the first/last 8 bytes of paths longer than 32)
+
+### Performance
+
+- Defensive deep copy of cached `Get()` results no longer re-boxes immutable leaves; cached array/object Get ~97% fewer allocs (~20% faster), cached `Get(".")` on a 1000-element array ~67% fewer allocs
+- Cache read-path LRU write-lock contention cut via an adaptive `MoveToFront` interval; `Concurrent_Get` ~2× faster (~530 → ~260 ns/op), eviction quality preserved
+- Validation cache key changed to a fixed-size struct, eliminating a ~50 B per-operation string allocation on every validated Get/Set/Delete
+- Governed-op lifecycle (`beginGovernedOp`/`endGovernedOp`) halves closure allocations; the concurrency semaphore moved from a buffered channel to an atomic counter; default-config detection uses pointer identity — `Concurrent_Get` 2→1 allocs/op, `Set`/`Delete` ~13% fewer allocs
+
+### Changed
+
+- `EncodeBatch`/`EncodeFields`/`EncodeStream`/`SaveToFile`/`MarshalToFile`/`SaveToWriter` now honor `SetGlobalProcessor` (unified package-level delegation path) — previously bypassed the caller's global processor and its hooks/metrics
+- GoDoc: documented exported error conditions across `Marshal`/`Unmarshal`/`Encode*`/`ValidateSchema`/JSONL/iterator/file/helper APIs; filled missing comments
+- `DefaultMaxDepth` (100) and `maxArrayExtension` (1,000,000) extracted as named constants referenced by `DefaultConfig`/`ValidateWithWarnings`
+- Examples reviewed: error-handling retry logic uses the real configurable errors (`ErrSizeLimit`/`ErrDepthLimit`) instead of reserved/deprecated ones; path-validation demo classifies actual errors; counter renamed and dead switch cases removed
+
+### Removed
+
+- Dead internal code only (no public API impact): the unused `bulkProcessor`/`decoderPool` subsystem (~200 lines), the `resourceMonitor` subsystem, the `encoderConfig` interface + accessors, ~17 test-only Config accessors, dead helpers (`isValidPath`, `safeConvert*` wrappers, `formatNumber`, `internKey`), and unused hash variants
+
+---
+
 ## v1.4.2 - Performance, Quality & Security Improvements (2026-05-14)
 
 ### Added

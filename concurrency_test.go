@@ -37,7 +37,7 @@ func TestConcurrentCacheSafety(t *testing.T) {
 			iterations:  100,
 			workload: func(_, _ int) error {
 				for _, key := range []string{"id", "name", "value", "timestamp", "metadata"} {
-					internKey(key)
+					internal.GlobalKeyIntern.Intern(key)
 				}
 				return nil
 			},

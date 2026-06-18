@@ -15,6 +15,13 @@ func (p *Processor) Foreach(jsonStr string, fn func(key any, item *IterableValue
 		return
 	}
 
+	// Deep copy to prevent mutation callbacks from corrupting cached parse data:
+	// on a cache miss Get returns the cached object itself (see ForeachReturn).
+	// On the unreachable copy-failure path, fall back to the original.
+	if dataCopy, copyErr := deepCopySubtree(data); copyErr == nil {
+		data = dataCopy
+	}
+
 	foreachWithIterableValue(data, fn)
 }
 
@@ -30,7 +37,13 @@ func (p *Processor) ForeachWithPath(jsonStr, path string, fn func(key any, item 
 		return err
 	}
 
-	foreachWithIterableValue(data, fn)
+	// Deep copy to prevent mutation callbacks from corrupting cached parse data.
+	dataCopy, copyErr := deepCopySubtree(data)
+	if copyErr != nil {
+		return copyErr
+	}
+
+	foreachWithIterableValue(dataCopy, fn)
 	return nil
 }
 
@@ -45,7 +58,13 @@ func (p *Processor) ForeachWithPathAndIterator(jsonStr, path string, fn func(key
 		return err
 	}
 
-	return foreachWithPathIterableValue(data, "", fn)
+	// Deep copy to prevent mutation callbacks from corrupting cached parse data.
+	dataCopy, copyErr := deepCopySubtree(data)
+	if copyErr != nil {
+		return copyErr
+	}
+
+	return foreachWithPathIterableValue(dataCopy, "", fn)
 }
 
 // ForeachWithPathAndControl iterates with control over iteration flow
@@ -59,7 +78,13 @@ func (p *Processor) ForeachWithPathAndControl(jsonStr, path string, fn func(key 
 		return err
 	}
 
-	return foreachOnValue(data, fn)
+	// Deep copy to prevent mutation callbacks from corrupting cached parse data.
+	dataCopy, copyErr := deepCopySubtree(data)
+	if copyErr != nil {
+		return copyErr
+	}
+
+	return foreachOnValue(dataCopy, fn)
 }
 
 // ForeachReturn iterates over JSON arrays or objects and returns the modified JSON string.
@@ -103,6 +128,11 @@ func (p *Processor) ForeachNested(jsonStr string, fn func(key any, item *Iterabl
 		return
 	}
 
+	// Deep copy to prevent mutation callbacks from corrupting cached parse data.
+	if dataCopy, copyErr := deepCopySubtree(data); copyErr == nil {
+		data = dataCopy
+	}
+
 	foreachNestedOnValue(data, fn)
 }
 
@@ -130,7 +160,13 @@ func (p *Processor) ForeachWithError(jsonStr, path string, fn func(key any, item
 		return err
 	}
 
-	return foreachWithIterableValueError(data, fn)
+	// Deep copy to prevent mutation callbacks from corrupting cached parse data.
+	dataCopy, copyErr := deepCopySubtree(data)
+	if copyErr != nil {
+		return copyErr
+	}
+
+	return foreachWithIterableValueError(dataCopy, fn)
 }
 
 // ForeachNestedWithError recursively iterates over all nested JSON structures with error-returning callback.
@@ -151,7 +187,13 @@ func (p *Processor) ForeachNestedWithError(jsonStr string, fn func(key any, item
 		return err
 	}
 
-	return foreachNestedOnValueError(data, fn)
+	// Deep copy to prevent mutation callbacks from corrupting cached parse data.
+	dataCopy, copyErr := deepCopySubtree(data)
+	if copyErr != nil {
+		return copyErr
+	}
+
+	return foreachNestedOnValueError(dataCopy, fn)
 }
 
 // ============================================================================

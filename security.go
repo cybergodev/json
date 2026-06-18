@@ -3,7 +3,6 @@ package json
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -319,7 +318,18 @@ var sensitivePatterns = []string{
 // SECURITY FIX: Track access time for better cache management
 type validationCacheEntry struct {
 	validated  bool
-	lastAccess int64 // Unix timestamp for LRU eviction
+	lastAccess int64  // Unix timestamp for LRU eviction
+	input      string // exact validated input; compared on hit to defeat hash collisions
+}
+
+// validationKey is the map key for the validation cache. It is a fixed-size,
+// comparable value (length + two independent FNV-1a hashes), so constructing it
+// allocates nothing — unlike the previous "len:h1:h2" string key, which
+// allocated ~50 bytes on every operation.
+type validationKey struct {
+	length int
+	h1     uint64
+	h2     uint64
 }
 
 // securityValidator provides comprehensive security validation for JSON processing.
@@ -331,7 +341,7 @@ type securityValidator struct {
 	disableDefaultPatterns bool
 	// Composed validators for separation of concerns
 	// Cache for validation results
-	validationCache map[string]*validationCacheEntry
+	validationCache map[validationKey]*validationCacheEntry
 	cacheMutex      sync.RWMutex
 }
 
@@ -343,7 +353,7 @@ func newSecurityValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int,
 		maxNestingDepth:        maxNestingDepth,
 		fullSecurityScan:       fullSecurityScan,
 		disableDefaultPatterns: disableDefaultPatterns,
-		validationCache:        make(map[string]*validationCacheEntry, 256),
+		validationCache:        make(map[validationKey]*validationCacheEntry, 256),
 	}
 	return sv
 }
@@ -426,53 +436,35 @@ func (sv *securityValidator) ValidateJSONInput(jsonStr string) error {
 	}
 
 	// Cache the successful validation - PERFORMANCE: Use pre-computed cache key
-	sv.cacheValidationWithKey(cacheKey)
+	sv.cacheValidationWithKey(cacheKey, jsonStr)
 
 	return nil
 }
 
 // getValidationCacheKey computes and returns the cache key for a JSON string.
-// PERFORMANCE v2: Uses FNV-1a (~2ns) instead of SHA-256 (~100ns) for ~50x speedup.
+// PERFORMANCE: Uses FNV-1a (~2ns) instead of SHA-256 (~100ns) for ~50x speedup.
 // The cache is internal-only (not exposed to callers), so FNV-1a's collision
 // resistance is sufficient — a collision simply means a redundant validation.
-// SECURITY: Key format "len:fnv1a:fnv1a_b" combines length + two independent
-// FNV hashes (different seeds) to reduce collision probability below 2^-64.
-func (sv *securityValidator) getValidationCacheKey(jsonStr string) string {
-	strLen := len(jsonStr)
+// SECURITY: The validationKey combines length + two independent FNV hashes
+// (different seeds) to reduce collision probability below 2^-64. Returning a
+// fixed-size struct (rather than a formatted "len:h1:h2" string) avoids a per-op
+// heap allocation in the hot path.
+func (sv *securityValidator) getValidationCacheKey(jsonStr string) validationKey {
 	b := internal.StringToBytes(jsonStr)
 
 	// Two independent FNV-1a hashes for strong collision resistance
-	h1 := internal.HashBytesFNV1a(b)
-	h2 := internal.HashBytesFNV1aOffset(b)
-
-	// Build key: "len:h1:h2" — up to ~55 bytes
-	var buf [64]byte
-	lenBytes := strconv.AppendInt(buf[:0], int64(strLen), 10)
-	pos := len(lenBytes)
-	buf[pos] = ':'
-	pos++
-
-	const hexChars = "0123456789abcdef"
-	for i := 0; i < 16; i++ {
-		buf[pos] = hexChars[h1>>60]
-		h1 <<= 4
-		pos++
+	return validationKey{
+		length: len(jsonStr),
+		h1:     internal.HashBytesFNV1a(b),
+		h2:     internal.HashBytesFNV1aOffset(b),
 	}
-	buf[pos] = ':'
-	pos++
-	for i := 0; i < 16; i++ {
-		buf[pos] = hexChars[h2>>60]
-		h2 <<= 4
-		pos++
-	}
-	return string(buf[:pos])
 }
 
 // isValidationCached checks if JSON string was previously validated successfully
 // PERFORMANCE: Returns the cache key for reuse in cacheValidation to avoid double hash computation
 // RACE-FIX: Access time is not updated in read lock to avoid data race.
 // The LRU eviction still works correctly with occasional access time updates during Set operations.
-func (sv *securityValidator) isValidationCached(jsonStr string) (string, bool) {
+func (sv *securityValidator) isValidationCached(jsonStr string) (validationKey, bool) {
 	// Compute cache key once
 	cacheKey := sv.getValidationCacheKey(jsonStr)
 
@@ -488,13 +480,21 @@ func (sv *securityValidator) isValidationCached(jsonStr string) (string, bool) {
 	// The access time will be updated when the entry is re-validated or during eviction
 	sv.cacheMutex.RUnlock()
 
-	return cacheKey, cached && entry.validated
+	if !cached || !entry.validated {
+		return cacheKey, false
+	}
+	// SECURITY: the cache key is a non-cryptographic FNV hash pair and is therefore
+	// collision-constructible. A hash collision must NOT be trusted as "already
+	// validated" — compare the exact input before skipping any security checks.
+	return cacheKey, entry.input == jsonStr
 }
 
 // cacheValidationWithKey marks a JSON string as successfully validated using a pre-computed key
 // PERFORMANCE: Accepts pre-computed cache key to avoid double hash computation for large JSON
 // SECURITY FIX: Uses LRU-style eviction at 80% capacity to prevent memory spikes
-func (sv *securityValidator) cacheValidationWithKey(cacheKey string) {
+// SECURITY: Stores the exact validated input so isValidationCached can reject hash
+// collisions instead of trusting a non-cryptographic FNV key as identity.
+func (sv *securityValidator) cacheValidationWithKey(cacheKey validationKey, jsonStr string) {
 	sv.cacheMutex.Lock()
 	defer sv.cacheMutex.Unlock()
 
@@ -512,6 +512,7 @@ func (sv *securityValidator) cacheValidationWithKey(cacheKey string) {
 	sv.validationCache[cacheKey] = &validationCacheEntry{
 		validated:  true,
 		lastAccess: time.Now().Unix(),
+		input:      jsonStr,
 	}
 }
 
@@ -524,7 +525,7 @@ func (sv *securityValidator) evictLRUEntries() {
 
 	// Collect all entries with their access times
 	type entryWithTime struct {
-		key        string
+		key        validationKey
 		lastAccess int64
 	}
 

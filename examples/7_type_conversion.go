@@ -175,8 +175,10 @@ func demonstrateNumberHandling() {
 	if f, err := num.Float64(); err == nil {
 		fmt.Printf("   Number.Float64(): %.5f\n", f)
 	}
+	// Int64() parses only integer literals; a fractional value is rejected
+	// rather than truncated, so callers can detect the precision loss.
 	if i, err := num.Int64(); err != nil {
-		fmt.Printf("   Number.Int64():   (truncates, error: %v)\n", err)
+		fmt.Printf("   Number.Int64():   error (not an integer): %v\n", err)
 	} else {
 		fmt.Printf("   Number.Int64():   %d\n", i)
 	}

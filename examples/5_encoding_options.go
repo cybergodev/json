@@ -14,7 +14,7 @@ import (
 // Learn about custom escaping, key sorting, number precision, and more.
 //
 // Topics covered:
-// - Custom encoding with EncodeConfig
+// - Custom encoding with Config
 // - HTML escaping control
 // - Key sorting for consistent output
 // - Float precision control

@@ -122,6 +122,13 @@ func NewEncoder(w io.Writer, cfg ...Config) *Encoder {
 //
 // See the documentation for Marshal for details about the
 // conversion of Go values to JSON.
+//
+// Errors:
+//   - UnsupportedTypeError: v contains a value of an unsupported type
+//   - UnsupportedValueError: v contains a value that cannot be represented in JSON
+//   - MarshalerError: a MarshalJSON/MarshalText method returned an error
+//   - ErrSizeLimit: the encoded output exceeds MaxJSONSize
+//   - any error returned while writing to the underlying stream
 func (enc *Encoder) Encode(v any) error {
 	var newline = []byte{'\n'}
 	// Get the current processor on each Encode call to avoid stale references
@@ -258,6 +265,15 @@ func NewDecoder(r io.Reader, cfg ...Config) *Decoder {
 }
 
 // Decode reads the next JSON-encoded value from its input and stores it in v.
+//
+// Errors:
+//   - InvalidUnmarshalError: v is nil or not a non-nil pointer
+//   - ErrInvalidJSON: the input is not valid JSON
+//   - UnmarshalTypeError: a JSON value does not match the target Go type
+//   - ErrProcessorClosed: the default processor has been closed
+//   - io.EOF: when there are no more values at the end of the stream
+//   - any error returned while reading the stream, or if a single value
+//     exceeds the configured MaxJSONSize or nesting-depth limit
 func (dec *Decoder) Decode(v any) error {
 	// Get the current processor on each Decode call to avoid stale references.
 	processor := getDefaultProcessor()
@@ -860,6 +876,12 @@ func needsCustomEncodingOpts(cfg Config) bool {
 // Marshal converts any Go value to JSON bytes (similar to json.Marshal)
 // PERFORMANCE: Uses FastEncoder for simple types to avoid reflection overhead.
 // Uses encodeWithConfigToBytes for complex types to avoid string round-trip.
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func (p *Processor) Marshal(value any, cfg ...Config) ([]byte, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
@@ -881,6 +903,12 @@ func (p *Processor) Marshal(value any, cfg ...Config) ([]byte, error) {
 }
 
 // MarshalIndent converts any Go value to indented JSON bytes (similar to json.MarshalIndent)
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func (p *Processor) MarshalIndent(value any, prefix, indent string, cfg ...Config) ([]byte, error) {
 	encOpts := DefaultConfig()
 	if len(cfg) > 0 {
@@ -897,6 +925,12 @@ func (p *Processor) MarshalIndent(value any, prefix, indent string, cfg ...Confi
 // Unmarshal parses the JSON-encoded data and stores the result in the value pointed to by v.
 // This method is fully compatible with encoding/json.Unmarshal.
 // PERFORMANCE: Fast path for simple cases to avoid string conversion overhead.
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - InvalidUnmarshalError: value is nil or not a non-nil pointer
+//   - ErrInvalidJSON: data is not valid JSON
+//   - UnmarshalTypeError: a JSON value does not match the target Go type
 func (p *Processor) Unmarshal(data []byte, value any, cfg ...Config) error {
 	if err := p.checkClosed(); err != nil {
 		return err
@@ -925,6 +959,12 @@ func (p *Processor) Unmarshal(data []byte, value any, cfg ...Config) error {
 // Example:
 //
 //	result, err := processor.EncodeStream(values, json.PrettyConfig())
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: values cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func (p *Processor) EncodeStream(values any, cfg ...Config) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return "", err
@@ -939,6 +979,12 @@ func (p *Processor) EncodeStream(values any, cfg ...Config) (string, error) {
 // Example:
 //
 //	result, err := processor.EncodeBatch(pairs, json.PrettyConfig())
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: pairs cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func (p *Processor) EncodeBatch(pairs map[string]any, cfg ...Config) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return "", err
@@ -953,6 +999,13 @@ func (p *Processor) EncodeBatch(pairs map[string]any, cfg ...Config) (string, er
 // Example:
 //
 //	result, err := processor.EncodeFields(value, []string{"name", "email"}, json.PrettyConfig())
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - ErrInvalidJSON: value cannot be parsed into an object
+//   - ErrTypeMismatch: value is not a JSON object, so its fields cannot be filtered
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
 func (p *Processor) EncodeFields(value any, fields []string, cfg ...Config) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return "", err
@@ -1014,6 +1067,12 @@ func (p *Processor) EncodeFields(value any, fields []string, cfg ...Config) (str
 //
 //	// With preset configuration
 //	result, err := processor.EncodeWithConfig(data, json.PrettyConfig())
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func (p *Processor) EncodeWithConfig(value any, cfg ...Config) (string, error) {
 	b, err := p.encodeWithConfigToBytes(value, cfg...)
 	if err != nil {
@@ -1166,6 +1225,8 @@ func fastEncodeSimpleToBytes(value any) ([]byte, bool) {
 
 // Encode converts any Go value to JSON string
 // This is a convenience method that matches the package-level Encode signature
+//
+// Errors: see EncodeWithConfig.
 func (p *Processor) Encode(value any, config ...Config) (string, error) {
 	var cfg Config
 	if len(config) > 0 {
@@ -1178,6 +1239,8 @@ func (p *Processor) Encode(value any, config ...Config) (string, error) {
 
 // EncodePretty converts any Go value to pretty-formatted JSON string
 // This is a convenience method that matches the package-level EncodePretty signature
+//
+// Errors: see EncodeWithConfig.
 func (p *Processor) EncodePretty(value any, config ...Config) (string, error) {
 	var cfg Config
 	if len(config) > 0 {

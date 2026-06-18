@@ -200,6 +200,12 @@ func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error) {
 //
 //	var buf bytes.Buffer
 //	err := processor.CompactBuffer(&buf, []byte(`{"name": "Alice"}`))
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - ErrInvalidJSON: src is not valid JSON
+//   - ErrSizeLimit: src exceeds MaxJSONSize
+//   - any error returned while writing to dst
 func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) error {
 	compacted, err := p.Compact(string(src), cfg...)
 	if err != nil {
@@ -216,6 +222,15 @@ func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) 
 //
 //	var buf bytes.Buffer
 //	err := processor.Indent(&buf, []byte(`{"name":"Alice"}`), "", "  ")
+//
+// Errors:
+//   - ErrProcessorClosed: processor has been closed
+//   - ErrInvalidJSON: src is not valid JSON
+//   - UnmarshalTypeError: a JSON value does not match the intermediate Go type
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
+//   - ErrSizeLimit: input or output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
+//   - any error returned while writing to dst
 func (p *Processor) Indent(dst *bytes.Buffer, src []byte, prefix, indent string, cfg ...Config) error {
 	var data any
 	if err := p.Unmarshal(src, &data, cfg...); err != nil {

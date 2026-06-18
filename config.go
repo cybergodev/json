@@ -11,11 +11,6 @@ import (
 
 // Configuration constants with optimized defaults for production workloads.
 const (
-	// Buffer and Pool Sizes - Optimized for production workloads (internal)
-	defaultBufferSize = 1024
-	maxPoolBufferSize = 32768 // 32KB max for better buffer reuse
-	minPoolBufferSize = 256   // 256B min for efficiency
-
 	// Cache Sizes - Balanced for performance and memory (internal)
 	defaultCacheSize = 128
 
@@ -33,6 +28,18 @@ const (
 	// Limits the number of segments in a path like "a.b.c.d...".
 	// Adjust via Config.MaxPathDepth if needed.
 	DefaultMaxPathDepth = 50
+
+	// DefaultMaxDepth is the default JSON encoding/decoding nesting depth (100).
+	// Used by Config.MaxDepth. Aligns with the internal.ValidatePath array-index
+	// cap so that path-derived allocations stay bounded.
+	DefaultMaxDepth = 100
+
+	// maxArrayExtension is the largest array length that Set/CreatePaths may
+	// allocate in a single extension (e.g. Set(`{"a":[]}`, "a/99999999", v)).
+	// SECURITY/STABILITY: bounds memory amplification from user-supplied indices
+	// on paths that bypass full validation (SkipValidation, *FromParsed).
+	// Matches internal.ValidatePath's maxArrayIndex policy.
+	maxArrayExtension = 1000000
 
 	// DefaultMaxConcurrency is the maximum concurrent operations (50).
 	// Limits parallel operations to prevent resource exhaustion.
@@ -62,16 +69,8 @@ const (
 	// Timing and Intervals - Optimized for responsiveness (internal)
 	slowOperationThreshold = 100 * time.Millisecond
 
-	// Retry and Timeout - Production-ready settings (internal)
-	defaultOperationTimeout = 30 * time.Second
-
 	// Processor lifecycle timeouts (internal)
 	closeOperationTimeout = 5 * time.Second // Timeout waiting for active operations during Close()
-	semaphoreDrainTimeout = 1 * time.Second // Timeout for draining concurrency semaphore
-
-	// largeStringHashThreshold is the byte threshold for using sampling-based hash.
-	// Internal constant for hash optimization.
-	largeStringHashThreshold = internal.LargeStringHashThreshold
 
 	// maxPathLength is the maximum allowed path string length.
 	// Paths longer than this will be rejected for security reasons.
@@ -134,7 +133,7 @@ func DefaultConfig() Config {
 		EscapeHTML:      true,
 		SortKeys:        false,
 		ValidateUTF8:    true,
-		MaxDepth:        100,
+		MaxDepth:        DefaultMaxDepth,
 		DisallowUnknown: false,
 		FloatPrecision:  -1,
 		FloatTruncate:   false,
@@ -376,10 +375,10 @@ func (c *Config) ValidateWithWarnings() []ConfigWarning {
 		warnings = append(warnings, ConfigWarning{
 			Field:    "MaxDepth",
 			OldValue: c.MaxDepth,
-			NewValue: 100,
+			NewValue: DefaultMaxDepth,
 			Reason:   "value out of valid range [0, 1000]",
 		})
-		c.MaxDepth = 100
+		c.MaxDepth = DefaultMaxDepth
 	}
 	// SEMANTIC: FloatPrecision uses -1 as sentinel for "default precision"
 	// Range [-1, 15] where -1=auto, 0-15=explicit precision
@@ -411,48 +410,6 @@ func (c *Config) ValidateWithWarnings() []ConfigWarning {
 
 	return warnings
 }
-
-// Config accessor methods.
-
-// Internal accessor methods for cache configuration.
-// Users should access Config fields directly (e.g., cfg.EnableCache, cfg.MaxCacheSize, cfg.CacheTTL).
-func (c *Config) isCacheEnabled() bool       { return c.EnableCache }
-func (c *Config) getMaxCacheSize() int       { return c.MaxCacheSize }
-func (c *Config) getCacheTTL() time.Duration { return c.CacheTTL }
-
-// Internal accessor methods.
-// Users should access Config fields directly (e.g., cfg.MaxJSONSize).
-func (c *Config) getMaxJSONSize() int64        { return c.MaxJSONSize }
-func (c *Config) getMaxPathDepth() int         { return c.MaxPathDepth }
-func (c *Config) getMaxConcurrency() int       { return c.MaxConcurrency }
-func (c *Config) isMetricsEnabled() bool       { return c.EnableMetrics }
-func (c *Config) isHealthCheckEnabled() bool   { return c.EnableHealthCheck }
-func (c *Config) isStrictMode() bool           { return c.StrictMode }
-func (c *Config) isCommentsAllowed() bool      { return c.AllowComments }
-func (c *Config) shouldPreserveNumbers() bool  { return c.PreserveNumbers }
-func (c *Config) shouldCreatePaths() bool      { return c.CreatePaths }
-func (c *Config) shouldCleanupNulls() bool     { return c.CleanupNulls }
-func (c *Config) shouldCompactArrays() bool    { return c.CompactArrays }
-func (c *Config) shouldValidateInput() bool    { return c.ValidateInput }
-func (c *Config) getMaxNestingDepth() int      { return c.MaxNestingDepthSecurity }
-func (c *Config) shouldValidateFilePath() bool { return c.ValidateFilePath }
-
-// Required by encoderConfig interface (interfaces.go) for internal use.
-func (c *Config) isHTMLEscapeEnabled() bool      { return c.EscapeHTML }
-func (c *Config) isPrettyEnabled() bool          { return c.Pretty }
-func (c *Config) getIndent() string              { return c.Indent }
-func (c *Config) getPrefix() string              { return c.Prefix }
-func (c *Config) isSortKeysEnabled() bool        { return c.SortKeys }
-func (c *Config) getFloatPrecision() int         { return c.FloatPrecision }
-func (c *Config) isTruncateFloatEnabled() bool   { return c.FloatTruncate }
-func (c *Config) getMaxDepth() int               { return c.MaxDepth }
-func (c *Config) shouldIncludeNulls() bool       { return c.IncludeNulls }
-func (c *Config) shouldValidateUTF8() bool       { return c.ValidateUTF8 }
-func (c *Config) isDisallowUnknownEnabled() bool { return c.DisallowUnknown }
-func (c *Config) shouldEscapeUnicode() bool      { return c.EscapeUnicode }
-func (c *Config) shouldEscapeSlash() bool        { return c.EscapeSlash }
-func (c *Config) shouldEscapeNewlines() bool     { return c.EscapeNewlines }
-func (c *Config) shouldEscapeTabs() bool         { return c.EscapeTabs }
 
 // =============================================================================
 // API Unification - Config presets for common scenarios
@@ -500,7 +457,6 @@ func SecurityConfig() Config {
 // =============================================================================
 
 // PrettyConfig returns a Config for pretty-printed JSON output.
-// This is the unified version that returns Config instead of EncodeConfig.
 //
 // Example:
 //

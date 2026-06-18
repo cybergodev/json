@@ -28,13 +28,18 @@ func (p *Processor) invalidateJSONCache(jsonStr string) {
 	p.cache.DeleteByPrefix(hashPrefix)
 }
 
-// hashStringToUint64 generates a fast 64-bit hash using FNV-1a.
-// Delegates to internal package for consistent implementation.
-// PERFORMANCE: For large strings (> 4KB), uses sampling to avoid full scan.
+// hashStringToUint64 generates a 64-bit FNV-1a hash used as cache identity for
+// result/parse caches and cache invalidation.
+//
+// CORRECTNESS: Always hashes the FULL string. This function is the identity for
+// caches that store computed results (Get/parse/encode) keyed by JSON content —
+// a collision returns a WRONG cached result. The sampled variant
+// (HashStringFNV1aSampled) only examines first/middle/last bytes of large inputs,
+// so two equal-length documents that differ outside those sample windows collide.
+// The full scan is negligible compared to the JSON parse it guards, so correctness
+// wins over the micro-optimization here. (Sampled hashing remains available in
+// the internal package for non-correctness-critical uses.)
 func hashStringToUint64(s string) uint64 {
-	if len(s) > largeStringHashThreshold {
-		return internal.HashStringFNV1aSampled(s)
-	}
 	return internal.HashStringFNV1a(s)
 }
 
@@ -49,8 +54,11 @@ func (p *Processor) createCacheKey(operation, jsonStr, path string, options *Con
 // PERFORMANCE: Allows hash reuse across multiple cache key creations.
 // Uses pointer identity check for default config to avoid 40+ field comparisons.
 func (p *Processor) createCacheKeyWithHash(operation string, jsonHash uint64, path string, options *Config) string {
-	// Determine if options are default
-	isDefault := options == nil || configFieldsEqual(*options, cachedDefaultConfigValue)
+	// Determine if options are default. Pointer-identity covers the overwhelmingly
+	// common case (prepareOptions hands out the shared default singleton), avoiding
+	// a 40+ field configFieldsEqual scan on every cache-key build. The fallback
+	// handles a caller-supplied Config that happens to equal the default.
+	isDefault := options == nil || options == &defaultConfigSingleton || configFieldsEqual(*options, cachedDefaultConfigValue)
 
 	// Use a fixed-size array buffer for small keys to avoid allocations
 	// Most cache keys are < 128 bytes

@@ -449,6 +449,18 @@ func (p *Processor) extendArrayAndSetSliceValue(rootData any, segments []interna
 		return fmt.Errorf("no segments provided")
 	}
 
+	// SECURITY: bound memory amplification from a user-supplied slice end, mirroring
+	// extendArrayAndSetValue below. Without this, Set(`{"a":[]}`, "a[0:999999999]", v)
+	// would allocate a multi-GB slice via make([]any, end) with end taken directly
+	// from the path.
+	if end < 0 || end > maxArrayExtension {
+		return &JsonsError{
+			Op:      "array_extension",
+			Message: fmt.Sprintf("slice end %d out of allowed range [0, %d]", end, maxArrayExtension),
+			Err:     ErrSizeLimit,
+		}
+	}
+
 	// For array extension, we need to navigate to the parent of the array container
 	current := rootData
 	for i := 0; i < len(segments)-2; i++ {
@@ -535,6 +547,16 @@ func (p *Processor) extendArrayAndSetSliceValue(rootData any, segments []interna
 func (p *Processor) extendArrayAndSetValue(rootData any, segments []internal.PathSegment, targetIndex int, value any) error {
 	if len(segments) == 0 {
 		return fmt.Errorf("no segments provided")
+	}
+
+	// SECURITY: bound memory amplification from a user-supplied index. Without
+	// this, Set(`{"a":[]}`, "a/9999999999", v) would allocate a multi-GB slice.
+	if targetIndex < 0 || targetIndex > maxArrayExtension {
+		return &JsonsError{
+			Op:      "array_extension",
+			Message: fmt.Sprintf("array index %d out of allowed range [0, %d]", targetIndex, maxArrayExtension),
+			Err:     ErrSizeLimit,
+		}
 	}
 
 	// For array extension, we need to navigate to the parent of the array container
@@ -974,28 +996,26 @@ func (p *Processor) createPathSegmentForJSONPointerWithExtension(current any, se
 				return v[index], nil
 			}
 			if index >= len(v) {
-				// Extend array to accommodate the index
-				extendedArr := make([]any, index+1)
-				copy(extendedArr, v)
-
-				// Determine what to put at the target index
-				var newContainer any
-				if currentIndex+1 < len(allSegments) {
-					nextSegment := allSegments[currentIndex+1]
-					if p.isArrayIndex(nextSegment) {
-						newContainer = make([]any, 0)
-					} else {
-						newContainer = make(map[string]any)
+				// SECURITY: bound memory amplification from a user-supplied index.
+				if index > maxArrayExtension {
+					return nil, &JsonsError{
+						Op:      "array_extension",
+						Message: fmt.Sprintf("array index %d exceeds maximum %d", index, maxArrayExtension),
+						Err:     ErrSizeLimit,
 					}
-				} else {
-					newContainer = nil
 				}
-
-				extendedArr[index] = newContainer
-
-				// Replace the array in the parent - we need to find the parent
-				// This is a complex operation that requires tracking the parent
-				return p.replaceArrayInJSONPointerParent(current, v, extendedArr, index, newContainer)
+				// Out-of-bounds intermediate array extension via JSON Pointer is
+				// unsupported: this function navigates into the array but has no
+				// reference to its parent, so it cannot propagate a newly allocated
+				// (longer) slice back into the document. Fail loudly instead of
+				// allocating an extended slice and discarding it. Array extension IS
+				// supported on the dot-notation path (extendArrayAndSetValue), which
+				// navigates to the parent first.
+				return nil, &JsonsError{
+					Op:      "array_extension",
+					Message: "cannot extend array via JSON Pointer: parent reference unavailable; use dot-notation path for extension",
+					Err:     errOperationFailed,
+				}
 			}
 		}
 		return nil, fmt.Errorf("invalid array index for JSON Pointer: %s", segment)
@@ -1012,55 +1032,39 @@ func (p *Processor) setJSONPointerFinalValue(current any, segment string, value 
 		return nil
 	case []any:
 		if index, err := strconv.Atoi(segment); err == nil {
-			if index >= 0 && index < len(v) {
+			if index < 0 {
+				return fmt.Errorf("invalid array index: %s", segment)
+			}
+			if index < len(v) {
 				v[index] = value
 				return nil
 			}
-			if index >= len(v) {
-				// Extend array to accommodate the index
-				extendedArr := make([]any, index+1)
-				copy(extendedArr, v)
-				extendedArr[index] = value
-
-				// Try to replace in place if possible
-				if cap(v) >= len(extendedArr) {
-					for i := len(v); i < len(extendedArr); i++ {
-						v = append(v, nil)
-					}
-					v[index] = value
-					return nil
-				}
-
-				// Cannot extend in place — return error to prevent silent data loss
+			// SECURITY: bound memory amplification from a user-supplied index.
+			if index > maxArrayExtension {
 				return &JsonsError{
 					Op:      "array_extension",
 					Path:    segment,
-					Message: fmt.Sprintf("cannot extend array in place for index %d", index),
-					Err:     errOperationFailed,
+					Message: fmt.Sprintf("array index %d exceeds maximum %d", index, maxArrayExtension),
+					Err:     ErrSizeLimit,
 				}
+			}
+			// Out-of-bounds extension via JSON Pointer is unsupported. This
+			// function receives the target container, not its parent, so it
+			// cannot propagate a newly allocated (longer) slice back into the
+			// document. Extending in place would mutate only a local slice
+			// header — the parent retains the original length and the new
+			// element is silently lost (data-loss bug). Fail loudly instead.
+			// Array extension IS supported on the dot-notation path
+			// (extendArrayAndSetValue), which navigates to the parent first.
+			return &JsonsError{
+				Op:      "array_extension",
+				Path:    segment,
+				Message: fmt.Sprintf("cannot extend array via JSON Pointer past length %d (index %d); use dot-notation path for extension", len(v), index),
+				Err:     errOperationFailed,
 			}
 		}
 		return fmt.Errorf("invalid array index: %s", segment)
 	default:
 		return fmt.Errorf("cannot set value on type %T", current)
-	}
-}
-
-func (p *Processor) replaceArrayInJSONPointerParent(_ any, oldArray, newArray []any, index int, newContainer any) (any, error) {
-	// This is a complex operation that would require tracking parent references
-	// For now, we'll try to extend in place if possible
-	if cap(oldArray) >= len(newArray) {
-		for i := len(oldArray); i < len(newArray); i++ {
-			oldArray = append(oldArray, nil)
-		}
-		oldArray[index] = newContainer
-		return newContainer, nil
-	}
-
-	// Cannot extend in place — return error to prevent silent data loss
-	return nil, &JsonsError{
-		Op:      "array_extension",
-		Message: fmt.Sprintf("cannot extend array in place: need cap %d, have %d", len(newArray), cap(oldArray)),
-		Err:     errOperationFailed,
 	}
 }

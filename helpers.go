@@ -459,11 +459,6 @@ func convertValueWithDepth(value any, target any, depth int) (any, bool) {
 	return nil, false
 }
 
-// convertToSlice converts value to slice type
-func convertToSlice(value any, targetType reflect.Type) (any, bool) {
-	return convertToSliceWithDepth(value, targetType, 0)
-}
-
 func convertToSliceWithDepth(value any, targetType reflect.Type, depth int) (any, bool) {
 	rv := reflect.ValueOf(value)
 	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
@@ -483,11 +478,6 @@ func convertToSliceWithDepth(value any, targetType reflect.Type, depth int) (any
 	}
 
 	return result.Interface(), true
-}
-
-// convertToMap converts value to map type
-func convertToMap(value any, targetType reflect.Type) (any, bool) {
-	return convertToMapWithDepth(value, targetType, 0)
 }
 
 func convertToMapWithDepth(value any, targetType reflect.Type, depth int) (any, bool) {
@@ -517,43 +507,6 @@ func convertToMapWithDepth(value any, targetType reflect.Type, depth int) (any, 
 	return result.Interface(), true
 }
 
-// safeConvertToInt64 converts value to int64, returning an error on failure.
-// Used internally where error returns are preferred over (value, bool) tuples.
-func safeConvertToInt64(value any) (int64, error) {
-	if result, ok := convertToInt64(value); ok {
-		return result, nil
-	}
-	return 0, fmt.Errorf("cannot convert %T to int64", value)
-}
-
-// safeConvertToUint64 converts value to uint64, returning an error on failure.
-// Used internally where error returns are preferred over (value, bool) tuples.
-func safeConvertToUint64(value any) (uint64, error) {
-	if result, ok := convertToUint64(value); ok {
-		return result, nil
-	}
-	return 0, fmt.Errorf("cannot convert %T to uint64", value)
-}
-
-// formatNumber formats a numeric value as a string.
-// Supports int, int64, uint64, float64, json.Number, and falls back to fmt.Sprintf.
-func formatNumber(value any) string {
-	switch v := value.(type) {
-	case int:
-		return strconv.Itoa(v)
-	case int64:
-		return strconv.FormatInt(v, 10)
-	case uint64:
-		return strconv.FormatUint(v, 10)
-	case float64:
-		return strconv.FormatFloat(v, 'f', -1, 64)
-	case json.Number:
-		return string(v)
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
-
 // convertToString converts any value to its string representation.
 // Handles string, []byte, json.Number, fmt.Stringer, and falls back to fmt.Sprintf.
 func convertToString(value any) string {
@@ -576,23 +529,6 @@ func convertToString(value any) string {
 func isValidJSON(jsonStr string) bool {
 	decoder := newNumberPreservingDecoder(false)
 	_, err := decoder.DecodeToAny(jsonStr)
-	return err == nil
-}
-
-// isValidPath checks if a path expression is valid.
-// For detailed error information, use validatePath instead.
-func isValidPath(path string) bool {
-	if path == "" {
-		return false
-	}
-	if path == "." {
-		return true
-	}
-	processor := getDefaultProcessor()
-	if processor == nil {
-		return false
-	}
-	err := processor.validatePath(path)
 	return err == nil
 }
 
@@ -898,38 +834,33 @@ func deepCopyJSONMapWithDepth(m map[string]any, depth int) (map[string]any, erro
 	for k, v := range m {
 		// Inline leaf-value handling to avoid deepCopyJSONValueWithDepth call overhead
 		// for the common case (~80% of values are primitives in typical JSON).
-		var copied any
 		switch val := v.(type) {
-		case nil:
-			// nil stays nil
-		case bool:
-			copied = val
-		case float64:
-			copied = val
-		case string:
-			copied = val
-		case json.Number:
-			copied = val
+		case nil, bool, float64, string, json.Number:
+			// Immutable leaf: copy the interface word-pair directly. Routing these
+			// through a local `any` (`copied = val`) would unbox and then re-box the
+			// value on the heap once per element; copying the existing interface value
+			// avoids that allocation and remains correct because immutable data is safe
+			// to share between the cached original and the copy.
+			result[k] = v
 		case map[string]any:
 			c, err := deepCopyJSONMapWithDepth(val, depth+1)
 			if err != nil {
 				return nil, err
 			}
-			copied = c
+			result[k] = c
 		case []any:
 			c, err := deepCopyJSONSliceWithDepth(val, depth+1)
 			if err != nil {
 				return nil, err
 			}
-			copied = c
+			result[k] = c
 		default:
 			c, err := deepCopyValueWithDepth(v, depth+1)
 			if err != nil {
 				return nil, err
 			}
-			copied = c
+			result[k] = c
 		}
-		result[k] = copied
 	}
 	return result, nil
 }
@@ -942,37 +873,30 @@ func deepCopyJSONSliceWithDepth(s []any, depth int) ([]any, error) {
 	}
 	result := make([]any, len(s))
 	for i, v := range s {
-		var copied any
 		switch val := v.(type) {
-		case nil:
-		case bool:
-			copied = val
-		case float64:
-			copied = val
-		case string:
-			copied = val
-		case json.Number:
-			copied = val
+		case nil, bool, float64, string, json.Number:
+			// Immutable leaf: copy the interface word-pair directly to avoid the
+			// unbox→rebox heap allocation (see deepCopyJSONMapWithDepth for rationale).
+			result[i] = v
 		case map[string]any:
 			c, err := deepCopyJSONMapWithDepth(val, depth+1)
 			if err != nil {
 				return nil, err
 			}
-			copied = c
+			result[i] = c
 		case []any:
 			c, err := deepCopyJSONSliceWithDepth(val, depth+1)
 			if err != nil {
 				return nil, err
 			}
-			copied = c
+			result[i] = c
 		default:
 			c, err := deepCopyValueWithDepth(v, depth+1)
 			if err != nil {
 				return nil, err
 			}
-			copied = c
+			result[i] = c
 		}
-		result[i] = copied
 	}
 	return result, nil
 }
@@ -984,6 +908,10 @@ func deepCopyJSONSliceWithDepth(s []any, depth int) ([]any, error) {
 //
 //	equal, err := json.CompareJSON(`{"a":1}`, `{"a":1.0}`)
 //	// equal == true
+//
+// Errors:
+//   - an error wrapping the parse failure if either argument is not valid JSON
+//   - an error if number normalization or marshaling fails
 func CompareJSON(json1, json2 string) (bool, error) {
 	decoder := newNumberPreservingDecoder(true)
 
@@ -1042,6 +970,11 @@ func CompareJSON(json1, json2 string) (bool, error) {
 //	// Difference merge
 //	cfg.MergeMode = json.MergeDifference
 //	result, err := json.MergeJSON(a, b, cfg)
+//
+// Errors:
+//   - an error if either argument is not valid JSON
+//   - an error if either argument is not a JSON object
+//   - an error if number conversion or final encoding fails
 func MergeJSON(json1, json2 string, cfg ...Config) (string, error) {
 	config := getConfigOrDefault(cfg...)
 	mode := config.MergeMode
@@ -1186,16 +1119,6 @@ func convertToTypedCore[T any](value any, path string) (T, error) {
 	}
 
 	return finalResult, nil
-}
-
-// ============================================================================
-// JSON KEY INTERNING
-// Delegates to internal.KeyIntern (64-shard with hot cache) for concurrent performance.
-// ============================================================================
-
-// internKey interns a string key for memory efficiency.
-func internKey(key string) string {
-	return internal.GlobalKeyIntern.Intern(key)
 }
 
 // ============================================================================

@@ -23,10 +23,10 @@ type Processor struct {
 	config            Config
 	cache             *internal.CacheManager
 	state             int32
+	activeOps         int64 // atomic: in-flight op count, lets Close() drain gracefully
 	cleanupOnce       sync.Once
 	resources         *processorResources
 	metrics           *processorMetrics
-	resourceMonitor   *resourceMonitor
 	logger            atomic.Value // *slog.Logger - thread-safe logger storage
 	securityValidator *securityValidator
 	// Cached recursiveProcessor for reuse across operations (performance optimization)
@@ -45,13 +45,20 @@ type processorResources struct {
 }
 
 type processorMetrics struct {
-	operationCount       int64
-	errorCount           int64
-	lastOperationTime    int64
-	operationWindow      int64
-	concurrencySemaphore chan struct{}
-	collector            *internal.MetricsCollector
-	enabled              bool // Flag to enable/disable metrics collection
+	operationCount    int64
+	errorCount        int64
+	lastOperationTime int64
+	operationWindow   int64
+	// concurrencyLimit/concurrentOps form an atomic counting semaphore that
+	// caps in-flight operations at MaxConcurrency. Replacing the previous
+	// buffered-channel semaphore removes the channel's internal mutex from the
+	// hot path — under high parallelism that lock dominated CPU. This is a SOFT
+	// limit: acquire rejects when full (never blocks), matching the channel's
+	// non-blocking select semantics.
+	concurrencyLimit int64 // immutable after construction; 0 = unlimited
+	concurrentOps    int64 // atomic: current in-flight (semaphore-acquired) ops
+	collector        *internal.MetricsCollector
+	enabled          bool // Flag to enable/disable metrics collection
 }
 
 // New creates a new JSON processor with the given configuration.
@@ -93,7 +100,6 @@ func New(cfg ...Config) (*Processor, error) {
 	p := &Processor{
 		config:          config,
 		cache:           internal.NewCacheManager(config.EnableCache, config.MaxCacheSize, config.CacheTTL),
-		resourceMonitor: newResourceMonitor(),
 		securityValidator: newSecurityValidator(
 			config.MaxJSONSize,
 			maxPathLength,
@@ -107,9 +113,9 @@ func New(cfg ...Config) (*Processor, error) {
 			memoryPressure:  0,
 		},
 		metrics: &processorMetrics{
-			operationWindow:      0, // Disabled by default for better performance
-			concurrencySemaphore: make(chan struct{}, config.MaxConcurrency),
-			enabled:              config.EnableMetrics,
+			operationWindow:   0, // Disabled by default for better performance
+			concurrencyLimit:  int64(config.MaxConcurrency),
+			enabled:           config.EnableMetrics,
 		},
 	}
 
@@ -138,12 +144,20 @@ var configPool = sync.Pool{
 	},
 }
 
+// defaultConfigSingleton is the shared, immutable default Config handed out by
+// prepareOptions when no options are supplied. Returning this single address lets
+// callers detect the default config with a pointer comparison instead of a 40+
+// field scan (see createCacheKeyWithHash). It MUST stay immutable: releaseConfig
+// skips it, and no operation-path code mutates the returned options.
+var defaultConfigSingleton = cachedDefaultConfigValue
+
 // releaseConfig returns a pooled Config, clearing all reference-type fields first
 // to prevent data leaks back into the pool.
 // SECURITY: Must clear all map/slice/interface fields to avoid cross-request contamination.
 // PERFORMANCE v3: Only nil out reference-type fields instead of full DefaultConfig() copy.
 func releaseConfig(cfg *Config) {
-	if cfg == nil {
+	if cfg == nil || cfg == &defaultConfigSingleton {
+		// nil, or the shared immutable default — never pool/mutate the singleton.
 		return
 	}
 	// Clear only reference-type fields to prevent data leaks.
@@ -162,15 +176,15 @@ func releaseConfig(cfg *Config) {
 
 // prepareOptions prepares and validates processor options.
 // Accepts Config values and returns a pointer for internal use.
-// PERFORMANCE: When no options are provided, returns a cached default pointer
-// without allocation or validation — avoids DefaultConfig() + Validate() per operation.
+// PERFORMANCE: When no options are provided, returns the shared, immutable
+// default-config singleton — no allocation, no validation, and a pointer that
+// downstream hot paths can test against &defaultConfigSingleton in O(1).
 // SECURITY: Clears reference fields from pooled objects to prevent leaks.
 func (p *Processor) prepareOptions(cfg ...Config) (*Config, error) {
-	c := configPool.Get().(*Config)
 	if len(cfg) == 0 {
-		*c = cachedDefaultConfigValue
-		return c, nil
+		return &defaultConfigSingleton, nil
 	}
+	c := configPool.Get().(*Config)
 	*c = cfg[0]
 	if err := c.Validate(); err != nil {
 		releaseConfig(c)
@@ -195,67 +209,117 @@ func mergeOptionsWithOverride(opts []Config, override func(*Config)) Config {
 
 // acquireSemaphore reserves a concurrency slot. Returns nil on success.
 // Returns ErrConcurrencyLimit when MaxConcurrency concurrent operations are running.
+//
+// PERFORMANCE: implemented as an atomic counter rather than a buffered channel.
+// The channel's internal lock contended heavily under parallel load; atomics
+// avoid it. This is a non-blocking (soft) limit — identical semantics to the
+// previous select-with-default: reject immediately when at capacity.
 func (p *Processor) acquireSemaphore() error {
-	if p == nil {
+	if p == nil || p.metrics == nil {
 		return nil
 	}
-	if p.metrics == nil || p.metrics.concurrencySemaphore == nil {
-		return nil
+	m := p.metrics
+	if m.concurrencyLimit <= 0 {
+		return nil // unlimited
 	}
-	select {
-	case p.metrics.concurrencySemaphore <- struct{}{}:
-		return nil
-	default:
+	// AddInt64 returns the new count. If it exceeds the limit, back out and reject.
+	if atomic.AddInt64(&m.concurrentOps, 1) > m.concurrencyLimit {
+		atomic.AddInt64(&m.concurrentOps, -1)
 		return &JsonsError{
 			Op:      "concurrency",
-			Message: fmt.Sprintf("max concurrent operations (%d) reached", cap(p.metrics.concurrencySemaphore)),
+			Message: fmt.Sprintf("max concurrent operations (%d) reached", m.concurrencyLimit),
 			Err:     ErrConcurrencyLimit,
 		}
 	}
+	return nil
 }
 
 // releaseSemaphore releases a previously acquired concurrency slot.
 func (p *Processor) releaseSemaphore() {
-	if p == nil {
+	if p == nil || p.metrics == nil {
 		return
 	}
-	if p.metrics != nil && p.metrics.concurrencySemaphore != nil {
-		<-p.metrics.concurrencySemaphore
+	if p.metrics.concurrencyLimit > 0 {
+		atomic.AddInt64(&p.metrics.concurrentOps, -1)
 	}
 }
 
-// prepareOperation validates input and path for Get/Set/Delete operations.
-// Returns prepared options and a cleanup function that must be deferred.
-// Reduces duplicated validation boilerplate across operation methods.
-func (p *Processor) prepareOperation(op, jsonStr, path string, cfg ...Config) (*Config, func(), error) {
+// beginGovernedOp is the shared concurrency-governance prologue for operations.
+// It registers the in-flight op (so Close() can drain it via waitForActiveOps)
+// and acquires the concurrency semaphore. On success the caller MUST defer
+// endGovernedOp() to release both.
+//
+// Get/Set/Delete route through it (Set/Delete via prepareOperation); SetMultiple
+// uses it directly because it validates multiple paths and cannot reuse
+// prepareOperation's single-path validation.
+//
+// Registration is race-free without a mutex via a double-check: the closed state
+// is verified both before and after incrementing activeOps, and any failure path
+// after the increment backs the counter out. This lets Close() never observe a
+// false "zero in-flight" while an operation that will still proceed is
+// mid-registration.
+//
+// PERFORMANCE: split into a begin/end pair rather than returning a closure.
+// A returned func() escapes on every call (one heap allocation per governed
+// op); deferring the bound method p.endGovernedOp() instead is open-coded by
+// the compiler — allocation-free on the hot path.
+func (p *Processor) beginGovernedOp() error {
+	// Pre-check closed state before claiming an in-flight slot.
 	if err := p.checkClosed(); err != nil {
-		return nil, nil, err
+		return err
+	}
+	atomic.AddInt64(&p.activeOps, 1)
+	// Re-check after incrementing: back out if Close() has begun in the window.
+	if err := p.checkClosed(); err != nil {
+		atomic.AddInt64(&p.activeOps, -1)
+		return err
+	}
+	if err := p.acquireSemaphore(); err != nil {
+		atomic.AddInt64(&p.activeOps, -1)
+		return err
+	}
+	return nil
+}
+
+// endGovernedOp releases the in-flight-op registration and concurrency slot
+// acquired by beginGovernedOp. Kept small so it inlines and the defer in
+// callers stays open-coded (allocation-free).
+func (p *Processor) endGovernedOp() {
+	p.releaseSemaphore()
+	atomic.AddInt64(&p.activeOps, -1)
+}
+
+// prepareOperation prepares, governs, and validates a single-path operation.
+// It acquires concurrency governance (in-flight registration + semaphore via
+// beginGovernedOp), prepares and validates options, then validates input and
+// path via the shared helper (handles SkipValidation).
+//
+// On success it returns the prepared options; the caller MUST defer
+// releaseConfig(options) and p.endGovernedOp() — in that registration order, so
+// they unwind in the correct reverse-acquire sequence (options first, then the
+// governance slot). On failure every acquired resource is released here and a
+// non-nil error is returned. Replaces the previous closure-returning form so no
+// cleanup closure escapes to the heap.
+func (p *Processor) prepareOperation(jsonStr, path string, cfg ...Config) (*Config, error) {
+	if err := p.beginGovernedOp(); err != nil {
+		return nil, err
 	}
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
-		return nil, nil, err
+		p.endGovernedOp()
+		return nil, err
 	}
-	cleanup := func() { releaseConfig(options) }
 
-	if !options.SkipValidation {
-		if err := p.validateInput(jsonStr); err != nil {
-			cleanup()
-			return nil, nil, err
-		}
-		if !isSimplePropertyAccess(path) {
-			if err := p.validatePath(path); err != nil {
-				cleanup()
-				return nil, nil, err
-			}
-		}
-	} else {
-		if err := p.validateInputEssential(jsonStr); err != nil {
-			cleanup()
-			return nil, nil, err
-		}
+	// Validate input and path via the shared helper (handles SkipValidation).
+	// This is the same logic Get uses, keeping all operations consistent.
+	if err := p.validateOperationInput(jsonStr, path, options); err != nil {
+		releaseConfig(options)
+		p.endGovernedOp()
+		return nil, err
 	}
-	return options, cleanup, nil
+
+	return options, nil
 }
 
 // validateOperationInput validates JSON input and path for an operation.
@@ -273,6 +337,16 @@ func (p *Processor) validateOperationInput(jsonStr, path string, options *Config
 	} else {
 		if err := p.validateInputEssential(jsonStr); err != nil {
 			return err
+		}
+		// SkipValidation skips input size/depth/security checks for performance,
+		// but path SYNTAX is still validated. Syntax validation is a cheap single
+		// pass and prevents silent data corruption: without it a non-numeric array
+		// index like "arr[xyz]" is coerced to index 0 and overwrites existing
+		// data, and an out-of-range index can trigger multi-GB allocations.
+		if !isSimplePropertyAccess(path) {
+			if err := internal.ValidatePath(path); err != nil {
+				return newPathError(path, err.Error(), ErrInvalidPath)
+			}
 		}
 	}
 	return nil
@@ -297,5 +371,19 @@ func (p *Processor) parseJSON(jsonStr, op, path string, options *Config, cfg ...
 		return nil, err
 	}
 	return data, nil
+}
+
+// unmarshalRootObject parses a JSON string and returns its root as a
+// map[string]any when the root is a JSON object. It returns (nil, false, nil)
+// when the root is a non-object value, so callers can fall back to the full
+// recursive processor. Shared by the Get/Delete simple-property fast paths to
+// avoid duplicating the parse + type-assert sequence (and its error wrapping).
+func unmarshalRootObject(jsonStr string) (m map[string]any, isObject bool, err error) {
+	var data any
+	if uerr := json.Unmarshal(internal.StringToBytes(jsonStr), &data); uerr != nil {
+		return nil, false, uerr
+	}
+	m, isObject = data.(map[string]any)
+	return m, isObject, nil
 }
 

@@ -11,17 +11,14 @@ import (
 //   - On success: modified JSON string and nil error
 //   - On failure: original unmodified JSON string and error information
 func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (string, error) {
-	// Enforce concurrency limit
-	if err := p.acquireSemaphore(); err != nil {
-		return jsonStr, err
-	}
-	defer p.releaseSemaphore()
-
-	options, cleanup, err := p.prepareOperation("set", jsonStr, path, cfg...)
+	options, err := p.prepareOperation(jsonStr, path, cfg...)
 	if err != nil {
 		return jsonStr, err
 	}
-	defer cleanup()
+	// Release in reverse-acquire order: options first, then governance slot.
+	// Defers run LIFO, so endGovernedOp (registered first) runs last.
+	defer p.endGovernedOp()
+	defer releaseConfig(options)
 
 	data, err := p.parseJSON(jsonStr, "set", path, options, cfg...)
 	if err != nil {
@@ -84,9 +81,14 @@ func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (string,
 //   - On success: modified JSON string and nil error
 //   - On failure: original unmodified JSON string and error information
 func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...Config) (string, error) {
-	if err := p.checkClosed(); err != nil {
+	// Concurrency governance first (includes the closed-check via beginGovernedOp),
+	// matching Set/Delete ordering. Previously SetMultiple only did a single
+	// checkClosed() at entry, so it was neither concurrency-limited nor drained
+	// by Close() — an inconsistency with Set/Delete.
+	if err := p.beginGovernedOp(); err != nil {
 		return jsonStr, err
 	}
+	defer p.endGovernedOp()
 
 	// Validate input
 	if len(updates) == 0 {
@@ -183,6 +185,11 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 			Err:     lastError,
 		}
 	}
+
+	// Invalidate cached results for this JSON string since the data changed.
+	// Mirrors Set(): without this, a subsequent Get on the same jsonStr could be
+	// served stale parse/get results from cache.
+	p.invalidateJSONCache(jsonStr)
 
 	// Convert modified data back to JSON string
 	// PERFORMANCE: Use FastMarshalToString instead of json.Marshal

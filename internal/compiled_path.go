@@ -444,9 +444,11 @@ func (c *CompiledPathCache) Get(path string) (*CompiledPath, error) {
 }
 
 // cloneCompiledPathLocked creates an independent copy of a CompiledPath.
-// SECURITY: Caller MUST hold c.mu write lock to prevent TOCTOU race condition
-// where the source object could be evicted and reused during cloning.
-// The lock must be held for the entire clone operation to ensure atomicity.
+// The caller MUST hold c.mu (read or write): cached entries are immutable once
+// stored, and eviction only removes the map entry — it does not return the object
+// to the pool — so the source pointer is never mutated or alias-reused while in
+// the cache. A read lock is therefore sufficient for concurrent cloning; the lock
+// must be held across the clone so the source fields are observed atomically.
 func cloneCompiledPathLocked(src *CompiledPath) *CompiledPath {
 	dst := compiledPathPool.Get().(*CompiledPath)
 	dst.segments = dst.segments[:0]

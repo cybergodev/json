@@ -313,13 +313,29 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 	hits := atomic.AddInt64(&entry.hits, 1)
 	shard.mu.RUnlock()
 
-	// PERFORMANCE: Adaptive LRU update intervals based on hit count
-	// Hot keys get less frequent position updates to reduce write lock contention
-	updateInterval := int64(8)
-	if hits > 100 {
-		updateInterval = 32 // Less frequent updates for hot keys
-	} else if hits > 50 {
-		updateInterval = 16
+	// PERFORMANCE: Adaptive LRU update intervals based on hit count.
+	//
+	// Profiling (P-001) showed the periodic MoveToFront write lock was the
+	// dominant source of reader stalls under concurrent hot-key access: every
+	// RWMutex writer arrival forces in-flight/blocked readers through the
+	// kernel semaphore (runtime.lock2/stdlib2 on Windows), which accounted for
+	// ~37% of CPU on BenchmarkConcurrent_Get. Raising the interval means a
+	// writer arrives far less often, so readers stay on the cheap atomic
+	// RLock fast path.
+	//
+	// This is safe for eviction quality: entry.hits advances atomically
+	// (lock-free) on every access, so evictLRU still sees an accurate
+	// per-entry frequency even when the list position lags behind. The list
+	// position only refines the LFU tie-break among entries with similar hit
+	// counts, so a stale position never evicts a genuinely hot entry.
+	updateInterval := int64(64)
+	switch {
+	case hits > 4096:
+		updateInterval = 2048
+	case hits > 1024:
+		updateInterval = 512
+	case hits > 256:
+		updateInterval = 128
 	}
 
 	// Only move to front periodically to reduce write lock frequency

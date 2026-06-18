@@ -43,16 +43,12 @@ func (p *Processor) SafeGet(jsonStr, path string, cfg ...Config) AccessResult {
 
 // Get retrieves a value from JSON using a path expression with performance
 func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err error) {
-	// PERFORMANCE: Fast path — check nil/closed before any field access
-	if err := p.checkClosed(); err != nil {
+	// Concurrency governance: register the in-flight op (so Close() can drain it
+	// via waitForActiveOps) and acquire the semaphore. Released by endGovernedOp.
+	if err := p.beginGovernedOp(); err != nil {
 		return nil, err
 	}
-
-	// Enforce concurrency limit
-	if err := p.acquireSemaphore(); err != nil {
-		return nil, err
-	}
-	defer p.releaseSemaphore()
+	defer p.endGovernedOp()
 
 	// Check rate limiting for security (fast return when disabled, which is default)
 	if p.metrics.operationWindow > 0 {
@@ -111,8 +107,8 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	// Bypasses hash computation, cache key creation, and recursive processor
 	// for the most common case: single-key lookup on a JSON object.
 	if isSimplePropertyAccess(path) && !p.config.EnableCache && len(cfg) == 0 {
-		var data any
-		if parseErr := json.Unmarshal(internal.StringToBytes(jsonStr), &data); parseErr != nil {
+		m, isObj, parseErr := unmarshalRootObject(jsonStr)
+		if parseErr != nil {
 			p.incrementErrorCount()
 			return nil, &JsonsError{
 				Op:      "get",
@@ -121,7 +117,7 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 				Err:     ErrInvalidJSON,
 			}
 		}
-		if m, ok := data.(map[string]any); ok {
+		if isObj {
 			if val, exists := m[path]; exists {
 				return val, nil
 			}
