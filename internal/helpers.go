@@ -388,16 +388,6 @@ func FormatNumberForDedup(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
-// IsJSONPointerPath checks if a path uses JSON Pointer format
-func IsJSONPointerPath(path string) bool {
-	return path != "" && path[0] == '/'
-}
-
-// IsDotNotationPath checks if a path uses dot notation format
-func IsDotNotationPath(path string) bool {
-	return path != "" && path != "." && path[0] != '/'
-}
-
 // IsArrayPath checks if a path contains array access
 func IsArrayPath(path string) bool {
 	return strings.Contains(path, "[") && strings.Contains(path, "]")
@@ -406,12 +396,6 @@ func IsArrayPath(path string) bool {
 // IsSlicePath checks if a path contains slice notation
 func IsSlicePath(path string) bool {
 	return strings.Contains(path, "[") && strings.Contains(path, ":") && strings.Contains(path, "]")
-}
-
-// IsJSONObject checks if data is a JSON object (map[string]any)
-func IsJSONObject(data any) bool {
-	_, ok := data.(map[string]any)
-	return ok
 }
 
 // IsJSONArray checks if data is a JSON array ([]any)
@@ -431,42 +415,6 @@ func IsJSONPrimitive(data any) bool {
 	default:
 		return false
 	}
-}
-
-// TryConvertToArray attempts to convert a map to an array if it has numeric keys
-func TryConvertToArray(m map[string]any) ([]any, bool) {
-	const maxSparseRatio = 10 // Maximum allowed ratio of max_index / key_count
-
-	if len(m) == 0 {
-		return []any{}, true
-	}
-
-	maxIndex := -1
-	for key := range m {
-		if index, err := strconv.Atoi(key); err == nil && index >= 0 {
-			if index > maxIndex {
-				maxIndex = index
-			}
-		} else {
-			return nil, false
-		}
-	}
-
-	// Check for sparse array - if max index is much larger than key count,
-	// the resulting array would have too many nil elements
-	if maxIndex > 0 && maxIndex > len(m)*maxSparseRatio {
-		// Sparse array detected - don't convert to avoid memory waste
-		return nil, false
-	}
-
-	arr := make([]any, maxIndex+1)
-	for key, value := range m {
-		if index, err := strconv.Atoi(key); err == nil {
-			arr[index] = value
-		}
-	}
-
-	return arr, true
 }
 
 // IndexIgnoreCase finds a pattern in s case-insensitively without allocation

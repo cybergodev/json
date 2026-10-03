@@ -16,6 +16,10 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// goosWindows is the runtime.GOOS value this file's path validation special-cases
+// (goconst: single definition for the repeated literal).
+const goosWindows = "windows"
+
 // LoadFromFile loads JSON data from a file and returns the raw JSON string.
 // The file path is validated for security (path traversal, symlinks, etc.).
 //
@@ -281,7 +285,7 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	// exists at that name), removes the temp on any failure path.
 	defer func() { _ = os.Remove(tmp) }()
 	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+		_ = f.Close() // best-effort; the primary Write error is being returned
 		return err
 	}
 	if err := f.Close(); err != nil {
@@ -568,7 +572,7 @@ func validatePathSecurity(filePath string) error {
 	}
 
 	// Platform-specific security checks on original path (before normalization)
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		if err := validateWindowsPath(filePath); err != nil {
 			return err
 		}
@@ -600,7 +604,7 @@ func normalizeAndAbsPath(filePath string) (string, error) {
 
 // validatePathPlatform performs platform-specific security checks on absolute path
 func validatePathPlatform(absPath string) error {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != goosWindows {
 		if err := validateUnixPath(absPath); err != nil {
 			return err
 		}
@@ -620,7 +624,7 @@ func validatePathSymlinks(absPath string) error {
 	// leaf checks below still apply.
 	parent := filepath.Dir(absPath)
 	if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil && resolvedParent != parent {
-		if runtime.GOOS != "windows" {
+		if runtime.GOOS != goosWindows {
 			if err := validateUnixPath(resolvedParent); err != nil {
 				return err
 			}
@@ -646,7 +650,7 @@ func validatePathSymlinks(absPath string) error {
 	}
 
 	// Ensure symlink doesn't escape to restricted areas
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != goosWindows {
 		return validateUnixPath(realPath)
 	}
 	return validateWindowsPath(realPath)
@@ -899,12 +903,11 @@ func validateWindowsPath(absPath string) error {
 		// Drive letter must be at position 1
 		if colonIdx == 1 && len(absPath) >= 2 {
 			driveLetter := absPath[0]
-			if (driveLetter >= 'A' && driveLetter <= 'Z') || (driveLetter >= 'a' && driveLetter <= 'z') {
-				// Valid drive letter - both "C:\path" and "C:path" (drive-relative) are allowed
-				// This is NOT an ADS
-			} else {
+			if !((driveLetter >= 'A' && driveLetter <= 'Z') || (driveLetter >= 'a' && driveLetter <= 'z')) {
 				return newSecurityError("validate_windows_path", "alternate data streams not allowed")
 			}
+			// Valid drive letter - both "C:\path" and "C:path" (drive-relative) are allowed.
+			// This is NOT an ADS.
 		} else if colonIdx == 0 {
 			// Colon at position 0 is invalid (e.g., ":stream")
 			return newSecurityError("validate_windows_path", "alternate data streams not allowed")
@@ -997,6 +1000,12 @@ func NewNDJSONProcessor(cfg ...Config) *NDJSONProcessor {
 		config = DefaultConfig()
 	}
 
+	// Validate and clamp like every other constructor (Processor.New does the
+	// same): without this a zero-value JSONLMaxLineSize bypassed the clamp and
+	// hit the legacy MaxJSONSize fallback chain, letting NDJSON accept lines
+	// up to 100MB that the StreamJSONL family rejects at 1MB (D-002).
+	config.Validate()
+
 	bufferSize := config.JSONLBufferSize
 	if bufferSize <= 0 {
 		bufferSize = 64 * 1024 // Default buffer size
@@ -1051,15 +1060,11 @@ func (np *NDJSONProcessor) ProcessReader(reader io.Reader, fn func(lineNum int, 
 			err = fmt.Errorf("ndjson callback panicked: %v", r)
 		}
 	}()
-	// Per-line cap: the dedicated JSONL knob wins; the legacy fallback chain
-	// (MaxJSONSize → 100MB) preserves the previous behavior when it is unset.
-	maxLineSize := int64(np.config.JSONLMaxLineSize)
-	if maxLineSize <= 0 {
-		maxLineSize = np.config.MaxJSONSize
-	}
-	if maxLineSize <= 0 {
-		maxLineSize = int64(DefaultMaxJSONSize)
-	}
+	// Per-line cap and buffer capacity via the shared JSONL limits helper —
+	// same fallback (1MB default) and same +1 token cap as the StreamJSONL
+	// family and StreamLinesInto, so one file meets one limit everywhere
+	// (D-002: this engine previously fell back to MaxJSONSize → 100MB).
+	scanBufCap, maxToken := jsonlScanLimits(&np.config)
 
 	// Total-bytes cap, mirroring StreamJSONL: JSONLMaxMemory falls back to
 	// MaxMemory; zero (the default) disables accounting entirely.
@@ -1069,14 +1074,7 @@ func (np *NDJSONProcessor) ProcessReader(reader io.Reader, fn func(lineNum int, 
 	}
 
 	scanner := bufio.NewScanner(reader)
-	// bufio.Scanner's effective token cap is max(cap(buf), max): a 64KB
-	// initial buffer would silently raise a smaller JSONLMaxLineSize to 64KB.
-	// Clamp the initial capacity so the configured line limit is what holds.
-	scanBufCap := np.bufferSize
-	if int64(scanBufCap) > maxLineSize+1 {
-		scanBufCap = int(maxLineSize) + 1
-	}
-	scanner.Buffer(make([]byte, 0, scanBufCap), int(maxLineSize)+1)
+	scanner.Buffer(make([]byte, 0, scanBufCap), maxToken)
 
 	maxDepth := np.config.MaxNestingDepthSecurity
 	if maxDepth <= 0 {
@@ -1089,10 +1087,10 @@ func (np *NDJSONProcessor) ProcessReader(reader io.Reader, fn func(lineNum int, 
 		lineNum++
 		line := scanner.Bytes()
 
-		// Config-driven skips (comments, blank lines when JSONLSkipEmpty is
-		// set), then the unconditional empty-line skip this API has always
-		// had — NDJSON files commonly contain physical blank lines.
-		if shouldSkipJSONLLineFromConfig(line, &np.config) || len(line) == 0 {
+		// Shared skip policy with the other JSONL engines: whitespace-only
+		// lines are always skipped (they can never be valid JSONL records;
+		// previously only zero-length lines were), comments when configured.
+		if skipJSONLLine(line, &np.config) {
 			continue
 		}
 
@@ -1235,7 +1233,9 @@ func (p *Processor) ForeachFileWithPath(filePath, path string, fn func(key any, 
 }
 
 // ForeachFileChunked iterates over JSON arrays from a file in chunks (batches).
-// This is useful for batch processing large datasets.
+// NOTE (D-002): this loads and parses the WHOLE file first, then delivers
+// elements in chunks — memory is O(file size). For genuinely streaming
+// batch processing use StreamJSONLChunked on a JSONL reader.
 //
 // Example:
 //
@@ -1398,7 +1398,9 @@ func ForeachFileWithPath(filePath, path string, fn func(key any, item *IterableV
 }
 
 // ForeachFileChunked iterates over JSON arrays from a file in chunks (batches).
-// This is useful for batch processing large datasets.
+// NOTE (D-002): this loads and parses the WHOLE file first, then delivers
+// elements in chunks — memory is O(file size). For genuinely streaming
+// batch processing use StreamJSONLChunked on a JSONL reader.
 //
 // Example:
 //

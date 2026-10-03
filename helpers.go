@@ -622,11 +622,14 @@ const deepCopyMaxDepth = 200
 // Uses direct recursive copying for better performance (avoids marshal/unmarshal overhead)
 // SECURITY: Added depth limit to prevent stack overflow
 func deepCopy(data any) (any, error) {
-	// Try fast JSON-specialized path first (handles map[string]any, []any, primitives)
+	// deepCopySubtree handles JSON trees (Tiers 0-2) and falls back to
+	// deepCopyValueWithDepth for non-JSON types (Tier 3) itself; both legs
+	// only fail past the depth limit, where the fallback below would fail
+	// identically. Kept as a guard so a future Tier-3 regression still
+	// produces a copy attempt rather than propagating the depth error.
 	if result, err := deepCopySubtree(data); err == nil {
 		return result, nil
 	}
-	// Fallback for non-JSON types (structs, typed slices, custom types)
 	return deepCopyValueWithDepth(data, 0)
 }
 

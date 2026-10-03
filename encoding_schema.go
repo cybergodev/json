@@ -152,7 +152,9 @@ func (p *Processor) validateValue(value any, schema *Schema, path string, errors
 		if str, ok := value.(string); ok {
 			p.validateString(str, schema, path, errors)
 		}
-	case "number":
+	case "number", "integer":
+		// "integer" values passed validateType above (integral only); their
+		// numeric range constraints share validateNumber with "number".
 		p.validateNumber(value, schema, path, errors)
 	}
 }
@@ -179,6 +181,30 @@ func (p *Processor) validateType(value any, expectedType string) bool {
 			// PreserveNumbers; without them EVERY number failed type checks
 			// ("expected type number, got json.Number") under that config.
 			return true
+		}
+		return false
+	case "integer":
+		// JSON Schema semantics: any mathematically integral value qualifies
+		// (1, 1.0, and 1e2 are all valid integers), so floats are accepted when
+		// they carry no fractional part. Number literals are checked by value
+		// via Float64, mirroring validateNumber's PreserveNumbers handling.
+		// Previously this case was missing and "integer" schemas rejected
+		// every input, including valid integers (D-002).
+		switch v := value.(type) {
+		case int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64:
+			return true
+		case float32:
+			f := float64(v)
+			return !math.IsNaN(f) && !math.IsInf(f, 0) && f == math.Trunc(f)
+		case float64:
+			return !math.IsNaN(v) && !math.IsInf(v, 0) && v == math.Trunc(v)
+		case Number:
+			f, err := v.Float64()
+			return err == nil && f == math.Trunc(f)
+		case json.Number:
+			f, err := v.Float64()
+			return err == nil && f == math.Trunc(f)
 		}
 		return false
 	case "boolean":

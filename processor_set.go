@@ -30,19 +30,60 @@ func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (result 
 	defer p.endGovernedOp()
 	defer releaseConfig(options)
 
+	// Per-call custom parser: delegate (see delegateForPerCallParser).
+	if q, derr := p.delegateForPerCallParser(options); derr != nil || q != nil {
+		if derr != nil {
+			p.incrementErrorCount()
+			return jsonStr, derr
+		}
+		defer q.Close()
+		return q.Set(jsonStr, path, value)
+	}
+
+	// Rate limiting, matching Get (D-002): the limit previously guarded only
+	// reads, so writes bypassed it entirely — one more way the five
+	// operations' prologues had drifted. No-op unless operationWindow > 0
+	// (disabled by default).
+	if p.metrics.operationWindow > 0 {
+		if err := p.checkRateLimit(); err != nil {
+			return jsonStr, err
+		}
+	}
+
 	// Count the operation for stats. Get has always incremented the counters;
 	// mutations previously went unreported, so GetStats() undercounted every
 	// write. Failure paths below increment the error counter, as Get does.
 	p.incrementOperationCount()
 
+	// Metrics timing, matching Get (D-002): write latency/errors were absent
+	// from RecordOperation, so GetStats/HealthChecker misrepresented
+	// write-heavy workloads. No-op unless EnableMetrics is set.
+	var metricsCollector *internal.MetricsCollector
+	var startTime time.Time
+	if p.metrics != nil && p.metrics.enabled {
+		metricsCollector = p.metrics.collector
+		if metricsCollector != nil {
+			startTime = time.Now()
+			metricsCollector.StartConcurrentOperation()
+		}
+	}
+	defer func() {
+		if metricsCollector != nil {
+			metricsCollector.EndConcurrentOperation()
+			if !startTime.IsZero() {
+				metricsCollector.RecordOperation(time.Since(startTime), err == nil, 0)
+			}
+		}
+	}()
+
 	// Run registered hooks around the operation. A Before hook may abort; an
 	// After hook may observe or transform the result/error. Registered last so
-	// it unwinds first (hooks see the raw result). snapshotHooks is nil in the
-	// common no-hook case, so the whole block is skipped.
-	hc := p.snapshotHooks()
+	// it unwinds first (hooks see the raw result). Per-call cfg.Hooks are
+	// merged with the processor's hooks (hooksForOptions).
+	hc := p.hooksForOptions(options)
 	if len(hc) > 0 {
 		hookCtx := HookContext{
-			Operation: "set",
+			Operation: opNameSet,
 			JSONStr:   jsonStr,
 			Path:      path,
 			Value:     value,
@@ -128,7 +169,9 @@ func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (result 
 // Returns:
 //   - On success: modified JSON string and nil error
 //   - On failure: original unmodified JSON string and error information
-func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...Config) (string, error) {
+//   - With ContinueOnError=true and partial failures: the modified JSON
+//     string (successes applied) and an errors.Join of every failed path
+func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...Config) (result string, err error) {
 	// Concurrency governance first (includes the closed-check via beginGovernedOp),
 	// matching Set/Delete ordering. Previously SetMultiple only did a single
 	// checkClosed() at entry, so it was neither concurrency-limited nor drained
@@ -151,10 +194,54 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 	}
 	defer releaseConfig(options)
 
+	// Batch size bound, matching ProcessBatch (D-002): an unbounded updates
+	// map is the same memory-exhaustion vector MaxBatchSize exists for, but
+	// SetMultiple never enforced it.
+	if len(updates) > options.MaxBatchSize {
+		p.incrementErrorCount()
+		return jsonStr, &JsonsError{
+			Op:      "set_multiple",
+			Message: fmt.Sprintf("batch size %d exceeds maximum %d (Config.MaxBatchSize)", len(updates), options.MaxBatchSize),
+			Err:     ErrSizeLimit,
+		}
+	}
+
 	// Count the operation for stats — see Set for the rationale (mutations
 	// previously went unreported, undercounting GetStats). Error returns below
 	// increment the error counter, as Get does.
 	p.incrementOperationCount()
+
+	// Per-call custom parser: delegate (see delegateForPerCallParser).
+	if q, derr := p.delegateForPerCallParser(options); derr != nil || q != nil {
+		if derr != nil {
+			p.incrementErrorCount()
+			return jsonStr, derr
+		}
+		defer q.Close()
+		return q.SetMultiple(jsonStr, updates)
+	}
+
+	// Run registered hooks around the batch operation (D-002): SetMultiple
+	// previously ran NO hooks, so audit/transform coverage silently
+	// disappeared for batch writes while Set/Delete had it. Before may abort;
+	// After observes or transforms the (string) result.
+	hc := p.hooksForOptions(options)
+	if len(hc) > 0 {
+		hookCtx := HookContext{
+			Operation: "set_multiple",
+			JSONStr:   jsonStr,
+			Path:      fmt.Sprintf("(%d updates)", len(updates)),
+			Config:    options,
+			StartTime: time.Now(),
+		}
+		if hookErr := hc.executeBefore(hookCtx); hookErr != nil {
+			p.incrementErrorCount()
+			return jsonStr, hookErr
+		}
+		defer func() {
+			result, err = hc.executeAfterString(hookCtx, result, err)
+		}()
+	}
 
 	// Validate JSON input. Honor SkipValidation (essential DoS checks only) to
 	// stay consistent with Set/Delete, which route through validateOperationInput.
@@ -230,6 +317,12 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 	}
 
 	// Apply all updates on the parsed data
+	//
+	// failures accumulates per-path errors under ContinueOnError so a partial
+	// batch is REPORTED (D-002): previously a 1-of-N failure with
+	// ContinueOnError=true returned (modifiedJSON, nil), contradicting the
+	// method contract and hiding that some updates never landed.
+	var failures []error
 	var lastError error
 	successCount := 0
 
@@ -250,6 +343,7 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 					Message: fmt.Sprintf("root data type conversion failed for path '%s': %v", path, err),
 					Err:     err,
 				}
+				failures = append(failures, lastError)
 				if !options.ContinueOnError {
 					p.incrementErrorCount()
 					return jsonStr, lastError
@@ -261,6 +355,7 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 					Message: fmt.Sprintf("failed to set path '%s': %v", path, err),
 					Err:     err,
 				}
+				failures = append(failures, lastError)
 				if !options.ContinueOnError {
 					p.incrementErrorCount()
 					return jsonStr, lastError
@@ -288,7 +383,7 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 
 	// Convert modified data back to JSON string
 	// PERFORMANCE: Use FastMarshalToString instead of json.Marshal
-	result, err := internal.FastMarshalToString(data)
+	result, err = internal.FastMarshalToString(data)
 	if err != nil {
 		p.incrementErrorCount()
 		// Return original data if marshaling fails
@@ -297,6 +392,15 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 			Message: "failed to marshal modified data",
 			Err:     err,
 		}
+	}
+
+	// Partial failure under ContinueOnError: successes were applied, so the
+	// modified document is returned — but the caller must be able to detect
+	// that some updates failed (see failures above). errors.Join carries
+	// every failed path as a *JsonsError (D-002).
+	if len(failures) > 0 {
+		p.incrementErrorCount()
+		return result, errors.Join(failures...)
 	}
 
 	return result, nil

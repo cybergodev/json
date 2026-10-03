@@ -906,11 +906,11 @@ func TestConcurrentCacheSafety(t *testing.T) {
 			concurrency: 20,
 			iterations:  50,
 			workload: func(_, _ int) error {
+				// D-002: exercises the real path-segment cache via ParsePath
+				// (the old body used the removed GlobalPathIntern directly).
 				for _, path := range []string{"simple", "nested.path", "array[0].item"} {
-					if segments, ok := internal.GlobalPathIntern.Get(path); ok {
-						if len(segments) == 0 {
-							return errPtr("empty segments for path " + path)
-						}
+					if _, err := internal.ParsePath(path); err != nil {
+						return errPtr("parse path " + path + ": " + err.Error())
 					}
 				}
 				return nil

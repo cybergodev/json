@@ -2179,43 +2179,40 @@ func TestSet_ArrayIndex_Boundary(t *testing.T) {
 	})
 }
 
-// TestNavigateToPath_DistributedExtract covers getValueWithDistributedOperation
-// (operation_array.go) and handleDistributedOperation (path.go): an extract
-// segment ({field}) followed by an array index/slice applies the array op to
-// the field extracted from each element of an array.
-func TestNavigateToPath_DistributedExtract(t *testing.T) {
+// TestDistributedExtractViaGet covers the extract-then-array-op behavior
+// (an extract segment ({field}) followed by an array index/slice applies the
+// array op to the field extracted from each element) through the public Get
+// API. The legacy navigateToPath/getValueWithDistributedOperation chain was
+// removed in D-002; the recursive engine owns this behavior now.
+func TestDistributedExtractViaGet(t *testing.T) {
 	p, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer p.Close()
 
-	data := map[string]any{
-		"items": []any{
-			map[string]any{"tags": []any{"a", "b"}},
-			map[string]any{"tags": []any{"c"}},
-		},
-	}
-
 	t.Run("index after extract", func(t *testing.T) {
-		got, err := p.navigateToPath(data, "items.{tags}[0]")
+		got, err := p.Get(`{"items":[{"tags":["a","b"]},{"tags":["c"]}]}`, "items.{tags}[0]")
 		if err != nil {
-			t.Fatalf("navigateToPath: %v", err)
+			t.Fatalf("Get: %v", err)
 		}
 		arr, ok := got.([]any)
 		if !ok {
 			t.Fatalf("got %T, want []any", got)
 		}
-		// first tag from each item -> ["a","c"]
-		if len(arr) != 2 || arr[0] != "a" || arr[1] != "c" {
-			t.Errorf("got %v, want [a c]", arr)
+		// {tags} extracts [["a","b"],["c"]], then [0] takes the FIRST
+		// extracted array — the recursive engine's semantics (see
+		// TestOperationDistributedGet), NOT the removed legacy chain's
+		// per-element indexing.
+		if len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
+			t.Errorf("got %v, want [a b]", arr)
 		}
 	})
 
 	t.Run("slice after extract", func(t *testing.T) {
-		got, err := p.navigateToPath(data, "items.{tags}[0:1]")
+		got, err := p.Get(`{"items":[{"tags":["a","b"]},{"tags":["c"]}]}`, "items.{tags}[0:1]")
 		if err != nil {
-			t.Fatalf("navigateToPath: %v", err)
+			t.Fatalf("Get: %v", err)
 		}
 		if _, ok := got.([]any); !ok {
 			t.Errorf("got %T, want []any", got)
@@ -2223,49 +2220,45 @@ func TestNavigateToPath_DistributedExtract(t *testing.T) {
 	})
 }
 
-// TestNavigateToPath_JSONPointer_Edges covers navigateJSONPointer (path.go)
-// branches via the dot/pointer navigator: tilde escapes (~0 -> ~, ~1 -> /),
-// the "-" past-end token, and out-of-bounds indices, which resolve to nil
-// (not-found) rather than an error.
-func TestNavigateToPath_JSONPointer_Edges(t *testing.T) {
+// TestJSONPointer_EdgesViaGet covers JSON Pointer edge cases through the
+// public Get API: tilde escapes (~0 -> ~, ~1 -> /), the "-" past-end token,
+// and out-of-bounds indices. The legacy navigateJSONPointer was removed in
+// D-002; the recursive engine owns pointer navigation now. Note the engine's
+// not-found semantics for pointers: "-" and out-of-bounds indices resolve to
+// nil values without error (the legacy navigator returned ErrPathNotFound —
+// a divergence absorbed when the chain was removed).
+func TestJSONPointer_EdgesViaGet(t *testing.T) {
 	p, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer p.Close()
 
-	tests := []struct {
-		name    string
-		data    any
-		path    string
-		wantErr bool
-		want    any
-	}{
-		{"tilde1 slash escape", map[string]any{"a/b": float64(1)}, "/a~1b", false, float64(1)},
-		{"tilde0 escape", map[string]any{"a~b": float64(2)}, "/a~0b", false, float64(2)},
-		{"dash past-end not found", map[string]any{"a": []any{float64(1), float64(2)}}, "/a/-", true, nil},
-		{"out-of-bounds index not found", map[string]any{"a": []any{float64(1), float64(2)}}, "/a/9", true, nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := p.navigateToPath(tt.data, tt.path)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("navigateToPath(%q) expected error, got nil (val=%v)", tt.path, got)
-				}
-				if !errors.Is(err, ErrPathNotFound) {
-					t.Errorf("navigateToPath(%q) err = %q, want ErrPathNotFound", tt.path, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("navigateToPath() unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("navigateToPath(%q) = %v (%T), want %v", tt.path, got, got, tt.want)
-			}
-		})
-	}
+	t.Run("tilde1 slash escape", func(t *testing.T) {
+		got, err := p.Get(`{"a/b":1}`, "/a~1b")
+		if err != nil || got != float64(1) {
+			t.Errorf("Get(/a~1b) = %v, err=%v; want 1", got, err)
+		}
+	})
+	t.Run("tilde0 escape", func(t *testing.T) {
+		got, err := p.Get(`{"a~b":2}`, "/a~0b")
+		if err != nil || got != float64(2) {
+			t.Errorf("Get(/a~0b) = %v, err=%v; want 2", got, err)
+		}
+	})
+	t.Run("dash past-end distributes as nils", func(t *testing.T) {
+		got, err := p.Get(`{"a":[1,2]}`, "/a/-")
+		arr, ok := got.([]any)
+		if err != nil || !ok || len(arr) != 2 || arr[0] != nil || arr[1] != nil {
+			t.Errorf("Get(/a/-) = %v (%T), err=%v; want [nil nil]", got, got, err)
+		}
+	})
+	t.Run("out-of-bounds index is nil without error", func(t *testing.T) {
+		got, err := p.Get(`{"a":[1,2]}`, "/a/9")
+		if err != nil || got != nil {
+			t.Errorf("Get(/a/9) = %v, err=%v; want nil, nil", got, err)
+		}
+	})
 }
 
 // ============================================================================

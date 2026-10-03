@@ -67,6 +67,16 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	}
 	defer releaseConfig(options)
 
+	// Per-call custom parser: delegate (see delegateForPerCallParser).
+	if q, derr := p.delegateForPerCallParser(options); derr != nil || q != nil {
+		if derr != nil {
+			p.incrementErrorCount()
+			return nil, derr
+		}
+		defer q.Close()
+		return q.Get(jsonStr, path)
+	}
+
 	// PERFORMANCE: Metrics tracking — only allocate closures when metrics are enabled
 	var metricsCollector *internal.MetricsCollector
 	var startTime time.Time
@@ -100,12 +110,12 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	// Run registered hooks around the operation. A Before hook may abort the
 	// operation by returning an error; an After hook may observe or transform the
 	// result/error. This defer is registered last so it unwinds first, letting
-	// hooks see the raw result before metrics/logging cleanup run. snapshotHooks
-	// returns nil in the common no-hook case, so the whole block is skipped.
-	hc := p.snapshotHooks()
+	// hooks see the raw result before metrics/logging cleanup run. Per-call
+	// cfg.Hooks are merged with the processor's hooks (hooksForOptions).
+	hc := p.hooksForOptions(options)
 	if len(hc) > 0 {
 		hookCtx := HookContext{
-			Operation: "get",
+			Operation: opNameGet,
 			JSONStr:   jsonStr,
 			Path:      path,
 			Config:    options,
@@ -134,7 +144,8 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	// json.Unmarshal which always yields float64, so a big-integer property would
 	// lose precision here. When PreserveNumbers is on, fall through to parseJSON
 	// (which routes to p.Parse and preserves json.Number).
-	if isSimplePropertyAccess(path) && !p.config.EnableCache && !p.config.PreserveNumbers && len(cfg) == 0 {
+	if isSimplePropertyAccess(path) && !p.config.EnableCache && !p.config.PreserveNumbers && len(cfg) == 0 &&
+		p.config.CustomPathParser == nil { // custom syntax: never simple (D-002/M33)
 		m, isObj, parseErr := unmarshalRootObject(jsonStr)
 		if parseErr != nil {
 			p.incrementErrorCount()
@@ -250,10 +261,32 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 		}
 	}
 
-	// Cache result if enabled
+	// Cache result if enabled. The result aliases the shared parse tree (or
+	// the cached parse entry), so the caller must receive an independent copy —
+	// symmetric with the hit path above. Without this, the FIRST caller held
+	// the very map/slice stored in the get: cache (and aliased into the
+	// parse: cache), and any mutation poisoned every subsequent hit (D-002).
 	p.setCachedResult(cacheKey, result, options)
-
-	return result, nil
+	if p.config.CacheSharedResults {
+		// Caller opted into the shared, do-not-mutate contract (see hit path).
+		return result, nil
+	}
+	switch result.(type) {
+	case nil, bool, float64, string, json.Number:
+		// Immutable JSON primitives — no copy needed (mirrors hit path).
+		return result, nil
+	}
+	copied, copyErr := deepCopySubtree(result)
+	if copyErr != nil {
+		p.incrementErrorCount()
+		return nil, &JsonsError{
+			Op:      "get",
+			Path:    path,
+			Message: fmt.Sprintf("cache copy failed: %v", copyErr),
+			Err:     copyErr,
+		}
+	}
+	return copied, nil
 }
 
 // GetWithContext retrieves a value from JSON with boundary-level context checks.
@@ -494,7 +527,7 @@ func (p *Processor) GetObject(jsonStr, path string, defaultValue ...map[string]a
 }
 
 // GetMultiple retrieves multiple values from JSON using multiple path expressions
-func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (map[string]any, error) {
+func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (results map[string]any, err error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
 	}
@@ -509,6 +542,34 @@ func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (
 	// Count the operation for stats — see Set for the rationale. Get has
 	// always counted; GetMultiple previously did not.
 	p.incrementOperationCount()
+
+	// Run registered hooks around the batch operation (D-002): GetMultiple
+	// previously ran NO hooks, so audit/transform coverage silently
+	// disappeared for batch reads while Get had it. Before may abort; After
+	// observes or transforms the results map.
+	hc := p.hooksForOptions(options)
+	if len(hc) > 0 {
+		hookCtx := HookContext{
+			Operation: "get_multiple",
+			JSONStr:   jsonStr,
+			Path:      fmt.Sprintf("(%d paths)", len(paths)),
+			Config:    options,
+			StartTime: time.Now(),
+		}
+		if hookErr := hc.executeBefore(hookCtx); hookErr != nil {
+			p.incrementErrorCount()
+			return nil, hookErr
+		}
+		defer func() {
+			// Coerce like executeAfterString: a non-map After result is a
+			// no-op on the result (original kept); the error still propagates.
+			r, e := hc.executeAfter(hookCtx, results, err)
+			if m, ok := r.(map[string]any); ok {
+				results = m
+			}
+			err = e
+		}()
+	}
 
 	if err := p.validateInputForOptions(jsonStr, options); err != nil {
 		p.incrementErrorCount()
@@ -527,7 +588,7 @@ func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (
 	}
 
 	// Sequential processing
-	results := make(map[string]any, len(paths))
+	results = make(map[string]any, len(paths))
 	var firstError error
 	for _, path := range paths {
 		if err := p.validatePath(path); err != nil {

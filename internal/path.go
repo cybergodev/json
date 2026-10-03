@@ -24,7 +24,11 @@ const (
 	pathCacheEvictCount    = 1000  // Number of entries to evict when limit reached
 )
 
-// pathCacheEntry wraps cached segments with access time for LRU eviction
+// pathCacheEntry wraps cached segments with access time for LRU eviction.
+// Stored in the sync.Map BY POINTER: CompareAndSwap (used by the read path's
+// access-time refresh) requires comparable values, and the struct itself is
+// not comparable (slice field). Pointer identity is also the exact-match
+// semantics the refresh wants.
 type pathCacheEntry struct {
 	segments   []PathSegment
 	lastAccess int64
@@ -48,15 +52,23 @@ func getCachedPathSegments(path string) ([]PathSegment, bool) {
 		return nil, false
 	}
 	if v, ok := pathSegmentCache.Load(path); ok {
-		entry, ok := v.(pathCacheEntry)
-		if !ok {
+		entry, ok := v.(*pathCacheEntry)
+		if !ok || entry == nil {
 			return nil, false
 		}
 		// PERFORMANCE: Update access time only every ~1 second to avoid
 		// time.Now() syscall on every cache hit. Approximate LRU is sufficient.
 		now := time.Now().UnixNano()
 		if now-entry.lastAccess > int64(time.Second) {
-			pathSegmentCache.Store(path, pathCacheEntry{
+			// RACE FIX (D-002): a plain Store here re-created the entry after
+			// a concurrent eviction deleted it — without incrementing
+			// pathCacheSize. Each occurrence permanently under-counted by
+			// one, and once the counter drifted below pathCacheMaxSize,
+			// eviction (triggered only at count >= max) never ran again:
+			// unbounded growth of this process-global cache. CAS replaces
+			// the entry only if it is still the one we loaded; if eviction
+			// won the race, skip the refresh entirely.
+			pathSegmentCache.CompareAndSwap(path, entry, &pathCacheEntry{
 				segments:   entry.segments,
 				lastAccess: now,
 			})
@@ -83,8 +95,8 @@ func setCachedPathSegments(path string, segments []PathSegment) {
 	copied := make([]PathSegment, len(segments))
 	copy(copied, segments)
 
-	// Wrap in entry for LRU tracking
-	entry := pathCacheEntry{
+	// Wrap in entry for LRU tracking (stored by pointer — see type comment)
+	entry := &pathCacheEntry{
 		segments:   copied,
 		lastAccess: time.Now().UnixNano(),
 	}
@@ -116,7 +128,7 @@ func evictPathCacheEntries() {
 	candidates := make([]evictionCandidate, 0, pathCacheMaxSize/10) // Estimate
 
 	pathSegmentCache.Range(func(key, value any) bool {
-		if entry, ok := value.(pathCacheEntry); ok {
+		if entry, ok := value.(*pathCacheEntry); ok && entry != nil {
 			candidates = append(candidates, evictionCandidate{
 				path:       func() string { s, _ := key.(string); return s }(),
 				lastAccess: entry.lastAccess,
@@ -592,6 +604,14 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 		for i := 0; i <= pathLen; i++ {
 			if i == pathLen || path[i] == '.' {
 				part := path[start:i]
+				start = i + 1
+				if part == "" {
+					// Drop empty parts (".a", "a.", "a..b") so this fast path
+					// agrees with SplitPathIntoSegments, which skips them —
+					// previously Get(".a") emitted PropertySegment("") and
+					// returned nil while Set(".a") wrote "a" (D-002).
+					continue
+				}
 				// Numeric index, bare wildcard ("*"), or property name.
 				if index, ok := ParseIntFast(part); ok {
 					var flags PathSegmentFlags
@@ -614,11 +634,10 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 						Key:  part,
 					}
 				}
-				start = i + 1
 				idx++
 			}
 		}
-		return segments, nil
+		return segments[:idx], nil
 	}
 
 	// Pre-calculate segment count for better allocation
@@ -961,9 +980,12 @@ func parseComplexSegment(part string) ([]PathSegment, error) {
 		// handled above), so nextSpecial is always > 0: consume the property
 		// name up to the next special character and loop.
 		propertyName := remaining[:nextSpecial]
+		// Unescape like the sibling branches (parsePropertyWithArray and
+		// parseDotNotation): `a\.b{x}` must look up the literal key "a.b",
+		// not "a\.b" (D-002).
 		segments = append(segments, PathSegment{
 			Type: PropertySegment,
-			Key:  propertyName,
+			Key:  UnescapePathSegment(propertyName),
 		})
 		remaining = remaining[nextSpecial:]
 	}

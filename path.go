@@ -127,7 +127,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		encoder := newCustomEncoder(config)
 		defer encoder.Close()
 
-		encodedJson, err := encoder.Encode(data)
+		encodedJSON, err := encoder.Encode(data)
 		if err != nil {
 			return &JsonsError{
 				Op:      "parse",
@@ -137,7 +137,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		}
 
 		// Use number-preserving unmarshal for final conversion
-		if err := preservingUnmarshal(stringToBytes(encodedJson), target, true); err != nil {
+		if err := preservingUnmarshal(stringToBytes(encodedJSON), target, true); err != nil {
 			return &JsonsError{
 				Op:      "parse",
 				Message: fmt.Sprintf("invalid JSON for target type %T: %v", target, err),
@@ -268,174 +268,77 @@ func stringToBytes(s string) []byte {
 	return internal.StringToBytes(s)
 }
 
-func (p *Processor) splitPath(path string, segments []internal.PathSegment) []internal.PathSegment {
+// splitPath splits a path into segments for the segment-based walkers
+// (Set's operation path, Delete's dot notation). D-002 (M33): when
+// Config.CustomPathParser is installed it replaces the standard splitter
+// entirely — its dot/bracket assumptions do not hold for custom syntaxes,
+// and the caller-provided scratch slice is not reused (custom parsers
+// return their own storage).
+func (p *Processor) splitPath(path string, segments []internal.PathSegment) ([]internal.PathSegment, error) {
+	if p.config.CustomPathParser != nil {
+		return p.config.CustomPathParser.ParsePath(path)
+	}
+
 	segments = segments[:0]
 
 	// Direct call to internal package - reduces method call overhead
 	if !internal.NeedsPathPreprocessing(path) {
-		return internal.SplitPathIntoSegments(path, segments)
+		return internal.SplitPathIntoSegments(path, segments), nil
 	}
 
 	sb := p.getStringBuilder()
 	defer p.putStringBuilder(sb)
 
 	processedPath := internal.PreprocessPath(path, sb)
-	return internal.SplitPathIntoSegments(processedPath, segments)
+	return internal.SplitPathIntoSegments(processedPath, segments), nil
 }
 
+// parsePath splits a path into string segments. Non-complex (pure dot
+// notation) paths — the only kind Delete's dot-notation walker routes here —
+// are split escape-aware with empty parts dropped, so "a\.b" resolves to the
+// literal key "a.b" like Get and Set do (D-002: the previous raw
+// strings.Split produced ["a\", "b"] and Delete failed with "path not found:
+// a\" while Get succeeded). Complex paths keep the historical
+// segment.String() rendering for direct callers.
 func (p *Processor) parsePath(path string) ([]string, error) {
 	if path == "" {
 		return []string{}, nil
 	}
 
-	if !p.isComplexPath(path) {
-		return strings.Split(path, "."), nil
-	}
-
 	segments := p.getPathSegments()
 	defer p.putPathSegments(segments)
 
-	*segments = p.splitPath(path, *segments)
+	var splitErr error
+	*segments, splitErr = p.splitPath(path, *segments)
+	if splitErr != nil {
+		return nil, splitErr
+	}
 
-	result := make([]string, len(*segments))
-	for i, segment := range *segments {
-		result[i] = segment.String()
+	if p.isComplexPath(path) {
+		result := make([]string, len(*segments))
+		for i, segment := range *segments {
+			result[i] = segment.String()
+		}
+		return result, nil
+	}
+
+	result := make([]string, 0, len(*segments))
+	for _, segment := range *segments {
+		switch segment.Type {
+		case internal.PropertySegment:
+			result = append(result, segment.Key)
+		case internal.ArrayIndexSegment:
+			// Dot-separated numerics ("a.0") parse as index segments but must
+			// stay numeric strings here: the dot-notation walker resolves
+			// them against []any parents (previously strings.Split produced
+			// "0" as a plain part).
+			result = append(result, strconv.Itoa(segment.Index))
+		default:
+			return nil, fmt.Errorf("unexpected segment type %v in dot-notation path %q", segment.Type, path)
+		}
 	}
 
 	return result, nil
-}
-
-func (p *Processor) handleDistributedOperation(data any, segments []internal.PathSegment) (any, error) {
-	return p.getValueWithDistributedOperation(data, internal.ReconstructPath(segments))
-}
-
-func (p *Processor) navigateToPath(data any, path string) (any, error) {
-	if path == "" || path == "." || path == "/" {
-		return data, nil
-	}
-
-	if strings.HasPrefix(path, "/") {
-		return p.navigateJSONPointer(data, path)
-	}
-
-	return p.navigateDotNotation(data, path)
-}
-
-func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
-	current := data
-
-	segments := p.getPathSegments()
-	defer p.putPathSegments(segments)
-
-	*segments = p.splitPath(path, *segments)
-
-	for i := 0; i < len(*segments); i++ {
-		segment := (*segments)[i]
-		if internal.IsExtractionSegment(segment) {
-			return p.handleDistributedOperation(current, (*segments)[i:])
-		}
-
-		switch segment.Type {
-		case internal.PropertySegment:
-			result := p.handlePropertyAccess(current, segment.Key)
-			if !result.exists {
-				return nil, ErrPathNotFound
-			}
-			current = result.value
-
-		case internal.ArrayIndexSegment:
-			result := p.handleArrayAccess(current, segment)
-			if !result.exists {
-				return nil, ErrPathNotFound
-			}
-			current = result.value
-
-		case internal.ArraySliceSegment:
-			result := p.handleArraySlice(current, segment)
-			if !result.exists {
-				return nil, ErrPathNotFound
-			}
-			current = result.value
-
-		case internal.ExtractSegment:
-			extractResult, err := p.handleExtraction(current, segment)
-			if err != nil {
-				return nil, err
-			}
-			current = extractResult
-
-			if i+1 < len(*segments) {
-				nextSegment := (*segments)[i+1]
-				if nextSegment.Type == internal.ArrayIndexSegment || nextSegment.Type == internal.ArraySliceSegment {
-					if segment.IsFlatExtract() {
-						if nextSegment.Type == internal.ArraySliceSegment {
-							result := p.handleArraySlice(current, nextSegment)
-							if result.exists {
-								current = result.value
-							}
-						} else {
-							result := p.handleArrayAccess(current, nextSegment)
-							if result.exists {
-								current = result.value
-							}
-						}
-					} else {
-						current = p.handlePostExtractionArrayAccess(current, nextSegment)
-					}
-					i++ // Skip the next segment since we just processed it
-				}
-			}
-
-		default:
-			return nil, fmt.Errorf("unsupported segment type: %v", segment.TypeString())
-		}
-	}
-
-	return current, nil
-}
-
-func (p *Processor) navigateJSONPointer(data any, path string) (any, error) {
-	if path == "/" {
-		return data, nil
-	}
-
-	pathWithoutSlash := path[1:]
-	segments := strings.Split(pathWithoutSlash, "/")
-
-	current := data
-
-	for _, segment := range segments {
-		if segment == "" {
-			continue
-		}
-
-		if strings.Contains(segment, "~") {
-			segment = internal.UnescapeJSONPointer(segment)
-		}
-
-		// RFC 6902: Array index access — numeric segments target array elements
-		if arr, ok := current.([]any); ok {
-			if idx, err := strconv.Atoi(segment); err == nil {
-				if idx >= 0 && idx < len(arr) {
-					current = arr[idx]
-					continue
-				}
-				return nil, ErrPathNotFound
-			}
-			// "-" refers to the (nonexistent) element after the end of the array
-			if segment == "-" {
-				return nil, ErrPathNotFound
-			}
-		}
-
-		result := p.handlePropertyAccess(current, segment)
-		if !result.exists {
-			return nil, ErrPathNotFound
-		}
-		current = result.value
-	}
-
-	return current, nil
 }
 
 func (p *Processor) handlePropertyAccess(data any, property string) propertyAccessResult {

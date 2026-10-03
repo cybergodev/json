@@ -282,22 +282,22 @@ func (c *Config) ValidateWithWarnings() []ConfigWarning {
 	// SEMANTIC: Values <= 0 are considered invalid and set to minimum
 	// This is appropriate for fields where 0 has no meaningful interpretation
 	// (e.g., sizes, counts, limits that must be positive)
-	checkInt64Clamp := func(ptr *int64, min, max int64, fieldName string) {
+	checkInt64Clamp := func(ptr *int64, minVal, maxVal int64, fieldName string) {
 		original := *ptr
 		if original <= 0 {
-			*ptr = min
+			*ptr = minVal
 			warnings = append(warnings, ConfigWarning{
 				Field:    fieldName,
 				OldValue: original,
-				NewValue: min,
+				NewValue: minVal,
 				Reason:   "value was invalid, set to minimum",
 			})
-		} else if original > max {
-			*ptr = max
+		} else if original > maxVal {
+			*ptr = maxVal
 			warnings = append(warnings, ConfigWarning{
 				Field:    fieldName,
 				OldValue: original,
-				NewValue: max,
+				NewValue: maxVal,
 				Reason:   "value exceeded maximum",
 			})
 		}
@@ -306,22 +306,22 @@ func (c *Config) ValidateWithWarnings() []ConfigWarning {
 	// Helper to record clamped int values
 	// SEMANTIC: Values <= 0 are considered invalid and set to minimum
 	// This is appropriate for fields where 0 has no meaningful interpretation
-	checkIntClamp := func(ptr *int, min, max int, fieldName string) {
+	checkIntClamp := func(ptr *int, minVal, maxVal int, fieldName string) {
 		original := *ptr
 		if original <= 0 {
-			*ptr = min
+			*ptr = minVal
 			warnings = append(warnings, ConfigWarning{
 				Field:    fieldName,
 				OldValue: original,
-				NewValue: min,
+				NewValue: minVal,
 				Reason:   "value was invalid, set to minimum",
 			})
-		} else if original > max {
-			*ptr = max
+		} else if original > maxVal {
+			*ptr = maxVal
 			warnings = append(warnings, ConfigWarning{
 				Field:    fieldName,
 				OldValue: original,
-				NewValue: max,
+				NewValue: maxVal,
 				Reason:   "value exceeded maximum",
 			})
 		}

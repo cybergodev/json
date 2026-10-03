@@ -9,6 +9,20 @@ import (
 )
 
 func (p *Processor) deleteValueAtPath(data any, path string) error {
+	// D-002 (M33): custom path syntax routes through the recursive engine
+	// exclusively — the dot-notation walker below assumes standard
+	// '.'-separated keys and would mis-split custom syntax. The existence
+	// pre-check preserves the "delete missing path → error" contract for
+	// precise custom paths (batch-style custom paths tolerate misses, same
+	// as built-in wildcard/extract paths).
+	if p.config.CustomPathParser != nil {
+		if _, err := p.recursiveProcessor.ProcessRecursively(data, path, opGet, nil); err != nil {
+			return err
+		}
+		_, err := p.recursiveProcessor.ProcessRecursively(data, path, opDelete, nil)
+		return err
+	}
+
 	// Handle JSON Pointer format
 	if strings.HasPrefix(path, "/") {
 		return p.deleteValueJSONPointer(data, path)

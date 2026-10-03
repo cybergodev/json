@@ -20,7 +20,30 @@ type sizeLimitedReader struct {
 
 func (l *sizeLimitedReader) Read(p []byte) (int, error) {
 	if l.remain <= 0 {
-		return 0, fmt.Errorf("json: input size exceeds maximum %d bytes", l.maxSize)
+		// Exactly-at-limit input is legal: probe the underlying reader to
+		// distinguish a genuinely exhausted source (clean io.EOF) from an
+		// oversized one. Previously a stream of exactly MaxJSONSize bytes
+		// failed on the decoder's trailing read, and the error was a bare
+		// fmt.Errorf instead of the ErrSizeLimit sentinel used by the
+		// non-streaming paths (D-002).
+		var probe [1]byte
+		for {
+			n, err := l.r.Read(probe[:])
+			if n > 0 {
+				return 0, &JsonsError{
+					Op:      "stream_read",
+					Message: fmt.Sprintf("json: input size exceeds maximum %d bytes", l.maxSize),
+					Err:     ErrSizeLimit,
+				}
+			}
+			if err != nil {
+				if err == io.EOF {
+					return 0, io.EOF
+				}
+				return 0, err
+			}
+			// (0, nil) is legal per io.Reader contract; retry the probe.
+		}
 	}
 	if int64(len(p)) > l.remain {
 		p = p[:l.remain]
@@ -105,6 +128,13 @@ func (si *StreamIterator) Next() bool {
 	if si.index < 0 {
 		token, err := si.decoder.Token()
 		if err != nil {
+			if err == io.EOF {
+				// Clean end before any value: an empty stream is NOT an error
+				// (D-002) — a bare io.EOF in Err() made callers treat
+				// emptiness as failure. Truncation WITHIN the array still
+				// surfaces via the element-decode paths below.
+				err = nil
+			}
 			si.err = err
 			si.done = true
 			return false
@@ -236,6 +266,10 @@ func (soi *StreamObjectIterator) Next() bool {
 		}
 
 		if token != json.Delim('{') {
+			// D-002: a non-object document previously ended iteration with
+			// Err() == nil, making corrupted input indistinguishable from a
+			// clean end. Surface it as an error.
+			soi.err = fmt.Errorf("StreamObjectIterator expects a JSON object, got %v", token)
 			soi.done = true
 			return false
 		}
@@ -262,6 +296,9 @@ func (soi *StreamObjectIterator) Next() bool {
 
 	keyStr, ok := key.(string)
 	if !ok {
+		// D-002: a non-string key is malformed JSON-object input; previously
+		// it ended iteration silently with Err() == nil.
+		soi.err = fmt.Errorf("StreamObjectIterator: non-string object key %v", key)
 		soi.done = true
 		return false
 	}

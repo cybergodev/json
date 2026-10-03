@@ -58,11 +58,11 @@ func (p *Processor) ProcessBatch(operations []BatchOperation, cfg ...Config) ([]
 		result := BatchResult{ID: op.ID}
 
 		switch op.Type {
-		case "get":
+		case opNameGet:
 			result.Result, result.Error = p.Get(op.JSONStr, op.Path, cfg...)
-		case "set":
+		case opNameSet:
 			result.Result, result.Error = p.Set(op.JSONStr, op.Path, op.Value, cfg...)
-		case "delete":
+		case opNameDelete:
 			result.Result, result.Error = p.Delete(op.JSONStr, op.Path, cfg...)
 		case "validate":
 			valid, err := p.Valid(op.JSONStr, cfg...)

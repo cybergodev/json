@@ -391,8 +391,13 @@ func TestEscapeRune_ConfigBranches(t *testing.T) {
 		{"newline raw when EscapeNewlines=false", func(c *Config) { c.EscapeNewlines = false }, "a\nb", "\"a\nb\""},
 		{"slash escaped when EscapeSlash=true", func(c *Config) { c.EscapeSlash = true }, "a/b", `"a\/b"`},
 		{"slash raw by default", func(c *Config) {}, "a/b", `"a/b"`},
-		{"U+2028 escaped with EscapeHTML", func(c *Config) {}, "ab", `"ab"`},
-		{"U+2028 raw without EscapeHTML", func(c *Config) { c.EscapeHTML = false }, "ab", "\"ab\""},
+		{"U+2028 escaped with EscapeHTML", func(c *Config) {}, "a\u2028b", `"a\u2028b"`},
+		// encoding/json escapes U+2028/U+2029 unconditionally — even under
+		// SetEscapeHTML(false) — because raw JS line terminators reintroduce
+		// the JSONP risk (D-002 fix; the old rows here tested "ab" without
+		// any U+2028 rune and were no-ops).
+		{"U+2028 escaped even without EscapeHTML", func(c *Config) { c.EscapeHTML = false }, "a\u2028b", `"a\u2028b"`},
+		{"U+2029 escaped even without EscapeHTML", func(c *Config) { c.EscapeHTML = false }, "a\u2029b", `"a\u2029b"`},
 		{"custom escape overrides control char", func(c *Config) {
 			c.CustomEscapes = map[rune]string{'\x01': `<01>`}
 		}, "a\x01b", `"a<01>b"`},

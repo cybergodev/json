@@ -966,29 +966,6 @@ func TestAPI_UnmarshalFromFile(t *testing.T) {
 	}
 }
 
-// TestIsSliceType tests the internal IsSliceType function
-func TestIsSliceType(t *testing.T) {
-	tests := []struct {
-		input    any
-		expected bool
-	}{
-		{[]any{1, 2, 3}, true},
-		{[]string{"a", "b"}, true},
-		{[]int{1, 2, 3}, true},
-		{map[string]any{"key": "value"}, false},
-		{"string", false},
-		{nil, false},
-		{42, false},
-	}
-
-	for i, tt := range tests {
-		result := internal.IsSliceType(tt.input)
-		if result != tt.expected {
-			t.Errorf("Test %d: IsSliceType(%T) = %v, want %v", i, tt.input, result, tt.expected)
-		}
-	}
-}
-
 // ============================================================================
 // CONFIG TESTS - Coverage for Clone, Validate edge cases
 // ============================================================================
@@ -2521,7 +2498,7 @@ func TestArrayBoundaryConditions(t *testing.T) {
 func TestFastEncoderFunctions(t *testing.T) {
 	t.Run("FastEncodeSimpleToBytes", func(t *testing.T) {
 		data := map[string]any{"key": "value", "num": 123}
-		result, ok := fastEncodeSimpleToBytes(data)
+		result, ok := getDefaultProcessor().fastEncodeSimpleToBytes(data, DefaultMaxDepth)
 		if !ok {
 			t.Error("fastEncodeSimpleToBytes should succeed for simple data")
 		}
@@ -2532,7 +2509,7 @@ func TestFastEncoderFunctions(t *testing.T) {
 
 	t.Run("FastEncodeSimpleToBytesWithHTMLEscape", func(t *testing.T) {
 		data := map[string]any{"html": "<script>"}
-		result, ok := fastEncodeSimpleToBytes(data)
+		result, ok := getDefaultProcessor().fastEncodeSimpleToBytes(data, DefaultMaxDepth)
 		if !ok {
 			t.Error("fastEncodeSimpleToBytes should succeed")
 		}

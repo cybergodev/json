@@ -25,19 +25,57 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 	defer p.endGovernedOp()
 	defer releaseConfig(options)
 
+	// Per-call custom parser: delegate (see delegateForPerCallParser).
+	if q, derr := p.delegateForPerCallParser(options); derr != nil || q != nil {
+		if derr != nil {
+			p.incrementErrorCount()
+			return jsonStr, derr
+		}
+		defer q.Close()
+		return q.Delete(jsonStr, path)
+	}
+
+	// Rate limiting + metrics timing, matching Get/Set (D-002): writes
+	// previously bypassed the rate limit and went unreported in operation
+	// metrics — prologue drift across the five operations. Both are no-ops
+	// by default (operationWindow=0, EnableMetrics=false).
+	if p.metrics.operationWindow > 0 {
+		if err := p.checkRateLimit(); err != nil {
+			return jsonStr, err
+		}
+	}
+
 	// Count the operation for stats — see Set for the rationale (mutations
 	// previously went unreported, undercounting GetStats). Error returns below
 	// increment the error counter, as Get does.
 	p.incrementOperationCount()
 
+	var metricsCollector *internal.MetricsCollector
+	var startTime time.Time
+	if p.metrics != nil && p.metrics.enabled {
+		metricsCollector = p.metrics.collector
+		if metricsCollector != nil {
+			startTime = time.Now()
+			metricsCollector.StartConcurrentOperation()
+		}
+	}
+	defer func() {
+		if metricsCollector != nil {
+			metricsCollector.EndConcurrentOperation()
+			if !startTime.IsZero() {
+				metricsCollector.RecordOperation(time.Since(startTime), err == nil, 0)
+			}
+		}
+	}()
+
 	// Run registered hooks around the operation. A Before hook may abort; an
 	// After hook may observe or transform the result/error. Registered last so
-	// it unwinds first (hooks see the raw result). snapshotHooks is nil in the
-	// common no-hook case, so the whole block is skipped.
-	hc := p.snapshotHooks()
+	// it unwinds first (hooks see the raw result). Per-call cfg.Hooks are
+	// merged with the processor's hooks (hooksForOptions).
+	hc := p.hooksForOptions(options)
 	if len(hc) > 0 {
 		hookCtx := HookContext{
-			Operation: "delete",
+			Operation: opNameDelete,
 			JSONStr:   jsonStr,
 			Path:      path,
 			Config:    options,
@@ -59,7 +97,8 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 	// PERFORMANCE: Fast path for simple property delete without cache or cleanup.
 	// compactArrays implies cleanupNulls below (empty arrays are compacted during
 	// reconstruction), so it must also opt out of this fast path.
-	if isSimplePropertyAccess(path) && !p.config.EnableCache && len(cfg) == 0 && !cleanupNulls && !compactArrays {
+	if isSimplePropertyAccess(path) && !p.config.EnableCache && len(cfg) == 0 && !cleanupNulls && !compactArrays &&
+		p.config.CustomPathParser == nil { // custom syntax: never simple (D-002/M33)
 		m, isObj, err := unmarshalRootObject(jsonStr)
 		if err != nil {
 			p.incrementErrorCount()
@@ -93,9 +132,6 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 		cleanupNulls = true
 	}
 
-	// Check if path contains array access - only then we need DeletedMarker cleanup
-	needsMarkerCleanup := p.isArrayDeletePath(path)
-
 	// Delete the value at the specified path
 	err = p.deleteValueAtPath(data, path)
 	if err != nil {
@@ -108,8 +144,15 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 		}
 	}
 
-	// Only clean up deleted markers if the path involved array operations
-	if needsMarkerCleanup {
+	// Remove deleted markers left by array-element deletes. Both delete paths
+	// (dot notation and the recursive engine) mark array elements with
+	// deletedMarker instead of splicing, so ANY delete targeting an array
+	// element can leave markers — including bracket-less paths ("a.0", "a.*")
+	// that the previous '['-based heuristic missed, corrupting the marshalled
+	// output with {} placeholders (D-002). Detection is by marker presence
+	// (allocation-free walk), not path shape: cleanupDeletedMarkers rebuilds
+	// every container it visits, so it only runs when a marker exists.
+	if containsDeletedMarker(data) {
 		data = p.cleanupDeletedMarkers(data)
 	}
 
@@ -134,16 +177,6 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 	}
 
 	return result, nil
-}
-
-// isArrayDeletePath checks if the path involves array operations that require marker cleanup
-func (p *Processor) isArrayDeletePath(path string) bool {
-	for i := 0; i < len(path); i++ {
-		if path[i] == '[' {
-			return true
-		}
-	}
-	return false
 }
 
 // DeleteClean removes a value from JSON and cleans up the resulting null

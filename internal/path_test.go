@@ -155,21 +155,6 @@ func TestCompilePath(t *testing.T) {
 	}
 }
 
-func TestCompilePathUnsafe(t *testing.T) {
-	t.Run("valid path", func(t *testing.T) {
-		cp, err := CompilePathUnsafe("user.name")
-		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
-			return
-		}
-		defer cp.Release()
-
-		if cp.Len() != 2 {
-			t.Errorf("Len() = %d, want 2", cp.Len())
-		}
-	})
-}
-
 func TestCompiledPath_Methods(t *testing.T) {
 	cp, err := CompilePath("user.profile.name")
 	if err != nil {
@@ -181,19 +166,6 @@ func TestCompiledPath_Methods(t *testing.T) {
 		segs := cp.Segments()
 		if len(segs) != 3 {
 			t.Errorf("Segments() returned %d segments, want 3", len(segs))
-		}
-	})
-
-	t.Run("Hash", func(t *testing.T) {
-		hash := cp.Hash()
-		if hash == 0 {
-			t.Error("Hash() should not return 0")
-		}
-		// Same path should produce same hash
-		cp2, _ := CompilePath("user.profile.name")
-		defer cp2.Release()
-		if cp.Hash() != cp2.Hash() {
-			t.Error("Same paths should produce same hash")
 		}
 	})
 
@@ -264,25 +236,7 @@ func TestCompiledPath_Get(t *testing.T) {
 	}
 }
 
-func TestCompiledPath_GetFromRaw(t *testing.T) {
-	raw := []byte(`{"user": {"name": "John"}}`)
-
-	cp, err := CompilePath("user.name")
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-	defer cp.Release()
-
-	result, err := cp.GetFromRaw(raw)
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-		return
-	}
-	if result != "John" {
-		t.Errorf("GetFromRaw() = %v, want 'John'", result)
-	}
-}
-
+// TestCompiledPath_Exists (restored header; GetFromRaw test removed above).
 func TestCompiledPath_Exists(t *testing.T) {
 	data := map[string]any{
 		"user": map[string]any{
@@ -340,7 +294,7 @@ func TestCompiledPathCache(t *testing.T) {
 		}
 
 		// Should return equivalent cached path (copies are independent but equal)
-		if cp1.Path() != cp2.Path() || cp1.Hash() != cp2.Hash() || cp1.Len() != cp2.Len() {
+		if cp1.Path() != cp2.Path() || cp1.Len() != cp2.Len() {
 			t.Error("Should return equivalent cached path")
 		}
 	})

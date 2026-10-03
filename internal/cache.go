@@ -79,7 +79,10 @@ type CacheManager struct {
 	// Memory management
 	maxMemory     int64 // Maximum memory for cache
 	highWatermark int64 // Memory threshold for proactive eviction (80% of max)
-	// Lifecycle management for cleanup goroutines
+	// Lifecycle management for cleanup goroutines.
+	// ctx is an OWNED lifecycle context (created in NewCacheManager, cancelled
+	// in Close) used solely to stop this cache's background cleanup workers —
+	// not a request context stored in a struct (which would be a leak vector).
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 	wg         sync.WaitGroup
@@ -837,6 +840,14 @@ func safeAdd(a, b, maxVal int64) (int64, bool) {
 
 // estimateSize estimates the memory size of a value more accurately
 // Uses int64 for intermediate calculations to prevent overflow
+//
+// KNOWN LIMITATION (D-002): for containers it counts only per-entry overhead
+// (e.g. 64 B/map entry) — NOT key strings or nested contents — so a parsed
+// 1MB document with 50 keys is accounted at ~3KB, two to three orders of
+// magnitude under its real footprint. The memory high-watermark (proactive
+// eviction at 80% of maxMemory) therefore rarely binds for tree-valued
+// entries; the ENTRY-COUNT LRU bound (MaxCacheSize) is the effective memory
+// limit in practice.
 func (cm *CacheManager) estimateSize(value any) int {
 	const maxEstimate int64 = 1 << 30 // 1GB max estimate to prevent overflow
 

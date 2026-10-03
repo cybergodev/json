@@ -588,7 +588,12 @@ func (urp *recursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 			endVal = len(container)
 		}
 
-		start, end := internal.NormalizeSlice(startVal, endVal, len(container))
+		// D-002: NormalizeSlice clamps end to len(container), so the extension
+		// check must run on the RAW requested end — with the clamped value the
+		// opSet branch below could never fire, and out-of-range slice writes
+		// on complex paths were silent partial no-ops (Set(doc, "x[0][3:6]", v)
+		// returned the document unchanged with no error).
+		needsSliceExtension := segment.HasEnd() && endVal > len(container)
 
 		if isLastSegment {
 			switch op {
@@ -607,11 +612,15 @@ func (urp *recursiveProcessor) handleArraySliceSegmentUnified(data any, segment 
 				}
 				return internal.PerformArraySlice(container, startPtr, endPtr, stepPtr), nil
 			case opSet:
-				// Check if we need to extend the array for slice assignment
-				if end > len(container) && createPaths {
-					// For array slice extension, we need to fall back to legacy handling
-					// because the unified processor can't modify parent references directly
-					return nil, fmt.Errorf("array slice extension required: use legacy handling for path with slice [%d:%d] on array length %d", start, end, len(container))
+				// Out-of-range slice write. The recursive engine cannot
+				// extend the array (it never replaces the parent's
+				// reference); simple-path slice extension (e.g. "arr[3:6]")
+				// is handled by Set's fast path before this engine runs.
+				// Error explicitly instead of the historical silent partial
+				// write (D-002: Set(doc, "x[0][3:6]", v) used to return the
+				// document unchanged with no error).
+				if needsSliceExtension {
+					return nil, fmt.Errorf("array slice [%d:%d] exceeds array length %d: slice extension is only supported on simple paths", startVal, endVal, len(container))
 				}
 
 				// Set value to all elements in slice, honoring the step (e.g.,
@@ -1173,35 +1182,34 @@ func (urp *recursiveProcessor) handleExtractThenSlice(data any, extractSegment, 
 				return []any{}, nil
 			}
 			return slicedData, nil
-		} else {
-			// More segments to process: slice first, then continue processing
-			if len(slicedData) == 0 {
-				return []any{}, nil
-			}
+		}
+		// More segments to process: slice first, then continue processing
+		if len(slicedData) == 0 {
+			return []any{}, nil
+		}
 
-			// Process remaining segments on each sliced element
-			var results []any
-			var errs []error
+		// Process remaining segments on each sliced element
+		var results []any
+		var errs []error
 
-			for _, item := range slicedData {
-				result, err := urp.processRecursivelyAtSegmentsWithOptions(item, segments, segmentIndex+2, op, value, false)
-				if err != nil {
-					errs = append(errs, err)
-					continue
-				}
-
-				if op == opGet {
-					// Keep nil results: an explicit JSON null is a real value.
-					results = append(results, result)
-				}
+		for _, item := range slicedData {
+			result, err := urp.processRecursivelyAtSegmentsWithOptions(item, segments, segmentIndex+2, op, value, false)
+			if err != nil {
+				errs = append(errs, err)
+				continue
 			}
 
 			if op == opGet {
-				return results, nil
+				// Keep nil results: an explicit JSON null is a real value.
+				results = append(results, result)
 			}
-
-			return nil, urp.combineErrors(errs)
 		}
+
+		if op == opGet {
+			return results, nil
+		}
+
+		return nil, urp.combineErrors(errs)
 	}
 
 	// No extraction results
@@ -1462,13 +1470,13 @@ func (urp *recursiveProcessor) findTargetArrayForDistributedOp(item any) []any {
 					if _, ok := nestedArr[0].(map[string]any); ok {
 						// This is the target array containing objects
 						return nestedArr
-					} else if _, ok := nestedArr[0].([]any); ok {
+					}
+					if _, ok := nestedArr[0].([]any); ok {
 						// Another level of nesting, recurse
 						return urp.findTargetArrayForDistributedOp(nestedArr)
-					} else {
-						// This is the target array containing primitive values (like strings)
-						return nestedArr
 					}
+					// This is the target array containing primitive values (like strings)
+					return nestedArr
 				}
 				// Return the nested array even if empty
 				return nestedArr

@@ -84,6 +84,27 @@ type FastEncoder struct {
 	// self-referential value (m["self"] = m) errors out instead of recursing
 	// until the goroutine stack is exhausted - a fatal, unrecoverable crash.
 	depth int
+	// maxDepthCap overrides maxEncodeDepth when positive. The root package
+	// sets it from Config.MaxDepth so the fast path enforces the SAME depth
+	// cap as the custom encoder (D-002: the fast path previously always used
+	// the package-wide 200, silently accepting trees the config'd path
+	// rejects at MaxDepth=100). Zero/negative = package default.
+	maxDepthCap int
+}
+
+// SetMaxEncodeDepth sets the per-encoder container-depth cap; n <= 0 resets
+// to the package default. Callers MUST reset (SetMaxEncodeDepth(0)) or rely
+// on the pool reset below — stale caps must never leak across users.
+func (e *FastEncoder) SetMaxEncodeDepth(n int) {
+	e.maxDepthCap = n
+}
+
+// effectiveMaxDepth returns the active depth cap for this encoder.
+func (e *FastEncoder) effectiveMaxDepth() int {
+	if e.maxDepthCap > 0 {
+		return e.maxDepthCap
+	}
+	return maxEncodeDepth
 }
 
 // maxEncodeDepth bounds container nesting during encoding. MaxNestingDepth is
@@ -95,9 +116,9 @@ const maxEncodeDepth = MaxNestingDepth
 // with it on the way out.
 func (e *FastEncoder) enterContainer() error {
 	e.depth++
-	if e.depth > maxEncodeDepth {
+	if limit := e.effectiveMaxDepth(); e.depth > limit {
 		e.depth--
-		return fmt.Errorf("json: unsupported value: nesting exceeds maximum depth %d (possible reference cycle)", maxEncodeDepth)
+		return fmt.Errorf("json: unsupported value: nesting exceeds maximum depth %d (possible reference cycle)", limit)
 	}
 	return nil
 }
@@ -146,6 +167,7 @@ func GetEncoder() *FastEncoder {
 	e := encoderPool.Get().(*FastEncoder)
 	e.buf = e.buf[:0]
 	e.depth = 0
+	e.maxDepthCap = 0
 	return e
 }
 
@@ -165,6 +187,7 @@ func GetEncoderWithSize(hint int) *FastEncoder {
 	}
 	e.buf = e.buf[:0]
 	e.depth = 0
+	e.maxDepthCap = 0
 	return e
 }
 
@@ -389,7 +412,9 @@ func (e *FastEncoder) encodeSlow(v any) error {
 
 // EncodeString encodes a JSON string
 // PERFORMANCE: Avoids reflection, uses inline escaping with combined UTF-8 validation
-// SECURITY: Validates UTF-8 encoding per RFC 8259. Escapes HTML chars when htmlEscape is set.
+// SECURITY: Validates UTF-8 encoding per RFC 8259. HTML escaping is NOT
+// applied here — callers post-process with HTMLEscapeBytes when needed
+// (FastEncoder has no escape-config field; the old comment referenced one).
 func (e *FastEncoder) EncodeString(s string) {
 	e.buf = append(e.buf, '"')
 
@@ -1292,6 +1317,16 @@ func (e *FastEncoder) EncodeMapStringInt64(m map[string]int64) error {
 
 // EncodeMapStringFloat64 encodes a map[string]float64
 func (e *FastEncoder) EncodeMapStringFloat64(m map[string]float64) error {
+	// Reject non-finite values up front (D-002): EncodeFloat silently emits
+	// null for them, while encoding/json returns UnsupportedValueError — the
+	// scalar and slice paths already reject (see EncodeValue). Pre-checking
+	// also avoids leaving a partial object in e.buf on error.
+	for _, v := range m {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return errUnsupportedFloat(v, 64)
+		}
+	}
+
 	// PERFORMANCE: Pre-grow buffer to reduce reallocations
 	needed := len(m) * 28
 	if cap(e.buf)-len(e.buf) < needed {

@@ -227,32 +227,11 @@ func TestCompiledPath_Navigate_Boundary(t *testing.T) {
 	})
 }
 
-// --- CompilePath error branch & GetFromRaw (compiled_path.go:71/166) ---
+// --- CompilePath error branch (compiled_path.go) ---
 
 func TestCompilePath_InvalidPath(t *testing.T) {
 	// Empty brackets -> ValidatePath rejects "empty array index".
 	if _, err := CompilePath("a[]"); err == nil {
 		t.Error("expected error for path with empty brackets")
 	}
-}
-
-func TestCompiledPath_GetFromRaw_Boundary(t *testing.T) {
-	cp, err := CompilePath("a")
-	if err != nil {
-		t.Fatalf("CompilePath err: %v", err)
-	}
-	t.Run("invalid_json", func(t *testing.T) {
-		if _, err := cp.GetFromRaw([]byte("not json")); err == nil {
-			t.Error("expected error for invalid JSON")
-		}
-	})
-	t.Run("valid", func(t *testing.T) {
-		v, err := cp.GetFromRaw([]byte(`{"a":7}`))
-		if err != nil {
-			t.Fatalf("err: %v", err)
-		}
-		if v != float64(7) {
-			t.Fatalf("got %v want 7", v)
-		}
-	})
 }

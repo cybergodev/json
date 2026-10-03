@@ -197,17 +197,17 @@ func (r *patternRegistry) List() []DangerousPattern {
 	return result
 }
 
-// ListByLevel returns patterns filtered by severity level.
-func (r *patternRegistry) ListByLevel(level PatternLevel) []DangerousPattern {
+// ListByLevel was removed in the D-002 cleanup: it had no callers in
+// production or tests.
+
+// Clear removes all registered patterns.
+// Len returns the number of registered patterns. Used by the security-scan
+// shortcut gates: a non-empty registry must disable them, or custom/global
+// patterns composed of non-indicator bytes are silently never scanned.
+func (r *patternRegistry) Len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	result := make([]DangerousPattern, 0)
-	for _, p := range r.patterns {
-		if p.Level == level {
-			result = append(result, p)
-		}
-	}
-	return result
+	return len(r.patterns)
 }
 
 // Clear removes all registered patterns.
@@ -228,6 +228,12 @@ func (r *patternRegistry) Clear() {
 //	    Name:    "Custom dangerous pattern",
 //	    Level:   json.PatternLevelCritical,
 //	})
+//
+// RegisterDangerousPattern adds a pattern to the global registry.
+//
+// LIMITATION (D-002): patterns at least securityScanWindowSize (32KB) long
+// are scanned with a byte-stride window sweep; keep patterns well below that
+// length — dangerous-pattern signatures are short substrings by nature.
 func RegisterDangerousPattern(pattern DangerousPattern) {
 	globalPatternRegistry.Add(pattern)
 }
@@ -242,40 +248,9 @@ func ListDangerousPatterns() []DangerousPattern {
 	return globalPatternRegistry.List()
 }
 
-// clearDangerousPatterns removes all custom patterns from the global registry.
-// Use with caution - this does not affect built-in patterns.
-func clearDangerousPatterns() {
-	globalPatternRegistry.Clear()
-}
-
-// getDefaultPatterns returns the built-in dangerous patterns as DangerousPattern values.
-// All default patterns are considered Critical level.
-// PERFORMANCE: Cached to avoid repeated allocation — the result is immutable.
-var getDefaultPatterns = sync.OnceValue(func() []DangerousPattern {
-	result := make([]DangerousPattern, len(dangerousPatterns))
-	for i, p := range dangerousPatterns {
-		result[i] = DangerousPattern{
-			Pattern: p.pattern,
-			Name:    p.name,
-			Level:   PatternLevelCritical,
-		}
-	}
-	return result
-})
-
-// getCriticalPatterns returns patterns that are always fully scanned.
-// PERFORMANCE: Cached to avoid repeated allocation — the result is immutable.
-var getCriticalPatterns = sync.OnceValue(func() []DangerousPattern {
-	result := make([]DangerousPattern, len(criticalPatterns))
-	for i, p := range criticalPatterns {
-		result[i] = DangerousPattern{
-			Pattern: p.pattern,
-			Name:    p.name,
-			Level:   PatternLevelCritical,
-		}
-	}
-	return result
-})
+// clearDangerousPatterns, getDefaultPatterns, and getCriticalPatterns were
+// moved to security_test.go in the D-002 cleanup: they had no production
+// callers and exist only as test conveniences.
 
 // indicatorChars is a pre-computed lookup table for indicator characters.
 // PERFORMANCE: O(1) lookup per character during security scanning.
@@ -610,7 +585,22 @@ func (sv *securityValidator) isValidationCached(jsonStr string) (validationKey, 
 // SECURITY FIX: Uses LRU-style eviction at 80% capacity to prevent memory spikes
 // SECURITY: Stores the exact validated input so isValidationCached can reject hash
 // collisions instead of trusting a non-cryptographic FNV key as identity.
+// validationCacheMaxInputSize caps the size of inputs retained in the
+// validation cache. The cache holds the exact input string as its collision
+// defense, but eviction is by ENTRY COUNT (securityCacheHighWatermark) — with
+// the default MaxJSONSize of 100MB, count-only bounds let 8,000 distinct 1MB
+// documents pin ~8GB per Processor inside the security layer itself, a memory
+// amplification the layer exists to prevent. Inputs above this threshold are
+// simply not cached: the cost is revalidation on every use (D-002).
+const validationCacheMaxInputSize = 256 * 1024
+
 func (sv *securityValidator) cacheValidationWithKey(cacheKey validationKey, jsonStr string) {
+	// MEMORY BOUND (D-002): see validationCacheMaxInputSize. Checked before
+	// taking the lock — oversized inputs never reach the map.
+	if len(jsonStr) > validationCacheMaxInputSize {
+		return
+	}
+
 	sv.cacheMutex.Lock()
 	defer sv.cacheMutex.Unlock()
 
@@ -690,10 +680,96 @@ func (sv *securityValidator) ValidatePathInput(path string) error {
 	return nil
 }
 
+// normalizeJSONEscapes returns s with JSON \uXXXX escape sequences (including
+// surrogate pairs) decoded to their literal characters. Every other byte —
+// including other backslash escapes like \n or \" and malformed/truncated \u
+// sequences — is copied verbatim. The result feeds pattern scanning only and
+// is never returned to callers or used as parsed data.
+//
+// SECURITY: dangerous-pattern matching runs on the raw JSON text, but JSON
+// permits any character to be written as \uXXXX. Without normalization a
+// payload like "<script>" or "__proto__" contains none of the
+// literal pattern bytes and evades every check, even though the decoded value
+// handed to the caller is dangerous. Notably the library's own encoder emits
+// < for '<' by default (EscapeHTML), so without this its own output
+// would evade its own scanner on re-validation. (D-002)
+func normalizeJSONEscapes(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		if s[i] == '\\' && i+5 < len(s) && s[i+1] == 'u' {
+			if r, width, ok := decodeJSONUnicodeEscape(s[i:]); ok {
+				b.WriteRune(r)
+				i += width
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// decodeJSONUnicodeEscape decodes one \uXXXX escape at the start of s,
+// combining a high+low surrogate pair into a single rune. It returns the
+// rune, the number of bytes consumed (6, or 12 for a surrogate pair), and
+// whether the sequence was a well-formed JSON unicode escape.
+func decodeJSONUnicodeEscape(s string) (rune, int, bool) {
+	r1, ok := parseHex4(s[2:6])
+	if !ok {
+		return 0, 0, false
+	}
+	if r1 >= 0xD800 && r1 <= 0xDBFF && len(s) >= 12 && s[6] == '\\' && s[7] == 'u' {
+		if r2, ok2 := parseHex4(s[8:12]); ok2 && r2 >= 0xDC00 && r2 <= 0xDFFF {
+			r := 0x10000 + (r1-0xD800)<<10 + (r2 - 0xDC00)
+			return rune(r), 12, true
+		}
+	}
+	// Lone surrogate: decode to utf8.RuneError so it still occupies a rune in
+	// the normalized view instead of being silently dropped or passed through.
+	if r1 >= 0xD800 && r1 <= 0xDFFF {
+		return utf8.RuneError, 6, true
+	}
+	return rune(r1), 6, true
+}
+
+// parseHex4 parses exactly 4 lowercase-or-uppercase hex digits into a rune.
+func parseHex4(s string) (rune, bool) {
+	var v rune
+	for i := 0; i < 4; i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			v = v<<4 | rune(c-'0')
+		case c >= 'a' && c <= 'f':
+			v = v<<4 | rune(c-'a'+10)
+		case c >= 'A' && c <= 'F':
+			v = v<<4 | rune(c-'A'+10)
+		default:
+			return 0, false
+		}
+	}
+	return v, true
+}
+
 func (sv *securityValidator) validateJSONSecurity(jsonStr string) error {
-	// Fast path: check for null bytes first (most critical)
+	// Fast path: check for null bytes first (most critical). This runs on the
+	// RAW text, before escape normalization: a literal NUL byte is invalid
+	// JSON and an injection marker, while an escaped \u0000 inside a string
+	// literal is valid JSON that encoding/json accepts — and that this
+	// library's own encoder emits — so it must not be conflated with a raw
+	// NUL (D-002).
 	if strings.IndexByte(jsonStr, 0) != -1 {
 		return newSecurityError("validate_json_security", "null byte injection detected")
+	}
+
+	// SECURITY (D-002): normalize \uXXXX escapes BEFORE the pattern gates and
+	// scans so escape-encoded payloads are inspected in their decoded form —
+	// otherwise they bypass the pattern check entirely (see
+	// normalizeJSONEscapes). The Contains gate keeps documents without \u
+	// escapes on a zero-cost path.
+	if strings.Contains(jsonStr, `\u`) {
+		jsonStr = normalizeJSONEscapes(jsonStr)
 	}
 
 	// Fast path: for small JSON strings, use the original approach
@@ -716,7 +792,10 @@ func (sv *securityValidator) validateJSONSecurity(jsonStr string) error {
 			break
 		}
 	}
-	if !hasLetters {
+	// D-002 (gate fix): the shortcut previously ignored caller-registered
+	// patterns entirely — a numeric-only custom pattern (card numbers, SSNs)
+	// on a >4KB numeric payload was never scanned.
+	if !hasLetters && len(sv.additionalPatterns) == 0 && globalPatternRegistry.Len() == 0 {
 		return nil
 	}
 
@@ -767,7 +846,10 @@ func (sv *securityValidator) validateJSONSecurityOptimized(jsonStr string) error
 	// indicator set, so bypass the shortcut when any are configured; globally
 	// registered patterns are still subject to the shortcut but are scanned
 	// live in scanWindowForPatterns once the rolling window runs.
-	if !sv.hasIndicatorChars(jsonStr) && len(sv.additionalPatterns) == 0 {
+	// D-002 (gate fix): include the GLOBAL registry in the shortcut
+	// condition — a registered pattern built only from non-indicator bytes
+	// (e.g. "mu-777") was skipped here, contradicting the comment below.
+	if !sv.hasIndicatorChars(jsonStr) && len(sv.additionalPatterns) == 0 && globalPatternRegistry.Len() == 0 {
 		return nil
 	}
 
@@ -820,6 +902,15 @@ func (sv *securityValidator) scanWithRollingWindow(jsonStr string) error {
 
 	// Window size tuned for cache efficiency
 	windowSize := securityScanWindowSize
+	// D-002: a registered pattern at least as long as the default window can
+	// never fit inside any window (the byte-stride fallback below guarantees
+	// coverage only up to window length). Grow the window past the longest
+	// pattern by a full default window so the stride
+	// (windowSize-overlapSize) stays near the normal ~32KB instead of
+	// degenerating to a byte-by-byte sweep.
+	if overlapSize >= windowSize {
+		windowSize = overlapSize + securityScanWindowSize
+	}
 
 	// For smaller JSON, just scan it all
 	if jsonLen <= windowSize*2 {
@@ -838,8 +929,15 @@ func (sv *securityValidator) scanWithRollingWindow(jsonStr string) error {
 		// Move to next window, but overlap by the max pattern length
 		nextOffset := offset + windowSize - overlapSize
 		if nextOffset <= offset {
-			// Ensure forward progress even with large overlap
-			nextOffset = end
+			// Overlap >= window size (a registered pattern of at least
+			// securityScanWindowSize). The old fallback jumped straight to
+			// `end`, leaving a zero-overlap seam a boundary-straddling
+			// occurrence could fall through despite the "guarantees 100%
+			// coverage" claim. Advance one byte instead: windows then overlap
+			// by windowSize-1, covering every pattern up to
+			// securityScanWindowSize. The O(n*window) cost only applies to
+			// such pathological patterns (D-002).
+			nextOffset = offset + 1
 		}
 		offset = nextOffset
 	}

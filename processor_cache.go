@@ -136,6 +136,12 @@ func formatUint64HexString(v uint64) string {
 // segments as read-only, the same contract all other ParsePath callers
 // already rely on.
 func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, error) {
+	// D-002 (M33): honor Config.CustomPathParser. Custom parsers bypass the
+	// global segment cache — it is keyed by path string alone and cannot
+	// distinguish parser implementations.
+	if p.config.CustomPathParser != nil {
+		return p.config.CustomPathParser.ParsePath(path)
+	}
 	return internal.ParsePath(path)
 }
 

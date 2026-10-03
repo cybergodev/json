@@ -24,8 +24,17 @@ type Config struct {
 	// ===== Cache Settings =====
 	MaxCacheSize int           `json:"max_cache_size"`
 	CacheTTL     time.Duration `json:"cache_ttl"`
-	EnableCache  bool          `json:"enable_cache"`
-	CacheResults bool          `json:"cache_results"` // Per-operation caching
+
+	// EnableCache turns on the result/parse caches. SECURITY NOTE (D-002):
+	// cache identity is a 64-bit FNV-1a hash of the input document — fast,
+	// but collision-constructible by an attacker who controls stored
+	// payloads. A deliberate collision can serve one document's cached
+	// result for another. For workloads where attackers control BOTH
+	// documents that hash to the same key, disable caching (or key results
+	// externally). Accidental collisions remain astronomically unlikely.
+	EnableCache bool `json:"enable_cache"`
+
+	CacheResults bool `json:"cache_results"` // Per-operation caching
 
 	// CacheSharedResults, when true, lets cache-hit Get/GetFromParsed return the
 	// cached value directly WITHOUT a defensive deep copy. This eliminates the
@@ -206,8 +215,15 @@ type Config struct {
 	// Hooks provide before/after interception for operations.
 	Hooks []Hook
 
-	// CustomPathParser replaces the default path parser.
-	// If set, path parsing uses this parser instead of the built-in one.
+	// CustomPathParser replaces the default path parser for ALL path-based
+	// operations (Get/Set/Delete/iterate). If set, ParsePath is invoked
+	// instead of the built-in splitter on every operation path, and its
+	// results bypass the global path-segment cache (the cache is keyed by
+	// path string and cannot distinguish parser implementations).
+	//
+	// D-002 (M33): previously this field was documented but never invoked —
+	// setting it changed no behavior. Configs carrying a custom parser are
+	// also excluded from the config-processor cache (see getProcessorWithConfig).
 	CustomPathParser PathParser
 }
 

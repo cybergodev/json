@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -2026,3 +2027,43 @@ func TestP001WindowPrefilterEquivalence(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// TEST-ONLY SECURITY HELPERS (moved from security.go in the D-002 cleanup:
+// they had no production callers and exist only as test conveniences).
+// ============================================================================
+
+// clearDangerousPatterns removes all custom patterns from the global registry.
+// Use with caution - this does not affect built-in patterns.
+func clearDangerousPatterns() {
+	globalPatternRegistry.Clear()
+}
+
+// getDefaultPatterns returns the built-in dangerous patterns as DangerousPattern values.
+// All default patterns are considered Critical level.
+// PERFORMANCE: Cached to avoid repeated allocation — the result is immutable.
+var getDefaultPatterns = sync.OnceValue(func() []DangerousPattern {
+	result := make([]DangerousPattern, len(dangerousPatterns))
+	for i, p := range dangerousPatterns {
+		result[i] = DangerousPattern{
+			Pattern: p.pattern,
+			Name:    p.name,
+			Level:   PatternLevelCritical,
+		}
+	}
+	return result
+})
+
+// getCriticalPatterns returns patterns that are always fully scanned.
+// PERFORMANCE: Cached to avoid repeated allocation — the result is immutable.
+var getCriticalPatterns = sync.OnceValue(func() []DangerousPattern {
+	result := make([]DangerousPattern, len(criticalPatterns))
+	for i, p := range criticalPatterns {
+		result[i] = DangerousPattern{
+			Pattern: p.pattern,
+			Name:    p.name,
+			Level:   PatternLevelCritical,
+		}
+	}
+	return result
+})

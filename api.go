@@ -77,15 +77,6 @@ func withProcessorStringResult(fn func(*Processor) (string, error), jsonStr stri
 	return fn(p)
 }
 
-// withProcessorBytesResult handles operations that return []byte.
-func withProcessorBytesResult(fn func(*Processor) ([]byte, error)) ([]byte, error) {
-	p, err := getProcessorOrFail()
-	if err != nil {
-		return nil, err
-	}
-	return fn(p)
-}
-
 // withProcessorError handles operations that only return an error.
 func withProcessorError(fn func(*Processor) error) error {
 	p, err := getProcessorOrFail()
@@ -739,8 +730,10 @@ func DeleteClean(jsonStr, path string, cfg ...Config) (string, error) {
 }
 
 // Marshal returns the JSON encoding of v.
-// This function is 100% compatible with encoding/json.Marshal: calling it as
-// json.Marshal(v) behaves identically to the standard library.
+// Signature-compatible with encoding/json.Marshal and byte-compatible for
+// typical values, with one deliberate difference (D-002 doc correction): the
+// encoded output is capped at Config.MaxJSONSize (default 100MB) and returns
+// ErrSizeLimit instead of succeeding — stdlib has no such cap.
 //
 // For configuration options (indentation, number handling, etc.), pass an
 // optional Config. This mirrors Processor.Marshal, making the package-level
@@ -754,14 +747,22 @@ func DeleteClean(jsonStr, path string, cfg ...Config) (string, error) {
 //	// With configuration (non-breaking, optional trailing Config)
 //	b, err = json.Marshal(value, json.PrettyConfig())
 func Marshal(value any, cfg ...Config) ([]byte, error) {
-	return withProcessorBytesResult(func(p *Processor) ([]byte, error) {
+	return withProcessor(func(p *Processor) ([]byte, error) {
 		return p.Marshal(value, cfg...)
 	})
 }
 
 // Unmarshal parses the JSON-encoded data and stores the result in v.
-// This function is 100% compatible with encoding/json.Unmarshal: calling it as
-// json.Unmarshal(data, &v) behaves identically to the standard library.
+// Signature-compatible with encoding/json.Unmarshal, but the no-config call
+// applies this library's default security hardening — deliberate differences
+// from the standard library (D-002 doc correction):
+//   - input larger than Config.MaxJSONSize (default 100MB) → ErrSizeLimit
+//   - dangerous-pattern substrings in string values (e.g. "__proto__",
+//     "<script") → security violation; stdlib accepts them as plain data
+//   - invalid UTF-8 in string values → rejected; stdlib replaces it
+//
+// Pass SkipValidation: true in a Config for stdlib-exact lenient behavior on
+// trusted input, or a custom Config to tighten/loosen the limits.
 //
 // For configuration options (security limits, number preservation, etc.), pass
 // an optional Config. This mirrors Processor.Unmarshal.
@@ -796,7 +797,7 @@ func Unmarshal(data []byte, value any, cfg ...Config) error {
 //	// With configuration (non-breaking, optional trailing Config)
 //	b, err = json.MarshalIndent(v, "", "  ", json.SecurityConfig())
 func MarshalIndent(v any, prefix, indent string, cfg ...Config) ([]byte, error) {
-	return withProcessorBytesResult(func(p *Processor) ([]byte, error) {
+	return withProcessor(func(p *Processor) ([]byte, error) {
 		return p.MarshalIndent(v, prefix, indent, cfg...)
 	})
 }
@@ -954,13 +955,16 @@ func Prettify(jsonStr string, cfg ...Config) (string, error) {
 }
 
 // Valid reports whether data is valid JSON.
-// This function is 100% compatible with encoding/json.Valid: calling it as
-// json.Valid(data) behaves identically to the standard library and returns a
-// plain bool.
+// Signature-compatible with encoding/json.Valid and returns a plain bool.
 //
-// For configuration options (security limits, full security scan, etc.), pass
-// an optional Config. When config is supplied, Valid forwards to
-// Processor.Valid and collapses any error to false.
+// NOTE (D-002 doc correction): the no-config call is NOT purely syntactic
+// like the standard library — it routes through the default processor's
+// security validation, so input that is syntactically valid JSON can still
+// return false when it exceeds MaxJSONSize, contains invalid UTF-8, or
+// carries a dangerous pattern (e.g. "__proto__", "<script") in a string
+// value. Callers needing stdlib-exact syntax-only checks should use
+// encoding/json.Valid (or a Config with SkipValidation: true via
+// ValidWithConfig).
 //
 // Example:
 //
@@ -1317,8 +1321,9 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 				if staleProc, ok := existing.(*Processor); ok {
 					asyncCloseProcessor(staleProc)
 				}
-				// Check cache size and evict if necessary
-				maybeEvictConfigCache()
+				// Check cache size and evict if necessary, protecting the key
+				// we just stored (see maybeEvictConfigCache)
+				maybeEvictConfigCache(cacheKey)
 				return p, nil
 			}
 			// CAS failed - close our processor and create a fresh one for retry
@@ -1330,8 +1335,9 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 			continue
 		}
 		// Successfully stored new entry
-		// Check cache size and evict if necessary
-		maybeEvictConfigCache()
+		// Check cache size and evict if necessary, protecting the key we just
+		// stored (see maybeEvictConfigCache)
+		maybeEvictConfigCache(cacheKey)
 		return p, nil
 	}
 
@@ -1354,7 +1360,14 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 // and prevent unbounded goroutine growth.
 // DETERMINISM FIX: Uses hash-based eviction order instead of random map iteration
 // to ensure consistent behavior across runs.
-func maybeEvictConfigCache() {
+//
+// protect is the cache key the CALLER is about to return a processor for: it
+// is excluded from eviction candidates. Without this, the freshly stored key
+// ranked among all entries and, with the cache at its limit, had a
+// ~evictCount/limit chance of being evicted-and-closed by its own store —
+// handing the caller a processor that asyncCloseProcessor was concurrently
+// tearing down, producing spurious ErrProcessorClosed failures (D-002).
+func maybeEvictConfigCache(protect uint64) {
 	configProcessorCacheMu.Lock()
 
 	var count int
@@ -1379,6 +1392,10 @@ func maybeEvictConfigCache() {
 		cacheKey, keyOk := key.(uint64)
 		if !keyOk {
 			return true // skip invalid cache key type
+		}
+		// Never evict the caller's freshly stored key (see func comment).
+		if cacheKey == protect {
+			return true
 		}
 		if p, ok := value.(*Processor); ok {
 			if p.IsClosed() {

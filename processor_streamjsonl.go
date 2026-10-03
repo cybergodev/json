@@ -2,6 +2,7 @@ package json
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,48 @@ const (
 	defaultMaxLineSize = 1024 * 1024
 )
 
+// jsonlScanLimits resolves the effective scanner buffer capacity and maximum
+// line size for a JSONL engine from its Config. All five scanner sites
+// (StreamJSONL / Parallel / Chunked, NDJSONProcessor.ProcessReader,
+// StreamLinesInto) share this helper so the same input meets the same limits
+// regardless of entry point (D-002: the NDJSON engine previously fell back to
+// MaxJSONSize → 100MB while the StreamJSONL family fell back to 1MB, and the
+// token cap was off by one between engines — one accepted a line the other
+// rejected with bufio.ErrTooLong).
+//
+// The token cap is maxLine+1 so a line of EXACTLY JSONLMaxLineSize bytes is
+// accepted, matching MaxJSONSize's "exceeds" semantics elsewhere.
+func jsonlScanLimits(cfg *Config) (bufCap, maxToken int) {
+	bufCap = cfg.JSONLBufferSize
+	if bufCap <= 0 {
+		bufCap = defaultScannerBufSize
+	}
+	maxLine := cfg.JSONLMaxLineSize
+	if maxLine <= 0 {
+		maxLine = defaultMaxLineSize
+	}
+	// bufio.Scanner's effective token cap is max(cap(buf), max): clamp the
+	// initial capacity so a JSONLMaxLineSize smaller than the buffer size is
+	// actually enforced.
+	if bufCap > maxLine+1 {
+		bufCap = maxLine + 1
+	}
+	return bufCap, maxLine + 1
+}
+
+// skipJSONLLine reports whether a JSONL line must be skipped before parsing.
+// Whitespace-only lines are ALWAYS skipped — such a line can never be a valid
+// JSONL record, and the engines previously disagreed on them (NDJSON skipped
+// only zero-length lines, StreamJSONL errored unless JSONLSkipEmpty was set,
+// which made the same file succeed or fail depending on the entry point;
+// D-002). Comment lines are skipped when JSONLSkipComments is configured.
+func skipJSONLLine(line []byte, cfg *Config) bool {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return true
+	}
+	return shouldSkipJSONLLineFromConfig(line, cfg)
+}
+
 // StreamJSONL streams JSONL data from a reader with IterableValue callback support.
 //
 // This method provides line-by-line processing of JSONL (NDJSON) files with
@@ -37,6 +80,11 @@ const (
 //		return nil // continue processing
 //		// return item.Break() // to stop iteration
 //	})
+//
+// MEMORY LIMIT (D-002 doc): the total-bytes cap falls back
+// JSONLMaxMemory → MaxMemory; when both are 0 (the default) this reader is
+// NOT bounded in total bytes — set JSONLMaxMemory for untrusted streams
+// (StreamIterator, by contrast, always applies DefaultMaxJSONSize).
 func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error) (err error) {
 	// SAFETY (SEC-003): a panicking user callback (or any unexpected panic during
 	// the stream) must not crash the program. Recover and surface as an error.
@@ -65,14 +113,7 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 		memLimit = p.config.MaxMemory
 	}
 
-	bufSize := p.config.JSONLBufferSize
-	if bufSize <= 0 {
-		bufSize = defaultScannerBufSize
-	}
-	maxLine := p.config.JSONLMaxLineSize
-	if maxLine <= 0 {
-		maxLine = defaultMaxLineSize
-	}
+	bufSize, maxToken := jsonlScanLimits(&p.config)
 	// SECURITY: per-line nesting cap to prevent stack overflow from deeply nested
 	// JSONL payloads (mirrors NDJSONProcessor.ProcessReader in file.go).
 	maxDepth := p.config.MaxNestingDepthSecurity
@@ -81,12 +122,7 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 	}
 
 	scanner := bufio.NewScanner(reader)
-	// Effective token cap is max(cap(buf), maxLine): clamp the initial buffer
-	// so a JSONLMaxLineSize smaller than the buffer size is actually enforced.
-	if bufSize > maxLine {
-		bufSize = maxLine
-	}
-	scanner.Buffer(make([]byte, bufSize), maxLine)
+	scanner.Buffer(make([]byte, bufSize), maxToken)
 
 	lineNum := 0
 	var totalBytes int64
@@ -96,8 +132,8 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 
 		line := scanner.Bytes()
 
-		// Skip lines based on config (empty lines, comments)
-		if shouldSkipJSONLLineFromConfig(line, &p.config) {
+		// Skip lines based on config (blank lines always, comments when configured)
+		if skipJSONLLine(line, &p.config) {
 			continue
 		}
 
@@ -110,14 +146,22 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 		}
 
 		// SECURITY: per-line nesting check before unmarshaling (prevents stack overflow
-		// from deeply nested payloads).
+		// from deeply nested payloads). JSONLContinueOnErr downgrades depth and
+		// parse failures to skips, matching NDJSONProcessor.ProcessReader and
+		// StreamLinesInto (D-002: this knob was previously ignored here).
 		if err := checkNestingDepth(line, maxDepth); err != nil {
+			if p.config.JSONLContinueOnErr {
+				continue
+			}
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
 		// Parse JSON line
 		var data any
 		if err := json.Unmarshal(line, &data); err != nil {
+			if p.config.JSONLContinueOnErr {
+				continue
+			}
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
@@ -242,14 +286,7 @@ func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader i
 
 	// Feed jobs — respect context cancellation during scan
 	lineNum := 0
-	parBufSize := p.config.JSONLBufferSize
-	if parBufSize <= 0 {
-		parBufSize = defaultScannerBufSize
-	}
-	parMaxLine := p.config.JSONLMaxLineSize
-	if parMaxLine <= 0 {
-		parMaxLine = defaultMaxLineSize
-	}
+	parBufSize, parMaxToken := jsonlScanLimits(&p.config)
 	// SECURITY: per-line nesting cap to prevent stack overflow from deeply nested
 	// JSONL payloads. The feed loop parses each line before dispatching to workers,
 	// so the check belongs here (the overflow would happen in this goroutine).
@@ -258,11 +295,7 @@ func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader i
 		maxDepth = DefaultMaxNestingDepth
 	}
 	scanner := bufio.NewScanner(reader)
-	// See StreamJSONL: clamp the initial buffer below the line limit.
-	if parBufSize > parMaxLine {
-		parBufSize = parMaxLine
-	}
-	scanner.Buffer(make([]byte, parBufSize), parMaxLine)
+	scanner.Buffer(make([]byte, parBufSize), parMaxToken)
 
 feedLoop:
 	for scanner.Scan() {
@@ -277,14 +310,18 @@ feedLoop:
 
 		line := scanner.Bytes()
 
-		// Skip lines based on config (empty lines, comments)
-		if shouldSkipJSONLLineFromConfig(line, &p.config) {
+		// Skip lines based on config (blank lines always, comments when configured)
+		if skipJSONLLine(line, &p.config) {
 			continue
 		}
 
 		// SECURITY: per-line nesting check before unmarshaling (prevents stack overflow
-		// from deeply nested payloads).
+		// from deeply nested payloads). JSONLContinueOnErr downgrades depth and
+		// parse failures to skips, matching the serial/chunked engines (D-002).
 		if err := checkNestingDepth(line, maxDepth); err != nil {
+			if p.config.JSONLContinueOnErr {
+				continue
+			}
 			close(jobs)
 			wg.Wait()
 			return fmt.Errorf("line %d: %w", lineNum, err)
@@ -293,6 +330,9 @@ feedLoop:
 		// Parse JSON line
 		var data any
 		if err := json.Unmarshal(line, &data); err != nil {
+			if p.config.JSONLContinueOnErr {
+				continue
+			}
 			close(jobs)
 			wg.Wait()
 			return fmt.Errorf("line %d: %w", lineNum, err)
@@ -379,14 +419,7 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		releaseIterableValues(chunk)
 	}()
 
-	chunkBufSize := p.config.JSONLBufferSize
-	if chunkBufSize <= 0 {
-		chunkBufSize = defaultScannerBufSize
-	}
-	chunkMaxLine := p.config.JSONLMaxLineSize
-	if chunkMaxLine <= 0 {
-		chunkMaxLine = defaultMaxLineSize
-	}
+	chunkBufSize, chunkMaxToken := jsonlScanLimits(&p.config)
 	// SECURITY: per-line nesting cap to prevent stack overflow from deeply nested
 	// JSONL payloads (mirrors NDJSONProcessor.ProcessReader in file.go).
 	maxDepth := p.config.MaxNestingDepthSecurity
@@ -394,11 +427,7 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		maxDepth = DefaultMaxNestingDepth
 	}
 	scanner := bufio.NewScanner(reader)
-	// See StreamJSONL: clamp the initial buffer below the line limit.
-	if chunkBufSize > chunkMaxLine {
-		chunkBufSize = chunkMaxLine
-	}
-	scanner.Buffer(make([]byte, chunkBufSize), chunkMaxLine)
+	scanner.Buffer(make([]byte, chunkBufSize), chunkMaxToken)
 
 	lineNum := 0
 	var totalBytes int64
@@ -408,8 +437,8 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 
 		line := scanner.Bytes()
 
-		// Skip lines based on config (empty lines, comments)
-		if shouldSkipJSONLLineFromConfig(line, &p.config) {
+		// Skip lines based on config (blank lines always, comments when configured)
+		if skipJSONLLine(line, &p.config) {
 			continue
 		}
 
@@ -422,14 +451,21 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		}
 
 		// SECURITY: per-line nesting check before unmarshaling (prevents stack overflow
-		// from deeply nested payloads).
+		// from deeply nested payloads). JSONLContinueOnErr downgrades depth and
+		// parse failures to skips, matching the serial/parallel engines (D-002).
 		if err := checkNestingDepth(line, maxDepth); err != nil {
+			if p.config.JSONLContinueOnErr {
+				continue
+			}
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
 		// Parse JSON line
 		var data any
 		if err := json.Unmarshal(line, &data); err != nil {
+			if p.config.JSONLContinueOnErr {
+				continue
+			}
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
@@ -539,7 +575,7 @@ func (p *Processor) ReduceJSONL(reader io.Reader, initial any, fn func(acc any, 
 
 	acc := initial
 
-	err := p.StreamJSONL(reader, func(lineNum int, item *IterableValue) error {
+	err := p.StreamJSONL(reader, func(_ int, item *IterableValue) error {
 		acc = fn(acc, item)
 		return nil
 	})
@@ -568,7 +604,7 @@ func (p *Processor) FilterJSONL(reader io.Reader, predicate func(item *IterableV
 
 	var results []*IterableValue
 
-	err := p.StreamJSONL(reader, func(lineNum int, item *IterableValue) error {
+	err := p.StreamJSONL(reader, func(_ int, item *IterableValue) error {
 		if predicate(item) {
 			results = append(results, item)
 		}
@@ -631,7 +667,7 @@ func (p *Processor) CollectJSONL(reader io.Reader) ([]*IterableValue, error) {
 
 	var items []*IterableValue
 
-	err := p.StreamJSONL(reader, func(lineNum int, item *IterableValue) error {
+	err := p.StreamJSONL(reader, func(_ int, item *IterableValue) error {
 		items = append(items, item)
 		return nil
 	})
@@ -661,7 +697,7 @@ func (p *Processor) FirstJSONL(reader io.Reader, predicate func(item *IterableVa
 	var result *IterableValue
 	found := false
 
-	err := p.StreamJSONL(reader, func(lineNum int, item *IterableValue) error {
+	err := p.StreamJSONL(reader, func(_ int, item *IterableValue) error {
 		if predicate(item) {
 			result = item
 			found = true

@@ -34,7 +34,7 @@ func normalizeNegativeIndexAllowExtend(index, length int) (int, error) {
 }
 
 func (p *Processor) handleArrayAccess(data any, segment internal.PathSegment) propertyAccessResult {
-	var arrayData any = data
+	var arrayData = data
 	if segment.Key != "" {
 		propResult := p.handlePropertyAccess(data, segment.Key)
 		if !propResult.exists {
@@ -140,6 +140,35 @@ func (p *Processor) assignValueToSlice(arr []any, start, end, step int, value an
 
 func (p *Processor) cleanupNullValuesWithReconstruction(data any, compactArrays bool) any {
 	return internal.CleanupNullValues(data, compactArrays)
+}
+
+// containsDeletedMarker reports whether the tree holds any deletedMarker,
+// via an allocation-free, depth-capped walk. It gates cleanupDeletedMarkers
+// (which rebuilds every container it visits), so marker cleanup costs one
+// read-only pass and zero allocations when no array element was deleted.
+func containsDeletedMarker(data any) bool {
+	return containsDeletedMarkerDepth(data, 0)
+}
+
+func containsDeletedMarkerDepth(data any, depth int) bool {
+	if depth > deepCopyMaxDepth {
+		return false
+	}
+	switch v := data.(type) {
+	case []any:
+		for _, item := range v {
+			if item == deletedMarker || containsDeletedMarkerDepth(item, depth+1) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, value := range v {
+			if value == deletedMarker || containsDeletedMarkerDepth(value, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Processor) cleanupDeletedMarkers(data any) any {
@@ -315,153 +344,6 @@ func (p *Processor) handleStructAccess(data any, fieldName string) any {
 	}
 
 	return nil
-}
-
-func (p *Processor) getValueWithDistributedOperation(data any, path string) (any, error) {
-	// Parse the path to identify distributed operation patterns
-	segments := p.getPathSegments()
-	defer p.putPathSegments(segments)
-
-	*segments = p.splitPath(path, *segments)
-
-	// Find the extraction segment that triggers distributed operation
-	extractionIndex := -1
-	for i, segment := range *segments {
-		if segment.Type == internal.ExtractSegment {
-			// Check if this is followed by array operations
-			if i+1 < len(*segments) {
-				nextSegment := (*segments)[i+1]
-				if nextSegment.Type == internal.ArrayIndexSegment || nextSegment.Type == internal.ArraySliceSegment {
-					extractionIndex = i
-					break
-				}
-			}
-		}
-	}
-
-	if extractionIndex == -1 {
-		// No distributed operation pattern found, use regular navigation
-		return p.navigateToPath(data, path)
-	}
-
-	// Split segments into pre-extraction, extraction, and post-extraction
-	preSegments := (*segments)[:extractionIndex]
-	extractionSegment := (*segments)[extractionIndex]
-	postSegments := (*segments)[extractionIndex+1:]
-
-	// Navigate to the extraction point
-	current := data
-	for _, segment := range preSegments {
-		switch segment.Type {
-		case internal.PropertySegment:
-			result := p.handlePropertyAccess(current, segment.Key)
-			if !result.exists {
-				return nil, ErrPathNotFound
-			}
-			current = result.value
-		case internal.ArrayIndexSegment:
-			result := p.handleArrayAccess(current, segment)
-			if !result.exists {
-				return nil, ErrPathNotFound
-			}
-			current = result.value
-		}
-	}
-
-	// Extract individual arrays
-	extractedArrays, err := p.extractIndividualArrays(current, extractionSegment)
-	if err != nil {
-		return nil, err
-	}
-
-	// Apply post-extraction operations to each array
-	results := make([]any, 0, len(extractedArrays))
-	for _, arr := range extractedArrays {
-		// Apply post-extraction segments
-		result := arr
-		for _, segment := range postSegments {
-			switch segment.Type {
-			case internal.ArrayIndexSegment:
-				result = p.applySingleArrayOperation(result, segment)
-			case internal.ArraySliceSegment:
-				result = p.applySingleArraySlice(result, segment)
-			}
-		}
-
-		// Add result if it's not nil
-		if result != nil {
-			results = append(results, result)
-		}
-	}
-
-	return results, nil
-}
-
-func (p *Processor) extractIndividualArrays(data any, extractionSegment internal.PathSegment) ([]any, error) {
-	field := extractionSegment.Key
-	if field == "" {
-		return nil, fmt.Errorf("invalid extraction syntax: %s", extractionSegment.String())
-	}
-
-	// Pre-allocate with estimated capacity
-	var results []any
-	if arr, ok := data.([]any); ok {
-		results = make([]any, 0, len(arr))
-		for _, item := range arr {
-			if obj, ok := item.(map[string]any); ok {
-				if value := p.handlePropertyAccessValue(obj, field); value != nil {
-					// Check if the extracted value is an array
-					if extractedArr, ok := value.([]any); ok {
-						results = append(results, extractedArr)
-					}
-				}
-			}
-		}
-	}
-
-	return results, nil
-}
-
-func (p *Processor) applySingleArrayOperation(array any, segment internal.PathSegment) any {
-	if arr, ok := array.([]any); ok {
-		result := p.handleArrayAccess(arr, segment)
-		if result.exists {
-			return result.value
-		}
-	}
-	return nil
-}
-
-func (p *Processor) applySingleArraySlice(array any, segment internal.PathSegment) any {
-	if arr, ok := array.([]any); ok {
-		result := p.handleArraySlice(arr, segment)
-		if result.exists {
-			return result.value
-		}
-	}
-	return nil
-}
-
-func (p *Processor) handlePostExtractionArrayAccess(data any, segment internal.PathSegment) any {
-	// Check if data is an array of arrays (result of extraction)
-	if arr, ok := data.([]any); ok {
-		results := make([]any, 0, len(arr))
-
-		for _, item := range arr {
-			if itemArr, ok := item.([]any); ok {
-				// Apply array operation to each sub-array
-				result := p.applySingleArrayOperation(itemArr, segment)
-				if result != nil {
-					results = append(results, result)
-				}
-			}
-		}
-
-		return results
-	}
-
-	// For single array, apply operation directly
-	return p.applySingleArrayOperation(data, segment)
 }
 
 func (p *Processor) isComplexPath(path string) bool {

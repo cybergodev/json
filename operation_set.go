@@ -28,8 +28,10 @@ func (p *Processor) setValueAdvancedPath(data any, path string, value any, creat
 		return p.setValueDotNotationWithCreation(data, path, value, createPaths)
 	}
 
-	// Check if this is a simple array index access that might need extension
-	if createPaths && p.isSimpleArrayIndexPath(path) {
+	// Check if this is a simple array index access that might need extension.
+	// Custom path parsers route below — their syntax is never "simple" by
+	// the built-in rules (D-002/M33).
+	if createPaths && p.config.CustomPathParser == nil && p.isSimpleArrayIndexPath(path) {
 		// Use dot notation handler for simple array index access with extension support
 		return p.setValueDotNotationWithCreation(data, path, value, createPaths)
 	}
@@ -189,15 +191,13 @@ func (p *Processor) setValueWithSegments(data any, segments []internal.PathSegme
 		return p.setValueForArrayIndexWithExtension(current, finalSegment, value, data, segments)
 	}
 
-	err := p.setValueForSegment(current, finalSegment, value, createPaths)
+	// D-002: the arrayExtensionSignal dispatch that used to live here was
+	// unreachable — every createPaths index/slice final segment is
+	// intercepted by the WithExtension call above, and the signal producers
+	// below only fire when createPaths is true. The signal type and its
+	// three handlers were removed; the producers now return plain errors.
 
-	// Handle array extension error
-	if arrayExtErr, ok := err.(*arrayExtensionSignal); ok && createPaths {
-		// We need to extend the array and then set the values
-		return p.handleArrayExtensionAndSet(data, segments, arrayExtErr)
-	}
-
-	return err
+	return p.setValueForSegment(current, finalSegment, value, createPaths)
 }
 
 // handleAppendOperation handles the [+] append syntax
@@ -276,7 +276,11 @@ func (p *Processor) setValueDotNotationWithCreation(data any, path string, value
 	segments := p.getPathSegments()
 	defer p.putPathSegments(segments)
 
-	*segments = p.splitPath(path, *segments)
+	var err error
+	*segments, err = p.splitPath(path, *segments)
+	if err != nil {
+		return err
+	}
 
 	return p.setValueWithSegments(data, *segments, value, createPaths)
 }
@@ -310,54 +314,6 @@ func (p *Processor) setValueForProperty(current any, property string, value any,
 }
 
 // Array extension and index/slice operations
-
-func (p *Processor) handleArrayExtensionAndSet(data any, segments []internal.PathSegment, arrayExtErr *arrayExtensionSignal) error {
-	if len(segments) == 0 {
-		return fmt.Errorf("no segments provided for array extension")
-	}
-
-	// Navigate to the parent of the array that needs extension
-	current := data
-	for i := 0; i < len(segments)-1; i++ {
-		next, err := p.navigateToSegment(current, segments[i], true, segments, i)
-		if err != nil {
-			return fmt.Errorf("failed to navigate to segment %d during array extension: %w", i, err)
-		}
-		current = next
-	}
-
-	// Get the final segment (can be array or slice)
-	finalSegment := segments[len(segments)-1]
-
-	switch finalSegment.Type {
-	case internal.ArrayIndexSegment:
-		// Handle simple array index extension
-		return p.handleArrayIndexExtension(current, finalSegment, arrayExtErr)
-	case internal.ArraySliceSegment:
-		// Handle array slice extension
-		return p.handleArraySliceExtension(current, finalSegment, arrayExtErr)
-	default:
-		return fmt.Errorf("expected array or slice segment for array extension, got %s", finalSegment.Type.String())
-	}
-}
-
-// handleArrayIndexExtension handles array index extension requests.
-//
-// LIMITATION: Array extension via out-of-bounds index is not supported through this
-// code path. Use indices within the current array bounds, or pre-extend the array.
-func (p *Processor) handleArrayIndexExtension(_ any, _ internal.PathSegment, arrayExtErr *arrayExtensionSignal) error {
-	return fmt.Errorf("array index %d out of bounds (length %d): use index 0-%d or pre-extend the array",
-		arrayExtErr.start, arrayExtErr.currentLength, arrayExtErr.currentLength-1)
-}
-
-// handleArraySliceExtension handles array slice extension requests.
-//
-// LIMITATION: Slice operations that require array extension are not supported.
-// The extended array cannot be written back to the parent container from this scope.
-func (p *Processor) handleArraySliceExtension(_ any, _ internal.PathSegment, arrayExtErr *arrayExtensionSignal) error {
-	return fmt.Errorf("array slice extension not supported: cannot extend slice (length %d -> %d)",
-		arrayExtErr.currentLength, arrayExtErr.requiredLength)
-}
 
 func (p *Processor) setValueForArrayIndexWithExtension(current any, segment internal.PathSegment, value any, rootData any, segments []internal.PathSegment) error {
 	switch segment.Type {
@@ -656,7 +612,7 @@ func (p *Processor) extendArrayAndSetValue(rootData any, segments []internal.Pat
 	}
 }
 
-func (p *Processor) setValueForArrayIndex(current any, index int, value any, createPaths bool) error {
+func (p *Processor) setValueForArrayIndex(current any, index int, value any, _ bool) error {
 	switch v := current.(type) {
 	case []any:
 		idx, err := normalizeNegativeIndexAllowExtend(index, len(v))
@@ -665,17 +621,11 @@ func (p *Processor) setValueForArrayIndex(current any, index int, value any, cre
 		}
 
 		if idx >= len(v) {
-			if createPaths {
-				// Return arrayExtensionSignal to signal parent needs to handle extension
-				return &arrayExtensionSignal{
-					requiredLength: idx + 1,
-					currentLength:  len(v),
-					start:          idx,
-					end:            idx + 1,
-					step:           1,
-					value:          value,
-				}
-			}
+			// D-002: the createPaths branch used to return an
+			// arrayExtensionSignal for the parent to handle — unreachable,
+			// because Set intercepts every createPaths index/slice final
+			// segment via setValueForArrayIndexWithExtension before this
+			// runs. A plain error is returned for any residual path.
 			return fmt.Errorf("array index %d out of bounds (length %d)", idx, len(v))
 		}
 
@@ -686,7 +636,7 @@ func (p *Processor) setValueForArrayIndex(current any, index int, value any, cre
 	}
 }
 
-func (p *Processor) setValueForArraySlice(current any, segment internal.PathSegment, value any, createPaths bool) error {
+func (p *Processor) setValueForArraySlice(current any, segment internal.PathSegment, value any, _ bool) error {
 	// This method is called on the array itself, so we need to handle array extension differently
 	// The problem is that we can't modify the parent reference from here
 	// We need to return an error that indicates array extension is needed
@@ -726,18 +676,11 @@ func (p *Processor) setValueForArraySlice(current any, segment internal.PathSegm
 
 	// Check if we need to extend the array
 	if end > len(arr) {
-		if !createPaths {
-			return fmt.Errorf("slice end %d out of bounds for array length %d", end, len(arr))
-		}
-		// For array extension, we need to signal that the parent needs to handle this
-		return &arrayExtensionSignal{
-			requiredLength: end,
-			currentLength:  len(arr),
-			start:          start,
-			end:            end,
-			step:           step,
-			value:          value,
-		}
+		// D-002: the createPaths branch used to return an
+		// arrayExtensionSignal for the parent to handle — unreachable,
+		// because Set intercepts every createPaths index/slice final segment
+		// via setValueForArrayIndexWithExtension before this runs.
+		return fmt.Errorf("slice end %d out of bounds for array length %d", end, len(arr))
 	}
 
 	if start >= end {
@@ -865,9 +808,8 @@ func (p *Processor) setValueForExtract(current any, segment internal.PathSegment
 	if arr, ok := current.([]any); ok {
 		if segment.IsFlatExtract() {
 			return p.setValueForArrayExtractFlat(arr, field, value)
-		} else {
-			return p.setValueForArrayExtract(arr, field, value)
 		}
+		return p.setValueForArrayExtract(arr, field, value)
 	}
 
 	// Handle single object

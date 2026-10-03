@@ -177,22 +177,8 @@ func BenchmarkPerformArraySlice(b *testing.B) {
 
 // BenchmarkSet is covered by comprehensive versions in benchmark_test.go
 
-// TestArrayExtensionSignal tests the Error method
-func TestArrayExtensionSignal(t *testing.T) {
-	err := &arrayExtensionSignal{
-		requiredLength: 10,
-		currentLength:  5,
-		start:          0,
-		end:            10,
-		step:           1,
-		value:          "test",
-	}
-
-	expected := "array extension needed: current length 5, required length 10 for slice [0:10]"
-	if err.Error() != expected {
-		t.Errorf("Error() = %q, want %q", err.Error(), expected)
-	}
-}
+// TestArrayExtensionSignal was removed with the arrayExtensionSignal type
+// (D-002: the signal path was unreachable from Set).
 
 // TestArrayIndexValidation tests array index validation
 func TestArrayIndexValidation(t *testing.T) {
@@ -2880,55 +2866,6 @@ func TestPathCombination(t *testing.T) {
 	}
 }
 
-// TestPathNormalization tests path normalization operations
-func TestPathNormalization(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "remove double dots",
-			input:    "user..name",
-			expected: "user.name",
-		},
-		{
-			name:     "multiple double dots",
-			input:    "a...b",
-			expected: "a.b",
-		},
-		{
-			name:     "trim leading dots",
-			input:    "...user.name",
-			expected: "user.name",
-		},
-		{
-			name:     "trim trailing dots",
-			input:    "user.name...",
-			expected: "user.name",
-		},
-		{
-			name:     "trim both ends",
-			input:    "...user.name...",
-			expected: "user.name",
-		},
-		{
-			name:     "no normalization needed",
-			input:    "user.name",
-			expected: "user.name",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := internal.NormalizePathSeparators(tt.input)
-			if result != tt.expected {
-				t.Errorf("normalizePathSeparators(%s) = %s; want %s", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
 // TestPathParsingBasic tests basic path parsing functionality
 func TestPathParsingBasic(t *testing.T) {
 	processor, _ := New()
@@ -3114,7 +3051,11 @@ func TestPathReconstruction(t *testing.T) {
 			segments := processor.getPathSegments()
 			defer processor.putPathSegments(segments)
 
-			*segments = processor.splitPath(tt.path, *segments)
+			var splitErr error
+			*segments, splitErr = processor.splitPath(tt.path, *segments)
+			if splitErr != nil {
+				t.Fatalf("splitPath: %v", splitErr)
+			}
 			reconstructed := internal.ReconstructPath(*segments)
 
 			if !strings.Contains(reconstructed, tt.contains) {
@@ -3986,50 +3927,6 @@ func TestProcessor_WildcardAndExtraction(t *testing.T) {
 	})
 }
 
-// TestPropertyValidation tests property name validation
-func TestPropertyValidation(t *testing.T) {
-	tests := []struct {
-		name     string
-		property string
-		valid    bool
-	}{
-		{
-			name:     "valid simple",
-			property: "name",
-			valid:    true,
-		},
-		{
-			name:     "valid with underscore",
-			property: "user_name",
-			valid:    true,
-		},
-		{
-			name:     "empty string",
-			property: "",
-			valid:    false,
-		},
-		{
-			name:     "with dot",
-			property: "user.name",
-			valid:    false,
-		},
-		{
-			name:     "with bracket",
-			property: "user[0]",
-			valid:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := internal.IsValidPropertyName(tt.property)
-			if result != tt.valid {
-				t.Errorf("isValidPropertyName(%s) = %v; want %v", tt.property, result, tt.valid)
-			}
-		})
-	}
-}
-
 // TestReverseSlice tests reverse slicing logic
 func TestReverseSlice(t *testing.T) {
 	processor, _ := New()
@@ -4229,60 +4126,6 @@ func TestShutdownGlobalProcessor(t *testing.T) {
 	})
 }
 
-// TestSliceRangeValidation tests slice range validation
-func TestSliceRangeValidation(t *testing.T) {
-	tests := []struct {
-		name     string
-		rangeStr string
-		valid    bool
-	}{
-		{
-			name:     "valid simple",
-			rangeStr: "0:5",
-			valid:    true,
-		},
-		{
-			name:     "valid with step",
-			rangeStr: "0:10:2",
-			valid:    true,
-		},
-		{
-			name:     "valid empty start",
-			rangeStr: ":5",
-			valid:    true,
-		},
-		{
-			name:     "valid empty end",
-			rangeStr: "0:",
-			valid:    true,
-		},
-		{
-			name:     "invalid too many parts",
-			rangeStr: "0:5:2:1",
-			valid:    false,
-		},
-		{
-			name:     "invalid single part",
-			rangeStr: "5",
-			valid:    false,
-		},
-		{
-			name:     "invalid non-numeric",
-			rangeStr: "a:b",
-			valid:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := internal.IsValidSliceRange(tt.rangeStr)
-			if result != tt.valid {
-				t.Errorf("isValidSliceRange(%s) = %v; want %v", tt.rangeStr, result, tt.valid)
-			}
-		})
-	}
-}
-
 // TestStandardLibraryCompatibility tests encoding/json compatibility
 func TestStandardLibraryCompatibility(t *testing.T) {
 	// Test Marshal
@@ -4386,7 +4229,11 @@ func TestMultiFieldPathParsing(t *testing.T) {
 			segments := processor.getPathSegments()
 			defer processor.putPathSegments(segments)
 
-			*segments = processor.splitPath(tt.path, *segments)
+			var splitErr error
+			*segments, splitErr = processor.splitPath(tt.path, *segments)
+			if splitErr != nil {
+				t.Fatalf("splitPath: %v", splitErr)
+			}
 
 			if len(*segments) != tt.expectLen {
 				t.Errorf("Expected %d segments, got %d", tt.expectLen, len(*segments))

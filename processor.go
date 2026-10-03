@@ -20,15 +20,16 @@ const (
 
 // Processor is the main JSON processing engine with thread safety and performance optimization
 type Processor struct {
-	config            Config
-	cache             *internal.CacheManager
-	state             int32
-	activeOps         int64 // atomic: in-flight op count, lets Close() drain gracefully
-	cleanupOnce       sync.Once
-	resources         *processorResources
-	metrics           *processorMetrics
-	logger            atomic.Value // *slog.Logger - thread-safe logger storage
-	securityValidator *securityValidator
+	config               Config
+	cache                *internal.CacheManager
+	state                int32
+	activeOps            int64 // atomic: in-flight op count, lets Close() drain gracefully
+	cleanupOnce          sync.Once
+	deferredTeardownOnce sync.Once // one-shot post-CloseTimedOut resource release
+	resources            *processorResources
+	metrics              *processorMetrics
+	logger               atomic.Value // *slog.Logger - thread-safe logger storage
+	securityValidator    *securityValidator
 	// Cached recursiveProcessor for reuse across operations (performance optimization)
 	recursiveProcessor *recursiveProcessor
 	// Extension points for hooks
@@ -311,9 +312,17 @@ func (p *Processor) beginGovernedOp() error {
 // endGovernedOp releases the in-flight-op registration and concurrency slot
 // acquired by beginGovernedOp. Kept small so it inlines and the defer in
 // callers stays open-coded (allocation-free).
+//
+// D-002: when a Close() timed out waiting for this op (state CloseTimedOut)
+// and this is the LAST in-flight op, run the deferred resource teardown that
+// Close had to skip — previously the processor's cache/validator goroutines
+// stayed alive until process exit. The state check runs only after the
+// decrement reaches zero, so the common path pays one atomic load.
 func (p *Processor) endGovernedOp() {
 	p.releaseSemaphore()
-	atomic.AddInt64(&p.activeOps, -1)
+	if atomic.AddInt64(&p.activeOps, -1) == 0 && atomic.LoadInt32(&p.state) == processorStateCloseTimedOut {
+		p.finishDeferredTeardown()
+	}
 }
 
 // prepareOperation prepares, governs, and validates a single-path operation.

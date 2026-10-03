@@ -467,11 +467,11 @@ func TestRecursiveProcessor_CreatePaths_Table(t *testing.T) {
 			},
 		},
 		{
-			name:    "create path with array slice extension succeeds",
+			name:    "out-of-range slice errors explicitly instead of silent clamp",
 			data:    map[string]any{"arr": []any{1}},
 			path:    "arr[0:5]",
 			value:   99,
-			wantErr: false,
+			wantErr: true,
 		},
 	}
 

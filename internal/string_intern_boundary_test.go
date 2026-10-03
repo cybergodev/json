@@ -80,33 +80,6 @@ func TestCopyString_LargeInput(t *testing.T) {
 	}
 }
 
-// --- PathIntern Get/Set + count-based eviction (string_intern.go:532/587) ---
-
-func TestPathIntern_SetGetAndEviction(t *testing.T) {
-	pi := NewPathIntern(2) // small maxSize to trigger eviction on the 3rd Set
-	segs := []PathSegment{{Type: PropertySegment, Key: "a"}}
-
-	pi.Set("p1", segs)
-	pi.Set("p2", segs)
-	if g, ok := pi.Get("p1"); !ok || len(g) != 1 {
-		t.Errorf("Get(p1) = (%+v, %v), want stored segs", g, ok)
-	}
-
-	// Third distinct path triggers evictOneLocked (count >= maxSize).
-	pi.Set("p3", segs)
-	// Cache still holds at most maxSize entries; no panic, stays consistent.
-	pi.Set("p4", segs)
-}
-
-func TestPathIntern_SetLongPathSkipped(t *testing.T) {
-	pi := NewPathIntern(8)
-	long := strings.Repeat("p", 257) // > 256 chars -> not cached
-	pi.Set(long, []PathSegment{{Type: PropertySegment, Key: "x"}})
-	if _, ok := pi.Get(long); ok {
-		t.Error("expected long path (>256 chars) to be skipped, but it was cached")
-	}
-}
-
 // strconvItoa avoids importing strconv just for one call site.
 func strconvItoa(i int) string {
 	if i == 0 {

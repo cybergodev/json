@@ -279,55 +279,9 @@ func TestFormatNumberForDedup(t *testing.T) {
 // IsJSONPointerPath TESTS
 // ============================================================================
 
-func TestIsJSONPointerPath(t *testing.T) {
-	tests := []struct {
-		path     string
-		expected bool
-	}{
-		{"", false},
-		{"/", true},
-		{"/users/0/name", true},
-		{"users.name", false},
-		{".", false},
-		{"users[0]", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			result := IsJSONPointerPath(tt.path)
-			if result != tt.expected {
-				t.Errorf("IsJSONPointerPath(%q) = %v, expected %v", tt.path, result, tt.expected)
-			}
-		})
-	}
-}
-
 // ============================================================================
 // IsDotNotationPath TESTS
 // ============================================================================
-
-func TestIsDotNotationPath(t *testing.T) {
-	tests := []struct {
-		path     string
-		expected bool
-	}{
-		{"", false},
-		{".", false},
-		{"users.name", true},
-		{"/users/name", false},
-		{"data.items[0]", true},
-		{"simple", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			result := IsDotNotationPath(tt.path)
-			if result != tt.expected {
-				t.Errorf("IsDotNotationPath(%q) = %v, expected %v", tt.path, result, tt.expected)
-			}
-		})
-	}
-}
 
 // ============================================================================
 // IsArrayPath TESTS
@@ -424,31 +378,6 @@ func TestIsExtractionPath(t *testing.T) {
 // IsJSONObject TESTS
 // ============================================================================
 
-func TestIsJSONObject(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    any
-		expected bool
-	}{
-		{"map[string]any", map[string]any{"a": 1}, true},
-		{"empty map", map[string]any{}, true},
-		{"slice", []any{1, 2}, false},
-		{"string", "hello", false},
-		{"int", 42, false},
-		{"nil", nil, false},
-		{"map[string]int", map[string]int{"a": 1}, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := IsJSONObject(tt.input)
-			if result != tt.expected {
-				t.Errorf("IsJSONObject(%v) = %v, expected %v", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
 // ============================================================================
 // IsJSONArray TESTS
 // ============================================================================
@@ -515,47 +444,6 @@ func TestIsJSONPrimitive(t *testing.T) {
 // ============================================================================
 // TryConvertToArray TESTS
 // ============================================================================
-
-func TestTryConvertToArray(t *testing.T) {
-	tests := []struct {
-		name        string
-		input       map[string]any
-		expectedOk  bool
-		expectedLen int
-	}{
-		{"empty map", map[string]any{}, true, 0},
-		{"sequential indices", map[string]any{"0": "a", "1": "b", "2": "c"}, true, 3},
-		{"non-sequential indices", map[string]any{"0": "a", "5": "b"}, true, 6},
-		{"non-numeric key", map[string]any{"a": 1}, false, 0},
-		{"mixed keys", map[string]any{"0": "a", "name": "b"}, false, 0},
-		{"negative index", map[string]any{"-1": "a"}, false, 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, ok := TryConvertToArray(tt.input)
-			if ok != tt.expectedOk {
-				t.Errorf("expected ok=%v, got %v", tt.expectedOk, ok)
-				return
-			}
-			if ok && len(result) != tt.expectedLen {
-				t.Errorf("expected length %d, got %d", tt.expectedLen, len(result))
-			}
-		})
-	}
-}
-
-func TestTryConvertToArray_Values(t *testing.T) {
-	input := map[string]any{"0": "first", "1": "second", "2": "third"}
-	result, ok := TryConvertToArray(input)
-
-	if !ok {
-		t.Fatal("expected conversion to succeed")
-	}
-	if result[0] != "first" || result[1] != "second" || result[2] != "third" {
-		t.Errorf("unexpected array values: %v", result)
-	}
-}
 
 // ============================================================================
 // IndexIgnoreCase TESTS
@@ -749,17 +637,6 @@ func BenchmarkIndexIgnoreCase(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = IndexIgnoreCase(s, pattern)
-	}
-}
-
-func BenchmarkTryConvertToArray(b *testing.B) {
-	m := map[string]any{
-		"0": "a", "1": "b", "2": "c", "3": "d", "4": "e",
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, _ = TryConvertToArray(m)
 	}
 }
 

@@ -285,30 +285,6 @@ func FuzzNormalizeIndex(f *testing.F) {
 	})
 }
 
-// FuzzNormalizePathSeparators tests NormalizePathSeparators
-func FuzzNormalizePathSeparators(f *testing.F) {
-	seeds := []string{
-		"",
-		"a",
-		"a.b.c",
-		"a..b",
-		"a...b",
-		".a.b",
-		"a.b.",
-		"..a..b..",
-		"a.b[0].c",
-	}
-
-	for _, seed := range seeds {
-		f.Add(seed)
-	}
-
-	f.Fuzz(func(t *testing.T, input string) {
-		result := NormalizePathSeparators(input)
-		_ = result
-	})
-}
-
 // ============================================================================
 // FUZZ TESTS FOR DATA OPERATIONS
 // ============================================================================

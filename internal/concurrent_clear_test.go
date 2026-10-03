@@ -19,7 +19,6 @@ import (
 func TestInternClearConcurrent(t *testing.T) {
 	keyAlts := []string{"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
 	strAlts := []string{"one", "two", "three", "four", "five", "six", "seven", "eight"}
-	pathAlts := []string{"users[0].name", "items[1].price", "config.server.port", "a.b.c.d"}
 
 	run := func(name string, clear, work func()) {
 		t.Run(name, func(t *testing.T) {
@@ -66,20 +65,5 @@ func TestInternClearConcurrent(t *testing.T) {
 			_ = GlobalStringIntern.InternBytes([]byte(s))
 		}
 		_ = GlobalStringIntern.GetStats()
-	})
-
-	// PathIntern: Clear() racing with Get/Set.
-	run("PathIntern", GlobalPathIntern.Clear, func() {
-		for _, p := range pathAlts {
-			GlobalPathIntern.Set(p, []PathSegment{{Type: PropertySegment, Key: "x"}})
-			_, _ = GlobalPathIntern.Get(p)
-		}
-	})
-
-	// BatchIntern acquires GlobalStringIntern.mu directly; race it with concurrent
-	// single-string interning + Clear to confirm the batch path stays consistent.
-	run("BatchIntern", GlobalStringIntern.Clear, func() {
-		_ = BatchIntern(strAlts)
-		_ = GlobalStringIntern.Intern(strAlts[0])
 	})
 }

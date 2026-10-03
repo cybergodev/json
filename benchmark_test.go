@@ -108,50 +108,6 @@ func BenchmarkStdLib_SimpleArray(b *testing.B) {
 }
 
 // ----------------------------------------------------------------------------
-// STRING INTERNING BENCHMARKS
-// ----------------------------------------------------------------------------
-
-func BenchmarkStringIntern_Single(b *testing.B) {
-	keys := []string{"name", "age", "active", "email", "phone"}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for _, key := range keys {
-			internal.InternKey(key)
-		}
-	}
-}
-
-func BenchmarkStringIntern_Bytes(b *testing.B) {
-	keys := [][]byte{
-		[]byte("name"),
-		[]byte("age"),
-		[]byte("active"),
-		[]byte("email"),
-		[]byte("phone"),
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		for _, key := range keys {
-			internal.InternKeyBytes(key)
-		}
-	}
-}
-
-func BenchmarkStringIntern_Batch(b *testing.B) {
-	keys := make([]string, 1000)
-	for i := range keys {
-		keys[i] = fmt.Sprintf("key%d", i%100)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		internal.BatchInternKeys(keys)
-	}
-}
-
-// ----------------------------------------------------------------------------
 // LARGE JSON BENCHMARKS
 // ----------------------------------------------------------------------------
 
@@ -231,86 +187,6 @@ func BenchmarkLargeJSONObject_Parse_1000_SharedCache(b *testing.B) {
 // ITERATOR BENCHMARKS
 // ----------------------------------------------------------------------------
 
-func BenchmarkIterator_SmallArray(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `[1,2,3,4,5,6,7,8,9,10]`
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		data, _ := processor.Get(jsonStr, ".")
-		if arr, ok := data.([]any); ok {
-			it := newPooledSliceIterator(arr)
-			for it.Next() {
-				_ = it.Value()
-			}
-			it.Release()
-		}
-	}
-}
-
-func BenchmarkIterator_LargeArray(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := generateLargeJSONArray(1000)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		data, _ := processor.Get(jsonStr, ".")
-		if arr, ok := data.([]any); ok {
-			it := newPooledSliceIterator(arr)
-			for it.Next() {
-				_ = it.Value()
-			}
-			it.Release()
-		}
-	}
-}
-
-func BenchmarkIterator_SmallObject(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := `{"a":1,"b":2,"c":3,"d":4,"e":5}`
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		data, _ := processor.Get(jsonStr, ".")
-		if obj, ok := data.(map[string]any); ok {
-			it := newPooledMapIterator(obj)
-			for it.Next() {
-				_, _ = it.Key(), it.Value()
-			}
-			it.Release()
-		}
-	}
-}
-
-func BenchmarkIterator_LargeObject(b *testing.B) {
-	processor, _ := New()
-	defer processor.Close()
-
-	jsonStr := generateLargeJSONObject(100)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		data, _ := processor.Get(jsonStr, ".")
-		if obj, ok := data.(map[string]any); ok {
-			it := newPooledMapIterator(obj)
-			for it.Next() {
-				_, _ = it.Key(), it.Value()
-			}
-			it.Release()
-		}
-	}
-}
-
-// ----------------------------------------------------------------------------
-// STREAMING BENCHMARKS
-// ----------------------------------------------------------------------------
-
 func BenchmarkStreamIterator_1000(b *testing.B) {
 	jsonData := generateLargeJSONArray(1000)
 
@@ -374,22 +250,6 @@ func BenchmarkPathParsing_Extract(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = internal.ParsePath(path)
-	}
-}
-
-func BenchmarkPathParsing_WithCache(b *testing.B) {
-	path := "users.profile.settings.theme"
-
-	// Pre-populate cache
-	segments, _ := internal.ParsePath(path)
-	internal.GlobalPathIntern.Set(path, segments)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, ok := internal.GlobalPathIntern.Get(path); !ok {
-			segments, _ := internal.ParsePath(path)
-			internal.GlobalPathIntern.Set(path, segments)
-		}
 	}
 }
 
@@ -713,23 +573,6 @@ func BenchmarkDelete_Simple(b *testing.B) {
 	}
 }
 
-// BenchmarkPooledSliceIterator benchmarks pooled slice iterator
-func BenchmarkPooledSliceIterator(b *testing.B) {
-	data := make([]any, 1000)
-	for i := range data {
-		data[i] = i
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		it := newPooledSliceIterator(data)
-		for it.Next() {
-			_ = it.Value()
-		}
-		it.Release()
-	}
-}
-
 // BenchmarkRegularSliceIteration for comparison with pooled iterator
 func BenchmarkRegularSliceIteration(b *testing.B) {
 	data := make([]any, 1000)
@@ -742,23 +585,6 @@ func BenchmarkRegularSliceIteration(b *testing.B) {
 		for _, v := range data {
 			_ = v
 		}
-	}
-}
-
-// BenchmarkPooledMapIterator benchmarks pooled map iterator
-func BenchmarkPooledMapIterator(b *testing.B) {
-	data := make(map[string]any, 100)
-	for i := 0; i < 100; i++ {
-		data[string(rune('a'+i%26))+string(rune('a'+i/26))] = i
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		it := newPooledMapIterator(data)
-		for it.Next() {
-			_, _ = it.Key(), it.Value()
-		}
-		it.Release()
 	}
 }
 
