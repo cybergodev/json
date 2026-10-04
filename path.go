@@ -137,7 +137,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		}
 
 		// Use number-preserving unmarshal for final conversion
-		if err := preservingUnmarshal(stringToBytes(encodedJSON), target, true); err != nil {
+		if err := preservingUnmarshal(stringToBytes(encodedJSON), target, true, options.DisallowUnknown); err != nil {
 			return &JsonsError{
 				Op:      "parse",
 				Message: fmt.Sprintf("invalid JSON for target type %T: %v", target, err),
@@ -146,7 +146,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		}
 	} else {
 		// Standard parsing without number preservation
-		if err := preservingUnmarshal(stringToBytes(jsonStr), target, false); err != nil {
+		if err := preservingUnmarshal(stringToBytes(jsonStr), target, false, options.DisallowUnknown); err != nil {
 			return &JsonsError{
 				Op:      "parse",
 				Message: fmt.Sprintf("invalid JSON for target type %T: %v", target, err),
@@ -268,6 +268,22 @@ func stringToBytes(s string) []byte {
 	return internal.StringToBytes(s)
 }
 
+// parsePathGuarded invokes a user-installed CustomPathParser, converting a
+// panic inside the user implementation into an error. ParsePath runs inside
+// every path-taking operation (Get, Set, Delete, iteration), so without this
+// guard a misbehaving parser would crash the caller through any public API.
+func parsePathGuarded(parser PathParser, path string) (segments []internal.PathSegment, err error) {
+	// SAFETY (SEC-003): user-implemented extension point — mirrors the hook
+	// guards in interfaces.go (hookChain.executeBefore/executeAfter).
+	defer func() {
+		if r := recover(); r != nil {
+			segments = nil
+			err = fmt.Errorf("custom path parser panicked: %v", r)
+		}
+	}()
+	return parser.ParsePath(path)
+}
+
 // splitPath splits a path into segments for the segment-based walkers
 // (Set's operation path, Delete's dot notation). D-002 (M33): when
 // Config.CustomPathParser is installed it replaces the standard splitter
@@ -276,7 +292,7 @@ func stringToBytes(s string) []byte {
 // return their own storage).
 func (p *Processor) splitPath(path string, segments []internal.PathSegment) ([]internal.PathSegment, error) {
 	if p.config.CustomPathParser != nil {
-		return p.config.CustomPathParser.ParsePath(path)
+		return parsePathGuarded(p.config.CustomPathParser, path)
 	}
 
 	segments = segments[:0]
@@ -597,8 +613,15 @@ func (d *numberPreservingDecoder) convertJSONNumber(num json.Number) any {
 // preservingUnmarshal unmarshals JSON with number preservation
 // OPTIMIZED: Uses single-pass decoding with json.Number, then direct type conversion
 // to avoid the overhead of marshal/unmarshal cycle for target types that support it.
-func preservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
+// When disallowUnknown is set, struct destinations reject unknown input keys,
+// matching encoding/json Decoder.DisallowUnknownFields semantics.
+func preservingUnmarshal(data []byte, v any, preserveNumbers bool, disallowUnknown bool) error {
 	if !preserveNumbers {
+		if disallowUnknown {
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			return decoder.Decode(v)
+		}
 		return json.Unmarshal(data, v)
 	}
 
@@ -647,6 +670,11 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
 	convertedBytes, err := json.Marshal(converted)
 	if err != nil {
 		return err
+	}
+	if disallowUnknown {
+		decoder := json.NewDecoder(bytes.NewReader(convertedBytes))
+		decoder.DisallowUnknownFields()
+		return decoder.Decode(v)
 	}
 
 	return json.Unmarshal(convertedBytes, v)

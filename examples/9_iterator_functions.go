@@ -94,10 +94,16 @@ func demonstrateSimpleIteration(data string) {
 
 	fmt.Println("   Iterating over entire JSON:")
 
-	json.Foreach(data, func(key any, item *json.IterableValue) {
+	// ForeachWithError instead of the deprecated void Foreach, so iteration
+	// failures surface instead of silently skipping the callback.
+	err := json.ForeachWithError(data, ".", func(key any, item *json.IterableValue) error {
 		// Top-level iteration
 		fmt.Printf("   Key: %v, Type: %T\n", key, item.Get(""))
+		return nil
 	})
+	if err != nil {
+		fmt.Printf("   Error: %v\n", err)
+	}
 }
 
 func demonstrateIterationWithPath(data string) {
@@ -144,10 +150,15 @@ func demonstrateNestedIteration(data string) {
 
 	fmt.Println("   Recursively iterating all values:")
 
+	// ForeachNestedWithError instead of the deprecated void ForeachNested.
 	count := 0
-	json.ForeachNested(data, func(key any, item *json.IterableValue) {
+	err := json.ForeachNestedWithError(data, func(key any, item *json.IterableValue) error {
 		count++
+		return nil
 	})
+	if err != nil {
+		fmt.Printf("   Error: %v\n", err)
+	}
 
 	fmt.Printf("   Total values visited (including nested): %d\n", count)
 
@@ -159,7 +170,7 @@ func demonstrateNestedIteration(data string) {
 	strCount := 0
 	boolCount := 0
 
-	json.ForeachNested(data, func(key any, item *json.IterableValue) {
+	err = json.ForeachNestedWithError(data, func(key any, item *json.IterableValue) error {
 		switch item.Get("").(type) {
 		case float64:
 			numCount++
@@ -168,7 +179,11 @@ func demonstrateNestedIteration(data string) {
 		case bool:
 			boolCount++
 		}
+		return nil
 	})
+	if err != nil {
+		fmt.Printf("   Error: %v\n", err)
+	}
 
 	fmt.Printf("   Numbers: %d, Strings: %d, Booleans: %d\n", numCount, strCount, boolCount)
 }

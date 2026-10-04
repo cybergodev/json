@@ -236,8 +236,13 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	if cachedData, ok := p.getCachedResult(parseCacheKey); ok {
 		data = cachedData
 	} else {
-		// Parse JSON with error context
-		parseErr := p.Parse(jsonStr, &data, *options)
+		// Parse JSON with error context. parseJSON (not p.Parse): the input was
+		// already validated by validateOperationInput, and dereferencing options
+		// into p.Parse would build a transient securityValidator and re-run the
+		// full uncached validation on every parse-cache miss (P-001) — the same
+		// helper the simple-property fast path above uses.
+		var parseErr error
+		data, parseErr = p.parseJSON(jsonStr, "get", path, options)
 		if parseErr != nil {
 			p.incrementErrorCount()
 			return nil, parseErr
@@ -367,8 +372,11 @@ func (p *Processor) PreParse(jsonStr string, cfg ...Config) (*ParsedJSON, error)
 	if cachedData, ok := p.getCachedResult(parseCacheKey); ok {
 		data = cachedData
 	} else {
-		// Parse JSON
-		parseErr := p.Parse(jsonStr, &data, *options)
+		// Parse JSON. parseJSON (not p.Parse): the input was validated above,
+		// so the sentinel-dereferencing p.Parse call would re-validate through
+		// a transient securityValidator on every parse-cache miss (P-001).
+		var parseErr error
+		data, parseErr = p.parseJSON(jsonStr, "pre_parse", "", options)
 		if parseErr != nil {
 			return nil, parseErr
 		}
@@ -580,9 +588,11 @@ func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (
 		return make(map[string]any), nil
 	}
 
-	// Parse JSON once for all operations
-	var data any
-	if err := p.Parse(jsonStr, &data, *options); err != nil {
+	// Parse JSON once for all operations. parseJSON (not p.Parse): the input
+	// was validated above; p.Parse would re-validate through a transient
+	// securityValidator per call (P-001).
+	data, err := p.parseJSON(jsonStr, "get_multiple", "", options)
+	if err != nil {
 		p.incrementErrorCount()
 		return nil, err
 	}

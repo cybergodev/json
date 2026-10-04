@@ -50,6 +50,41 @@ func HTMLEscapeTo(dst *bytes.Buffer, s string) {
 	}
 }
 
+// HTMLEscapeBytesTo writes HTML-escaped data to the destination buffer.
+// It is the []byte-input counterpart of HTMLEscapeTo (same byte-level
+// semantics, see that function's comment) for callers that already hold
+// encoder output as bytes: the JSONL batch encoder appends per-item encodings
+// straight into the shared output buffer, with no intermediate string or
+// pooled-slice copy (P-001).
+func HTMLEscapeBytesTo(dst *bytes.Buffer, data []byte) {
+	n := len(data)
+	for i := 0; i < n; i++ {
+		c := data[i]
+		switch c {
+		case '<':
+			dst.WriteString("\\u003c")
+		case '>':
+			dst.WriteString("\\u003e")
+		case '&':
+			dst.WriteString("\\u0026")
+		case 0xE2:
+			// U+2028 (E2 80 A8) / U+2029 (E2 80 A9)
+			if i+2 < n && data[i+1] == 0x80 && (data[i+2] == 0xA8 || data[i+2] == 0xA9) {
+				if data[i+2] == 0xA8 {
+					dst.WriteString("\\u2028")
+				} else {
+					dst.WriteString("\\u2029")
+				}
+				i += 2
+				continue
+			}
+			dst.WriteByte(c)
+		default:
+			dst.WriteByte(c)
+		}
+	}
+}
+
 // NeedsHTMLEscapeBytes checks if a byte slice needs HTML escaping.
 // PERFORMANCE v3: Uses lookup table for single table-access per byte instead of 24 comparisons.
 // The table checks for '<', '>', '&', and 0xE2 (start of U+2028/U+2029).

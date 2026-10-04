@@ -366,6 +366,17 @@ func ForeachWithPathAndControl(jsonStr, path string, fn func(key any, value any)
 
 // Foreach iterates over JSON arrays or objects with simplified signature (for test compatibility).
 // Accepts optional Config for consistency with Processor.Foreach.
+//
+// Deprecated: Foreach drops errors — an invalid document or a closed processor
+// silently skips the callback entirely. Use ForeachWithError, which returns the
+// error (its callback must return nil to continue):
+//
+//	err := json.ForeachWithError(jsonStr, ".", func(key any, item *json.IterableValue) error {
+//	    // ...
+//	    return nil
+//	})
+//
+// Foreach will not be removed within v1 (per D-005 the module stays on v1.x).
 func Foreach(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config) {
 	// Delegate to the Processor method so the callback runs on a deep copy of
 	// the resolved value, preventing mutation callbacks from corrupting cached
@@ -532,6 +543,12 @@ func foreachOnValue(data any, fn func(key any, value any) IteratorControl) (err 
 
 // ForeachNested iterates over nested JSON structures.
 // Accepts optional Config for consistency with Processor.ForeachNested.
+//
+// Deprecated: ForeachNested drops errors the same way Foreach does — a failed
+// parse or closed processor silently skips the callback. Use
+// ForeachNestedWithError, which returns the error (its callback must return
+// nil to continue). ForeachNested will not be removed within v1 (per D-005
+// the module stays on v1.x).
 func ForeachNested(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config) {
 	// Delegate to the Processor method so the callback runs on a deep copy of
 	// the resolved value, preventing mutation callbacks from corrupting cached

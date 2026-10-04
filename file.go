@@ -320,7 +320,7 @@ func (p *Processor) SaveToFile(filePath string, data any, cfg ...Config) error {
 
 // writeFileJSON is the single encode-and-atomic-write pipeline shared by
 // SaveToFile and MarshalToFile. op is the caller's operation name so each
-// public API keeps its own error Op. Encoding goes through EncodeWithConfig
+// public API keeps its own error Op. Encoding goes through Encode
 // exclusively — Marshal/MarshalIndent were proven byte-equivalent for the
 // configurations MarshalToFile historically used (see
 // TestA2EncoderEquivalence), so one pipeline serves both.
@@ -400,9 +400,10 @@ func (p *Processor) SaveToWriter(writer io.Writer, data any, cfg ...Config) erro
 		return err
 	}
 
-	// Write to writer
-	_, err = writer.Write([]byte(jsonStr))
-	if err != nil {
+	// Write to writer — io.WriteString skips the []byte(jsonStr) copy for
+	// writers that implement io.StringWriter (bytes.Buffer, os.File, ...)
+	// while writing byte-identical output (P-001).
+	if _, err := io.WriteString(writer, jsonStr); err != nil {
 		return &JsonsError{
 			Op:      "save_to_writer",
 			Message: "failed to write to writer",
@@ -519,13 +520,15 @@ func (p *Processor) validateFilePath(filePath string, cfg ...Config) error {
 		return err
 	}
 
-	// Step 5: Symlink validation
-	if err := validatePathSymlinks(absPath); err != nil {
+	// Step 5: Symlink validation (also returns the leaf's FileInfo for reuse
+	// by the size check below)
+	info, err := validatePathSymlinks(absPath)
+	if err != nil {
 		return err
 	}
 
 	// Step 6: File size validation (against the effective per-call limit)
-	return p.validatePathFileSize(absPath, p.effectiveReadMaxSize(cfg...))
+	return p.validatePathFileSize(absPath, info, p.effectiveReadMaxSize(cfg...))
 }
 
 // validateFilePathForWrite validates a path that is about to be written.
@@ -547,7 +550,8 @@ func (p *Processor) validateFilePathForWrite(filePath string) error {
 	if err := validatePathPlatform(absPath); err != nil {
 		return err
 	}
-	return validatePathSymlinks(absPath)
+	_, err = validatePathSymlinks(absPath)
+	return err
 }
 
 // validatePathBasic performs basic path validation
@@ -612,8 +616,11 @@ func validatePathPlatform(absPath string) error {
 	return nil
 }
 
-// validatePathSymlinks checks for symlink security issues
-func validatePathSymlinks(absPath string) error {
+// validatePathSymlinks checks for symlink security issues. It returns the
+// leaf's Lstat FileInfo (nil when the path does not exist) so the caller's
+// existing-file size check can reuse it instead of issuing a second,
+// full-walk Stat syscall (P-001).
+func validatePathSymlinks(absPath string) (os.FileInfo, error) {
 	// INTERMEDIATE SYMLINKS: a symlink anywhere in the directory chain
 	// redirects the eventual open() to a different physical location, and the
 	// lexical-path platform checks above never see it (e.g. /home/u/data →
@@ -626,34 +633,36 @@ func validatePathSymlinks(absPath string) error {
 	if resolvedParent, err := filepath.EvalSymlinks(parent); err == nil && resolvedParent != parent {
 		if runtime.GOOS != goosWindows {
 			if err := validateUnixPath(resolvedParent); err != nil {
-				return err
+				return nil, err
 			}
 		} else if err := validateWindowsPath(resolvedParent); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	info, err := os.Lstat(absPath)
 	if err != nil {
 		// File doesn't exist yet, no symlink check needed
-		return nil
+		return nil, nil
 	}
 
 	if info.Mode()&os.ModeSymlink == 0 {
-		// Not a symlink, no check needed
-		return nil
+		// Not a symlink, no check needed. The FileInfo is returned for the
+		// size check: for a non-symlink, Lstat and Stat report identical
+		// sizes, so the separate Stat in validatePathFileSize is skipped.
+		return info, nil
 	}
 
 	realPath, err := filepath.EvalSymlinks(absPath)
 	if err != nil {
-		return newOperationError("validate_file_path", "cannot resolve symlink", err)
+		return nil, newOperationError("validate_file_path", "cannot resolve symlink", err)
 	}
 
 	// Ensure symlink doesn't escape to restricted areas
 	if runtime.GOOS != goosWindows {
-		return validateUnixPath(realPath)
+		return nil, validateUnixPath(realPath)
 	}
-	return validateWindowsPath(realPath)
+	return nil, validateWindowsPath(realPath)
 }
 
 // validateFilePathStandalone performs security validation without Processor dependency.
@@ -680,8 +689,9 @@ func validateFilePathStandalone(filePath string) error {
 		return err
 	}
 
-	// Step 5: Symlink validation
-	return validatePathSymlinks(absPath)
+	// Step 5: Symlink validation (the returned FileInfo has no consumer here)
+	_, err = validatePathSymlinks(absPath)
+	return err
 }
 
 // validatePathFileSize checks if file size is within limits.
@@ -689,14 +699,23 @@ func validateFilePathStandalone(filePath string) error {
 // effectiveReadMaxSize), not always the processor's baked-in value: a per-call
 // Config with a larger MaxJSONSize loosens the read cap here, and the two
 // sources must agree or validation rejects input the read path would accept.
-func (p *Processor) validatePathFileSize(absPath string, maxSize int64) error {
-	info, err := os.Stat(absPath)
-	if err != nil {
-		// File doesn't exist yet, no size check needed
-		return nil
+//
+// info is the leaf's FileInfo from validatePathSymlinks when available: for a
+// non-symlink it carries the same size a separate os.Stat would report, so
+// that syscall is skipped (P-001). A symlink leaf still falls back to Stat —
+// its on-disk "size" describes the link, not the target — and a nil info
+// means the path does not exist yet (no size check, as before).
+func (p *Processor) validatePathFileSize(absPath string, info os.FileInfo, maxSize int64) error {
+	if info != nil && info.Mode()&os.ModeSymlink != 0 {
+		statted, err := os.Stat(absPath)
+		if err != nil {
+			// Target of the symlink is not reachable; no size check possible
+			return nil
+		}
+		info = statted
 	}
 
-	if info.Size() > maxSize {
+	if info != nil && info.Size() > maxSize {
 		return newSizeLimitError("validate_file_path", info.Size(), maxSize)
 	}
 	return nil
@@ -848,29 +867,32 @@ func containsConsecutiveDots(path string, minCount int) bool {
 	return false
 }
 
+// criticalUnixDirs lists critical system directories blocked by validateUnixPath.
+// Package-level and immutable after init (P-001): the per-call literal slice
+// allocated on every validation for no benefit.
+var criticalUnixDirs = []string{
+	"/dev/",
+	"/proc/",
+	"/sys/",
+	"/etc/passwd",
+	"/etc/shadow",
+	"/etc/sudoers",
+	"/etc/hosts",
+	"/etc/fstab",
+	"/etc/crontab",
+	"/root/",
+	"/boot/",
+	"/var/log/",
+	"/usr/bin/",
+	"/usr/sbin/",
+	"/sbin/",
+	"/bin/",
+}
+
 // validateUnixPath validates Unix-specific path security
 func validateUnixPath(absPath string) error {
 	// Block access to critical system directories using case-insensitive matching
-	criticalDirs := []string{
-		"/dev/",
-		"/proc/",
-		"/sys/",
-		"/etc/passwd",
-		"/etc/shadow",
-		"/etc/sudoers",
-		"/etc/hosts",
-		"/etc/fstab",
-		"/etc/crontab",
-		"/root/",
-		"/boot/",
-		"/var/log/",
-		"/usr/bin/",
-		"/usr/sbin/",
-		"/sbin/",
-		"/bin/",
-	}
-
-	for _, dir := range criticalDirs {
+	for _, dir := range criticalUnixDirs {
 		if hasPrefixIgnoreCase(absPath, dir) {
 			return newSecurityError("validate_unix_path", "access to system directory not allowed")
 		}
@@ -924,8 +946,7 @@ func validateWindowsPath(absPath string) error {
 	}
 
 	// Check reserved device names (complete list including extended)
-	reserved := []string{"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"}
-	for _, name := range reserved {
+	for _, name := range windowsReservedDeviceNames {
 		if filename == name {
 			return newSecurityError("validate_windows_path", "Windows reserved device name")
 		}
@@ -958,8 +979,7 @@ func validateWindowsPath(absPath string) error {
 		pathToCheck = absPath[2:]
 	}
 
-	invalidChars := []string{"<", ">", ":", "\"", "|", "?", "*"}
-	for _, char := range invalidChars {
+	for _, char := range windowsInvalidPathChars {
 		if strings.Contains(pathToCheck, char) {
 			return newSecurityError("validate_windows_path", "invalid character in path")
 		}
@@ -968,12 +988,38 @@ func validateWindowsPath(absPath string) error {
 	return nil
 }
 
+// windowsReservedDeviceNames and windowsInvalidPathChars back
+// validateWindowsPath' device-name and invalid-character checks.
+// Package-level and immutable after init (P-001): the per-call literal slices
+// allocated on every validation for no benefit.
+var (
+	windowsReservedDeviceNames = []string{"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "CLOCK$"}
+	windowsInvalidPathChars    = []string{"<", ">", ":", "\"", "|", "?", "*"}
+)
+
 // ============================================================================
 // LINE-DELIMITED JSON PROCESSOR
 // For processing NDJSON (newline-delimited JSON) files
 // ============================================================================
 
 // NDJSONProcessor processes newline-delimited JSON files
+//
+// Deprecated: NDJSONProcessor duplicates the StreamJSONL family with a
+// map[string]any callback instead of *IterableValue (D-005 U8). Use a
+// Processor and StreamJSONL / StreamJSONLFile, which enforce the same limits
+// (the engines were unified in D-002) and offer typed access:
+//
+//	p, err := json.New(cfg)
+//	if err != nil { return err }
+//	defer p.Close()
+//	err = p.StreamJSONLFile("data.ndjson", func(lineNum int, item *json.IterableValue) error {
+//	    name := item.GetString("name") // typed access; item.GetData() yields the map
+//	    _ = name
+//	    return nil
+//	})
+//
+// NDJSONProcessor will not be removed within v1 (per D-005 the module stays
+// on v1.x); it is a permanent deprecated alias of the functionality above.
 type NDJSONProcessor struct {
 	bufferSize int
 	config     Config
@@ -983,15 +1029,8 @@ type NDJSONProcessor struct {
 // The optional cfg parameter allows customization using the unified Config pattern.
 // When config is provided, cfg.JSONLBufferSize is used as the buffer size.
 //
-// Example:
-//
-//	// Default settings
-//	processor := json.NewNDJSONProcessor()
-//
-//	// With custom buffer size
-//	cfg := json.DefaultConfig()
-//	cfg.JSONLBufferSize = 128 * 1024
-//	processor := json.NewNDJSONProcessor(cfg)
+// Deprecated: see NDJSONProcessor — use json.New(cfg) plus the StreamJSONL
+// family (StreamJSONL, StreamJSONLFile, and their per-call Config variants).
 func NewNDJSONProcessor(cfg ...Config) *NDJSONProcessor {
 	var config Config
 	if len(cfg) > 0 {
@@ -1014,6 +1053,10 @@ func NewNDJSONProcessor(cfg ...Config) *NDJSONProcessor {
 }
 
 // ProcessFile processes an NDJSON file line by line
+//
+// Deprecated: see NDJSONProcessor — use Processor.StreamJSONLFile, which
+// validates paths the same way and hands the callback a *json.IterableValue
+// (item.GetData() returns the decoded map when a map[string]any is needed).
 //
 // Errors:
 //   - ErrSecurityViolation: filename is rejected by path-traversal validation
@@ -1039,6 +1082,9 @@ func (np *NDJSONProcessor) ProcessFile(filename string, fn func(lineNum int, obj
 
 // ProcessReader processes NDJSON from a reader.
 // Enforces per-line size limits and nesting depth checks to prevent DoS attacks.
+//
+// Deprecated: see NDJSONProcessor — use Processor.StreamJSONL (same limits,
+// same JSONL config knobs, *IterableValue callback).
 //
 // The JSONL config knobs apply as they do for the StreamJSONL family:
 // JSONLMaxLineSize caps a single line (falling back to MaxJSONSize, then the

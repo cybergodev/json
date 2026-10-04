@@ -39,12 +39,14 @@ func getProcessorOrFail() (*Processor, error) {
 // processorForCfg returns the default processor when cfg is omitted, or a
 // config-cached processor whose baked-in settings match the supplied cfg.
 //
-// It lets package-level functions that delegate to Processor methods (which read
-// p.config directly, e.g. the JSONL/stream family) honor an optional trailing
-// Config by selecting the right processor, rather than threading cfg through
-// every method signature. With no cfg it is identical to getProcessorOrFail
-// (behavior unchanged). This mirrors how CompareJSON applies cfg via
-// getProcessorWithConfig.
+// It lets package-level functions that delegate to Processor methods honor an
+// optional trailing Config by selecting the right processor, rather than
+// threading cfg through every method signature. Since D-005 Phase 2 the
+// JSONL/stream Processor methods also accept a per-call Config themselves, but
+// the package level keeps the baked-processor route: it reuses the config-keyed
+// processor cache across repeated calls. With no cfg it is identical to
+// getProcessorOrFail (behavior unchanged). This mirrors how CompareJSON applies
+// cfg via getProcessorWithConfig.
 func processorForCfg(cfg ...Config) (*Processor, error) {
 	if len(cfg) == 0 {
 		return getProcessorOrFail()
@@ -885,13 +887,32 @@ func HTMLEscape(dst *bytes.Buffer, src []byte, cfg ...Config) {
 }
 
 // Encode converts any Go value to JSON string.
+// This is the canonical string-returning encoder; Marshal is the []byte-returning
+// encoding/json drop-in. The optional trailing Config selects the encoding
+// behavior for this call (Pretty, EscapeHTML, SortKeys, FloatPrecision, ...);
+// omitted, the default configuration applies.
 //
-// Deprecated: Encode is functionally identical to EncodeWithConfig (both forward
-// to the same implementation). Use EncodeWithConfig, or Marshal when []byte
-// output is acceptable. Encode will be removed in a future major version.
+// Example:
+//
+//	// Default configuration
+//	result, err := json.Encode(data)
+//
+//	// Pretty output
+//	result, err := json.Encode(data, json.PrettyConfig())
+//
+//	// Custom configuration
+//	cfg := json.DefaultConfig()
+//	cfg.SortKeys = true
+//	result, err := json.Encode(data, cfg)
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func Encode(value any, cfg ...Config) (string, error) {
 	return withProcessor(func(p *Processor) (string, error) {
-		return p.EncodeWithConfig(value, cfg...)
+		return p.Encode(value, cfg...)
 	})
 }
 
@@ -913,27 +934,16 @@ func EncodePretty(value any, cfg ...Config) (string, error) {
 }
 
 // EncodeWithConfig converts any Go value to JSON string using the unified Config.
-// This is the recommended way to encode JSON with configuration.
 //
-// Example:
+// Deprecated: EncodeWithConfig is functionally identical to Encode — the name
+// predates Encode accepting an optional trailing Config. Use Encode(value, cfg)
+// (or PrettyConfig()/SecurityConfig() presets). EncodeWithConfig will not be
+// removed within v1 (per D-005 the module stays on v1.x).
 //
-//	// Default configuration
-//	result, err := json.EncodeWithConfig(data)
-//
-//	// Pretty output
-//	result, err := json.EncodeWithConfig(data, json.PrettyConfig())
-//
-//	// Security-focused output
-//	result, err := json.EncodeWithConfig(data, json.SecurityConfig())
-//
-//	// Custom configuration
-//	cfg := json.DefaultConfig()
-//	cfg.Pretty = true
-//	cfg.SortKeys = true
-//	result, err := json.EncodeWithConfig(data, cfg)
+// Errors: see Encode.
 func EncodeWithConfig(value any, cfg ...Config) (string, error) {
 	return withProcessor(func(p *Processor) (string, error) {
-		return p.EncodeWithConfig(value, cfg...)
+		return p.Encode(value, cfg...)
 	})
 }
 

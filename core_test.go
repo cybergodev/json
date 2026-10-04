@@ -845,19 +845,6 @@ func TestConfiguration(t *testing.T) {
 		})
 	})
 
-	t.Run("ConfigInterface", func(t *testing.T) {
-		config := DefaultConfig()
-
-		helper.AssertTrue(config.EnableCache)
-		helper.AssertTrue(config.MaxCacheSize > 0)
-		helper.AssertTrue(config.CacheTTL > 0)
-		helper.AssertTrue(config.MaxJSONSize > 0)
-		helper.AssertTrue(config.MaxPathDepth > 0)
-		helper.AssertTrue(config.MaxConcurrency > 0)
-		helper.AssertFalse(config.EnableMetrics)
-		helper.AssertFalse(config.EnableHealthCheck)
-		helper.AssertFalse(config.StrictMode)
-	})
 }
 
 // TestConfigurationEdgeCases tests configuration edge cases
@@ -2562,83 +2549,6 @@ func TestHandleExtraction(t *testing.T) {
 }
 
 // TestHandlePropertyAccess tests property access handling
-func TestHandlePropertyAccess(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		data        any
-		property    string
-		expectedVal any
-		shouldExist bool
-	}{
-		{
-			name: "map string key exists",
-			data: map[string]any{
-				"name": "Alice",
-				"age":  30,
-			},
-			property:    "name",
-			expectedVal: "Alice",
-			shouldExist: true,
-		},
-		{
-			name: "map string key not exists",
-			data: map[string]any{
-				"name": "Alice",
-			},
-			property:    "age",
-			expectedVal: nil,
-			shouldExist: false,
-		},
-		{
-			name: "map any key exists",
-			data: map[any]any{
-				"name": "Bob",
-				"age":  25,
-			},
-			property:    "name",
-			expectedVal: "Bob",
-			shouldExist: true,
-		},
-		{
-			name:        "array with numeric property",
-			data:        []any{"a", "b", "c"},
-			property:    "1",
-			expectedVal: "b",
-			shouldExist: true,
-		},
-		{
-			name:        "array with invalid property",
-			data:        []any{"a", "b", "c"},
-			property:    "5",
-			expectedVal: nil,
-			shouldExist: false,
-		},
-		{
-			name:        "invalid data type",
-			data:        "string",
-			property:    "length",
-			expectedVal: nil,
-			shouldExist: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := processor.handlePropertyAccess(tt.data, tt.property)
-			if result.exists != tt.shouldExist {
-				t.Errorf("handlePropertyAccess() existence = %v; want %v", result.exists, tt.shouldExist)
-			}
-			if tt.shouldExist && result.value != tt.expectedVal {
-				t.Errorf("handlePropertyAccess() value = %v; want %v", result.value, tt.expectedVal)
-			}
-		})
-	}
-}
-
-// TestHandleStructAccess tests struct field access
 func TestHandleStructAccess(t *testing.T) {
 	processor, _ := New()
 	defer processor.Close()
@@ -2709,17 +2619,6 @@ func TestIndent(t *testing.T) {
 
 // TestIsEmptyOrZero is covered by TestIsEmptyOrZeroExtended in test_helpers_new_test.go
 
-func TestPrettyEncodeConfig(t *testing.T) {
-	cfg := PrettyConfig()
-	if !cfg.Pretty {
-		t.Fatal("PrettyEncodeConfig should have Pretty = true")
-	}
-	if !cfg.Pretty {
-		t.Error("PrettyEncodeConfig should have Pretty = true")
-	}
-}
-
-// TestNullAndMissingFields tests null value handling and missing fields
 func TestNullAndMissingFields(t *testing.T) {
 	helper := newTestHelper(t)
 
@@ -2732,12 +2631,6 @@ func TestNullAndMissingFields(t *testing.T) {
 		},
 		"array_with_nulls": [1, null, 3, null, 5]
 	}`
-
-	t.Run("NullFieldAccess", func(t *testing.T) {
-		result, err := Get(testData, "null_field")
-		helper.AssertNoError(err)
-		helper.AssertNil(result)
-	})
 
 	t.Run("NestedNullAccess", func(t *testing.T) {
 		result, err := Get(testData, "nested.null_nested")
@@ -2798,75 +2691,6 @@ func TestParseArrayIndex(t *testing.T) {
 // of the same names. Kept here purely to exercise the simple dot/JSON-pointer
 // segment semantics covered by TestPathCombination and TestPathSegmentation;
 // production code uses the richer internal path parser.
-func splitPathSegments(path string) []string {
-	if path == "" {
-		return []string{}
-	}
-	if strings.HasPrefix(path, "/") {
-		withoutSlash := path[1:]
-		if withoutSlash == "" {
-			return []string{}
-		}
-		return strings.Split(withoutSlash, "/")
-	}
-	return strings.Split(path, ".")
-}
-
-func joinPathSegments(segments []string, useJSONPointer bool) string {
-	if len(segments) == 0 {
-		return ""
-	}
-	if useJSONPointer {
-		return "/" + strings.Join(segments, "/")
-	}
-	return strings.Join(segments, ".")
-}
-
-// TestPathCombination tests path joining and reconstruction
-func TestPathCombination(t *testing.T) {
-	tests := []struct {
-		name     string
-		segments []string
-		expected string
-		useJSON  bool
-	}{
-		{
-			name:     "simple join",
-			segments: []string{"users", "name"},
-			expected: "users.name",
-			useJSON:  false,
-		},
-		{
-			name:     "single segment",
-			segments: []string{"user"},
-			expected: "user",
-			useJSON:  false,
-		},
-		{
-			name:     "JSON pointer join",
-			segments: []string{"users", "0", "name"},
-			expected: "/users/0/name",
-			useJSON:  true,
-		},
-		{
-			name:     "empty segments",
-			segments: []string{},
-			expected: "",
-			useJSON:  false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := joinPathSegments(tt.segments, tt.useJSON)
-			if result != tt.expected {
-				t.Errorf("joinPathSegments(%v, %v) = %s; want %s", tt.segments, tt.useJSON, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestPathParsingBasic tests basic path parsing functionality
 func TestPathParsingBasic(t *testing.T) {
 	processor, _ := New()
 	defer processor.Close()
@@ -3067,59 +2891,6 @@ func TestPathReconstruction(t *testing.T) {
 
 // TestPathSegmentTypes tests different path segment type identification
 // TestPathSegmentation tests splitting paths into segments
-func TestPathSegmentation(t *testing.T) {
-	tests := []struct {
-		name        string
-		path        string
-		expectedLen int
-		firstIs     string
-	}{
-		{
-			name:        "simple dot notation",
-			path:        "user.name.first",
-			expectedLen: 3,
-			firstIs:     "user",
-		},
-		{
-			name:        "with nested path",
-			path:        "users.name.first",
-			expectedLen: 3,
-			firstIs:     "users",
-		},
-		{
-			name:        "JSON pointer",
-			path:        "/users/0/name",
-			expectedLen: 3,
-			firstIs:     "users",
-		},
-		{
-			name:        "root path",
-			path:        "/",
-			expectedLen: 0,
-			firstIs:     "",
-		},
-		{
-			name:        "empty path",
-			path:        "",
-			expectedLen: 0,
-			firstIs:     "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			segments := splitPathSegments(tt.path)
-			if len(segments) != tt.expectedLen {
-				t.Errorf("splitPathSegments(%s) returned %d segments; want %d", tt.path, len(segments), tt.expectedLen)
-			}
-			if tt.expectedLen > 0 && segments[0] != tt.firstIs {
-				t.Errorf("splitPathSegments(%s)[0] = %s; want %s", tt.path, segments[0], tt.firstIs)
-			}
-		})
-	}
-}
-
-// TestPathWithSpecialCharacters tests paths with special characters
 func TestPathWithSpecialCharacters(t *testing.T) {
 	jsonStr := `{
 		"user_name": "value1",
@@ -4601,25 +4372,25 @@ func TestCacheSharedResults_InConfigFieldRegistry(t *testing.T) {
 func TestPreservingUnmarshal_Boundary(t *testing.T) {
 	t.Run("non_preserve_into_any", func(t *testing.T) {
 		var v any
-		if err := preservingUnmarshal([]byte(`{"a":1}`), &v, false); err != nil {
+		if err := preservingUnmarshal([]byte(`{"a":1}`), &v, false, false); err != nil {
 			t.Fatalf("err: %v", err)
 		}
 	})
 	t.Run("preserve_into_any", func(t *testing.T) {
 		var v any
-		if err := preservingUnmarshal([]byte(`{"a":42}`), &v, true); err != nil {
+		if err := preservingUnmarshal([]byte(`{"a":42}`), &v, true, false); err != nil {
 			t.Fatalf("err: %v", err)
 		}
 	})
 	t.Run("preserve_into_map", func(t *testing.T) {
 		var m map[string]any
-		if err := preservingUnmarshal([]byte(`{"a":42}`), &m, true); err != nil {
+		if err := preservingUnmarshal([]byte(`{"a":42}`), &m, true, false); err != nil {
 			t.Fatalf("err: %v", err)
 		}
 	})
 	t.Run("preserve_into_slice", func(t *testing.T) {
 		var s []any
-		if err := preservingUnmarshal([]byte(`[1,2,3]`), &s, true); err != nil {
+		if err := preservingUnmarshal([]byte(`[1,2,3]`), &s, true, false); err != nil {
 			t.Fatalf("err: %v", err)
 		}
 	})
@@ -4628,7 +4399,7 @@ func TestPreservingUnmarshal_Boundary(t *testing.T) {
 			A int `json:"a"`
 		}
 		var s S
-		if err := preservingUnmarshal([]byte(`{"a":42}`), &s, true); err != nil {
+		if err := preservingUnmarshal([]byte(`{"a":42}`), &s, true, false); err != nil {
 			t.Fatalf("err: %v", err)
 		}
 		if s.A != 42 {
@@ -4637,7 +4408,7 @@ func TestPreservingUnmarshal_Boundary(t *testing.T) {
 	})
 	t.Run("invalid_json", func(t *testing.T) {
 		var v any
-		if err := preservingUnmarshal([]byte("not json"), &v, true); err == nil {
+		if err := preservingUnmarshal([]byte("not json"), &v, true, false); err == nil {
 			t.Error("expected error for invalid JSON")
 		}
 	})

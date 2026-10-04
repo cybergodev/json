@@ -63,6 +63,29 @@ func skipJSONLLine(line []byte, cfg *Config) bool {
 	return shouldSkipJSONLLineFromConfig(line, cfg)
 }
 
+// resolveJSONLOptions returns the Config governing a JSONL/stream operation.
+//
+// With no cfg it returns &p.config — the processor's baked configuration,
+// exactly what these engines read before per-call Config support existed, so
+// no-cfg behavior is unchanged. A supplied cfg is deep-copied and validated
+// (clamped) the same way New(cfg) bakes it, then used for this call only —
+// the replace semantics every other cfg-accepting Processor method follows.
+//
+// Not drawn from configPool: the pointer is held for the whole stream, so
+// pool discipline would have to span every return path of three engines (plus
+// panic recovery) and a future refactor could return &p.config itself to the
+// pool. One Clone per explicit-cfg call is negligible next to stream I/O.
+func (p *Processor) resolveJSONLOptions(cfg ...Config) (*Config, error) {
+	if len(cfg) == 0 {
+		return &p.config, nil
+	}
+	c := cfg[0].Clone()
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 // StreamJSONL streams JSONL data from a reader with IterableValue callback support.
 //
 // This method provides line-by-line processing of JSONL (NDJSON) files with
@@ -85,7 +108,12 @@ func skipJSONLLine(line []byte, cfg *Config) bool {
 // JSONLMaxMemory → MaxMemory; when both are 0 (the default) this reader is
 // NOT bounded in total bytes — set JSONLMaxMemory for untrusted streams
 // (StreamIterator, by contrast, always applies DefaultMaxJSONSize).
-func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error) (err error) {
+//
+// The optional trailing Config overrides the processor's JSONL settings
+// (buffer/line sizes, memory limit, nesting cap, JSONLSkipComments,
+// JSONLContinueOnErr) for this call only; omitted, the baked configuration
+// applies.
+func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error, cfg ...Config) (err error) {
 	// SAFETY (SEC-003): a panicking user callback (or any unexpected panic during
 	// the stream) must not crash the program. Recover and surface as an error.
 	// Registered before beginGovernedOp so the governance release (endGovernedOp)
@@ -107,16 +135,24 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 	}
 	defer p.endGovernedOp()
 
-	// Determine effective memory limit for JSONL processing
-	memLimit := p.config.JSONLMaxMemory
-	if memLimit <= 0 && p.config.MaxMemory > 0 {
-		memLimit = p.config.MaxMemory
+	// Per-call Config (D-005 Phase 2): a supplied cfg's JSONL settings replace
+	// the baked ones for this call only; resolveJSONLOptions keeps the no-cfg
+	// path on &p.config, byte-identical to the previous behavior.
+	opts, err := p.resolveJSONLOptions(cfg...)
+	if err != nil {
+		return err
 	}
 
-	bufSize, maxToken := jsonlScanLimits(&p.config)
+	// Determine effective memory limit for JSONL processing
+	memLimit := opts.JSONLMaxMemory
+	if memLimit <= 0 && opts.MaxMemory > 0 {
+		memLimit = opts.MaxMemory
+	}
+
+	bufSize, maxToken := jsonlScanLimits(opts)
 	// SECURITY: per-line nesting cap to prevent stack overflow from deeply nested
 	// JSONL payloads (mirrors NDJSONProcessor.ProcessReader in file.go).
-	maxDepth := p.config.MaxNestingDepthSecurity
+	maxDepth := opts.MaxNestingDepthSecurity
 	if maxDepth <= 0 {
 		maxDepth = DefaultMaxNestingDepth
 	}
@@ -133,7 +169,7 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 		line := scanner.Bytes()
 
 		// Skip lines based on config (blank lines always, comments when configured)
-		if skipJSONLLine(line, &p.config) {
+		if skipJSONLLine(line, opts) {
 			continue
 		}
 
@@ -150,7 +186,7 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 		// parse failures to skips, matching NDJSONProcessor.ProcessReader and
 		// StreamLinesInto (D-002: this knob was previously ignored here).
 		if err := checkNestingDepth(line, maxDepth); err != nil {
-			if p.config.JSONLContinueOnErr {
+			if opts.JSONLContinueOnErr {
 				continue
 			}
 			return fmt.Errorf("line %d: %w", lineNum, err)
@@ -159,7 +195,7 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 		// Parse JSON line
 		var data any
 		if err := json.Unmarshal(line, &data); err != nil {
-			if p.config.JSONLContinueOnErr {
+			if opts.JSONLContinueOnErr {
 				continue
 			}
 			return fmt.Errorf("line %d: %w", lineNum, err)
@@ -194,8 +230,8 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 //		// Process each item in parallel
 //		return nil
 //	})
-func (p *Processor) StreamJSONLParallel(reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error) error {
-	return p.StreamJSONLParallelWithContext(context.Background(), reader, workers, fn)
+func (p *Processor) StreamJSONLParallel(reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error {
+	return p.StreamJSONLParallelWithContext(context.Background(), reader, workers, fn, cfg...)
 }
 
 // StreamJSONLParallelWithContext processes JSONL data in parallel with context support
@@ -209,7 +245,10 @@ func (p *Processor) StreamJSONLParallel(reader io.Reader, workers int, fn func(l
 //	err := processor.StreamJSONLParallelWithContext(ctx, reader, 4, func(lineNum int, item *json.IterableValue) error {
 //	    return nil
 //	})
-func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error) error {
+//
+// The optional trailing Config overrides the processor's JSONL settings for
+// this call only; omitted, the baked configuration applies.
+func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error {
 	// Concurrency governance for the full parallel stream (see StreamJSONL for the
 	// rationale: pinning once at entry beats per-line governance, which leaves the
 	// processor unprotected between lines). The in-flight slot is held by this
@@ -219,6 +258,12 @@ func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader i
 		return err
 	}
 	defer p.endGovernedOp()
+
+	// Per-call Config (D-005 Phase 2): see StreamJSONL.
+	opts, err := p.resolveJSONLOptions(cfg...)
+	if err != nil {
+		return err
+	}
 
 	if workers <= 0 {
 		workers = 4
@@ -286,11 +331,11 @@ func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader i
 
 	// Feed jobs — respect context cancellation during scan
 	lineNum := 0
-	parBufSize, parMaxToken := jsonlScanLimits(&p.config)
+	parBufSize, parMaxToken := jsonlScanLimits(opts)
 	// SECURITY: per-line nesting cap to prevent stack overflow from deeply nested
 	// JSONL payloads. The feed loop parses each line before dispatching to workers,
 	// so the check belongs here (the overflow would happen in this goroutine).
-	maxDepth := p.config.MaxNestingDepthSecurity
+	maxDepth := opts.MaxNestingDepthSecurity
 	if maxDepth <= 0 {
 		maxDepth = DefaultMaxNestingDepth
 	}
@@ -311,7 +356,7 @@ feedLoop:
 		line := scanner.Bytes()
 
 		// Skip lines based on config (blank lines always, comments when configured)
-		if skipJSONLLine(line, &p.config) {
+		if skipJSONLLine(line, opts) {
 			continue
 		}
 
@@ -319,7 +364,7 @@ feedLoop:
 		// from deeply nested payloads). JSONLContinueOnErr downgrades depth and
 		// parse failures to skips, matching the serial/chunked engines (D-002).
 		if err := checkNestingDepth(line, maxDepth); err != nil {
-			if p.config.JSONLContinueOnErr {
+			if opts.JSONLContinueOnErr {
 				continue
 			}
 			close(jobs)
@@ -330,7 +375,7 @@ feedLoop:
 		// Parse JSON line
 		var data any
 		if err := json.Unmarshal(line, &data); err != nil {
-			if p.config.JSONLContinueOnErr {
+			if opts.JSONLContinueOnErr {
 				continue
 			}
 			close(jobs)
@@ -384,7 +429,10 @@ feedLoop:
 //		// Process chunk of 1000 items
 //		return nil
 //	})
-func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(chunk []*IterableValue) error) (err error) {
+//
+// The optional trailing Config overrides the processor's JSONL settings for
+// this call only; omitted, the baked configuration applies.
+func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(chunk []*IterableValue) error, cfg ...Config) (err error) {
 	// SAFETY (SEC-003): a panicking user callback must not crash the program.
 	// Registered first so the pool-cleanup and governance defers (registered later)
 	// still run on panic — defers unwind LIFO, so they fire before this recover.
@@ -400,14 +448,20 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 	}
 	defer p.endGovernedOp()
 
+	// Per-call Config (D-005 Phase 2): see StreamJSONL.
+	opts, err := p.resolveJSONLOptions(cfg...)
+	if err != nil {
+		return err
+	}
+
 	if chunkSize <= 0 {
 		chunkSize = 1000
 	}
 
 	// Determine effective memory limit for JSONL processing
-	memLimit := p.config.JSONLMaxMemory
-	if memLimit <= 0 && p.config.MaxMemory > 0 {
-		memLimit = p.config.MaxMemory
+	memLimit := opts.JSONLMaxMemory
+	if memLimit <= 0 && opts.MaxMemory > 0 {
+		memLimit = opts.MaxMemory
 	}
 
 	var chunk []*IterableValue
@@ -419,10 +473,10 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		releaseIterableValues(chunk)
 	}()
 
-	chunkBufSize, chunkMaxToken := jsonlScanLimits(&p.config)
+	chunkBufSize, chunkMaxToken := jsonlScanLimits(opts)
 	// SECURITY: per-line nesting cap to prevent stack overflow from deeply nested
 	// JSONL payloads (mirrors NDJSONProcessor.ProcessReader in file.go).
-	maxDepth := p.config.MaxNestingDepthSecurity
+	maxDepth := opts.MaxNestingDepthSecurity
 	if maxDepth <= 0 {
 		maxDepth = DefaultMaxNestingDepth
 	}
@@ -438,7 +492,7 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		line := scanner.Bytes()
 
 		// Skip lines based on config (blank lines always, comments when configured)
-		if skipJSONLLine(line, &p.config) {
+		if skipJSONLLine(line, opts) {
 			continue
 		}
 
@@ -454,7 +508,7 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		// from deeply nested payloads). JSONLContinueOnErr downgrades depth and
 		// parse failures to skips, matching the serial/parallel engines (D-002).
 		if err := checkNestingDepth(line, maxDepth); err != nil {
-			if p.config.JSONLContinueOnErr {
+			if opts.JSONLContinueOnErr {
 				continue
 			}
 			return fmt.Errorf("line %d: %w", lineNum, err)
@@ -463,7 +517,7 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		// Parse JSON line
 		var data any
 		if err := json.Unmarshal(line, &data); err != nil {
-			if p.config.JSONLContinueOnErr {
+			if opts.JSONLContinueOnErr {
 				continue
 			}
 			return fmt.Errorf("line %d: %w", lineNum, err)
@@ -512,12 +566,15 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 //		fmt.Printf("Line: %d, Value: %v\n", lineNum, item.GetData())
 //		return nil
 //	})
-func (p *Processor) ForeachJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error) error {
+//
+// The optional trailing Config is forwarded to StreamJSONL (per-call override
+// of the processor's JSONL settings).
+func (p *Processor) ForeachJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error {
 	if err := p.checkClosed(); err != nil {
 		return err
 	}
 
-	return p.StreamJSONL(reader, fn)
+	return p.StreamJSONL(reader, fn, cfg...)
 }
 
 // MapJSONL maps JSONL data into a new format using a mapping function
@@ -534,7 +591,10 @@ func (p *Processor) ForeachJSONL(reader io.Reader, fn func(lineNum int, item *It
 //			"age":  item.GetInt("age"),
 //		}, nil
 //	})
-func (p *Processor) MapJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) (any, error)) ([]any, error) {
+//
+// The optional trailing Config is forwarded to StreamJSONL (per-call override
+// of the processor's JSONL settings).
+func (p *Processor) MapJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) (any, error), cfg ...Config) ([]any, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
 	}
@@ -548,7 +608,7 @@ func (p *Processor) MapJSONL(reader io.Reader, fn func(lineNum int, item *Iterab
 		}
 		results = append(results, value)
 		return nil
-	})
+	}, cfg...)
 
 	if err != nil {
 		return nil, err
@@ -568,7 +628,10 @@ func (p *Processor) MapJSONL(reader io.Reader, fn func(lineNum int, item *Iterab
 //	totalAge, err := processor.ReduceJSONL(reader, 0, func(acc any, item *json.IterableValue) any {
 //		return acc.(int64) + int64(item.GetInt("age"))
 //	})
-func (p *Processor) ReduceJSONL(reader io.Reader, initial any, fn func(acc any, item *IterableValue) any) (any, error) {
+//
+// The optional trailing Config is forwarded to StreamJSONL (per-call override
+// of the processor's JSONL settings).
+func (p *Processor) ReduceJSONL(reader io.Reader, initial any, fn func(acc any, item *IterableValue) any, cfg ...Config) (any, error) {
 	if err := p.checkClosed(); err != nil {
 		return initial, err
 	}
@@ -578,7 +641,7 @@ func (p *Processor) ReduceJSONL(reader io.Reader, initial any, fn func(acc any, 
 	err := p.StreamJSONL(reader, func(_ int, item *IterableValue) error {
 		acc = fn(acc, item)
 		return nil
-	})
+	}, cfg...)
 
 	if err != nil {
 		return initial, err
@@ -597,7 +660,10 @@ func (p *Processor) ReduceJSONL(reader io.Reader, initial any, fn func(acc any, 
 //	adults, err := processor.FilterJSONL(reader, func(item *json.IterableValue) bool {
 //		return item.GetInt("age") >= 18
 //	})
-func (p *Processor) FilterJSONL(reader io.Reader, predicate func(item *IterableValue) bool) ([]*IterableValue, error) {
+//
+// The optional trailing Config is forwarded to StreamJSONL (per-call override
+// of the processor's JSONL settings).
+func (p *Processor) FilterJSONL(reader io.Reader, predicate func(item *IterableValue) bool, cfg ...Config) ([]*IterableValue, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
 	}
@@ -609,7 +675,7 @@ func (p *Processor) FilterJSONL(reader io.Reader, predicate func(item *IterableV
 			results = append(results, item)
 		}
 		return nil
-	})
+	}, cfg...)
 
 	if err != nil {
 		return nil, err
@@ -629,7 +695,10 @@ func (p *Processor) FilterJSONL(reader io.Reader, predicate func(item *IterableV
 //		fmt.Printf("Line %d: %v\n", lineNum, item.GetData())
 //		return nil
 //	})
-func (p *Processor) StreamJSONLFile(filename string, fn func(lineNum int, item *IterableValue) error) error {
+//
+// The optional trailing Config is forwarded to StreamJSONL (per-call override
+// of the processor's JSONL settings).
+func (p *Processor) StreamJSONLFile(filename string, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error {
 	if err := p.checkClosed(); err != nil {
 		return err
 	}
@@ -646,7 +715,7 @@ func (p *Processor) StreamJSONLFile(filename string, fn func(lineNum int, item *
 	}
 	defer func() { _ = file.Close() }() // best-effort cleanup
 
-	return p.StreamJSONL(file, fn)
+	return p.StreamJSONL(file, fn, cfg...)
 }
 
 // CollectJSONL collects all JSONL items into a slice
@@ -660,7 +729,10 @@ func (p *Processor) StreamJSONLFile(filename string, fn func(lineNum int, item *
 //	for _, item := range items {
 //		fmt.Println(item.GetString("name"))
 //	}
-func (p *Processor) CollectJSONL(reader io.Reader) ([]*IterableValue, error) {
+//
+// The optional trailing Config is forwarded to StreamJSONL (per-call override
+// of the processor's JSONL settings).
+func (p *Processor) CollectJSONL(reader io.Reader, cfg ...Config) ([]*IterableValue, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
 	}
@@ -670,7 +742,7 @@ func (p *Processor) CollectJSONL(reader io.Reader) ([]*IterableValue, error) {
 	err := p.StreamJSONL(reader, func(_ int, item *IterableValue) error {
 		items = append(items, item)
 		return nil
-	})
+	}, cfg...)
 
 	if err != nil {
 		return nil, err
@@ -689,7 +761,10 @@ func (p *Processor) CollectJSONL(reader io.Reader) ([]*IterableValue, error) {
 //	user, found, err := processor.FirstJSONL(reader, func(item *json.IterableValue) bool {
 //		return item.GetString("name") == "Alice"
 //	})
-func (p *Processor) FirstJSONL(reader io.Reader, predicate func(item *IterableValue) bool) (*IterableValue, bool, error) {
+//
+// The optional trailing Config is forwarded to StreamJSONL (per-call override
+// of the processor's JSONL settings).
+func (p *Processor) FirstJSONL(reader io.Reader, predicate func(item *IterableValue) bool, cfg ...Config) (*IterableValue, bool, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, false, err
 	}
@@ -704,7 +779,7 @@ func (p *Processor) FirstJSONL(reader io.Reader, predicate func(item *IterableVa
 			return errBreak
 		}
 		return nil
-	})
+	}, cfg...)
 
 	if err != nil {
 		return nil, false, err
@@ -720,6 +795,9 @@ func (p *Processor) FirstJSONL(reader io.Reader, predicate func(item *IterableVa
 // supplied it selects a config-cached processor whose baked-in JSONL settings
 // (workers, buffer/line sizes, memory limits) reflect cfg. Explicit parameters
 // (e.g. StreamJSONLParallel's workers) still take precedence over cfg fields.
+// The Processor methods these wrap also accept their own trailing Config
+// (D-005 Phase 2); the package level keeps the baked-processor route because
+// it reuses the config-keyed processor cache across repeated calls.
 // ============================================================================
 
 // StreamJSONL streams JSONL data from a reader with IterableValue callback support.

@@ -327,6 +327,17 @@ func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) 
 	return err
 }
 
+// CompactString removes insignificant whitespace from a JSON string and returns
+// the compacted result. It is the same-named Processor mirror of the
+// package-level json.CompactString (json.CompactString(s, cfg) ↔
+// p.CompactString(s, cfg)) — before D-005 Phase 2 the package-level function
+// mapped to p.Compact under a different name, breaking the mirror naming rule.
+//
+// Errors: see Compact.
+func (p *Processor) CompactString(jsonStr string, cfg ...Config) (string, error) {
+	return p.Compact(jsonStr, cfg...)
+}
+
 // Indent appends to dst an indented form of the JSON-encoded src.
 // Compatible with encoding/json.Indent with optional Config support.
 //

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -246,4 +247,21 @@ func demonstrateSecurityPatterns() {
 	} else {
 		fmt.Printf("   Safe data processed: %v\n", result)
 	}
+
+	// A registered pattern actually blocks input. RegisterDangerousPattern
+	// (above) is process-global; Config.AddDangerousPattern scopes a pattern
+	// to a single processor, leaving the global registry untouched.
+	patCfg := json.DefaultConfig()
+	patCfg.AddDangerousPattern(json.DangerousPattern{
+		Pattern: "eval(",
+		Name:    "JavaScript eval injection",
+		Level:   json.PatternLevelCritical,
+	})
+	patProc, _ := json.New(patCfg) // OK: DefaultConfig-derived, always valid
+	defer patProc.Close()
+
+	_, err = patProc.Get(`{"code": "eval(alert(1))"}`, "code")
+	fmt.Printf("\n   Per-Config pattern blocks 'eval(': %v\n", err)
+	fmt.Printf("   classified as ErrSecurityViolation: %t\n",
+		errors.Is(err, json.ErrSecurityViolation))
 }

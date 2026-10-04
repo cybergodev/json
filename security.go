@@ -389,9 +389,16 @@ type securityValidator struct {
 	// test: TestD002Round6_CustomPatternStraddlesWindowBoundary).
 	maxCustomPatternLen int
 	// Composed validators for separation of concerns
-	// Cache for validation results
+	// Cache for validation results — created lazily on the first successfully
+	// validated input (P-001) so transient one-shot validators and validators
+	// that never cache (cacheDisabled) do not allocate the map.
 	validationCache map[validationKey]*validationCacheEntry
-	cacheMutex      sync.RWMutex
+	// cacheDisabled permanently disables caching: set by Close() and on
+	// transient one-shot validators (validateInputForOptions' per-call cfg
+	// path). Distinguished from a merely not-yet-created (nil) cache so lazy
+	// creation cannot resurrect caching after Close().
+	cacheDisabled bool
+	cacheMutex    sync.RWMutex
 }
 
 // newSecurityValidator creates a new security validator with the given limits.
@@ -407,7 +414,6 @@ func newSecurityValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int,
 		fullSecurityScan:       fullSecurityScan,
 		disableDefaultPatterns: disableDefaultPatterns,
 		additionalPatterns:     additionalPatterns,
-		validationCache:        make(map[validationKey]*validationCacheEntry, 256),
 	}
 	for _, dp := range additionalPatterns {
 		if len(dp.pattern) > sv.maxCustomPatternLen {
@@ -437,7 +443,8 @@ func (sv *securityValidator) Close() {
 	sv.cacheMutex.Lock()
 	defer sv.cacheMutex.Unlock()
 
-	// Clear validation cache to release memory
+	// Permanently disable caching and clear the cache to release memory.
+	sv.cacheDisabled = true
 	sv.validationCache = nil
 }
 
@@ -604,9 +611,16 @@ func (sv *securityValidator) cacheValidationWithKey(cacheKey validationKey, json
 	sv.cacheMutex.Lock()
 	defer sv.cacheMutex.Unlock()
 
-	// SAFETY: Skip caching after Close()
-	if sv.validationCache == nil {
+	// SAFETY: Skip caching after Close() and on transient one-shot validators.
+	if sv.cacheDisabled {
 		return
+	}
+
+	// Lazy cache creation (P-001): the map is allocated on the first input
+	// that qualifies for caching rather than in the constructor, so validators
+	// that never cache do not pay for it. nil here means "not yet created".
+	if sv.validationCache == nil {
+		sv.validationCache = make(map[validationKey]*validationCacheEntry, 256)
 	}
 
 	// SECURITY FIX: Proactive cleanup at 80% capacity instead of 100%

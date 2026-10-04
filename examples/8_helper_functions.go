@@ -18,7 +18,7 @@ import (
 // - CompareJSON for JSON comparison
 // - MergeJSON for combining JSON objects
 // - Prettify, Compact and CompactString for formatting
-// - EncodeWithConfig and EncodePretty for JSON output
+// - Encode and EncodePretty for JSON output
 //
 // For JSON validation, see: 6_validation.go
 // For DeepCopy, see: 7_type_conversion.go
@@ -265,10 +265,10 @@ func demonstrateEncode() {
 		"balance": 1250.75,
 	}
 
-	fmt.Println("   EncodeWithConfig (compact, single line):")
-	encoded, err := json.EncodeWithConfig(data)
+	fmt.Println("   Encode (compact, single line):")
+	encoded, err := json.Encode(data)
 	if err != nil {
-		fmt.Printf("   EncodeWithConfig error: %v\n", err)
+		fmt.Printf("   Encode error: %v\n", err)
 		return
 	}
 	fmt.Println(encoded)

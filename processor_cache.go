@@ -140,7 +140,7 @@ func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, 
 	// global segment cache — it is keyed by path string alone and cannot
 	// distinguish parser implementations.
 	if p.config.CustomPathParser != nil {
-		return p.config.CustomPathParser.ParsePath(path)
+		return parsePathGuarded(p.config.CustomPathParser, path)
 	}
 	return internal.ParsePath(path)
 }

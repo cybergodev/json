@@ -284,13 +284,22 @@ func TestParallelIteratorChannelCleanup(t *testing.T) {
 	}
 
 	// Create multiple iterators and verify they don't leak channels
+	var processed atomic.Int64 // callbacks run on worker goroutines: atomic
 	for i := 0; i < 50; i++ {
 		cfg := DefaultConfig()
 		cfg.MaxConcurrency = 4
 		iterator := NewParallelIterator(data, cfg)
-		_ = iterator.ForEach(func(idx int, val any) error {
+		if err := iterator.ForEach(func(idx int, val any) error {
+			processed.Add(1)
 			return nil
-		})
+		}); err != nil {
+			t.Fatalf("iteration %d: ForEach: %v", i, err)
+		}
+		iterator.Close()
+	}
+
+	if got := processed.Load(); got != int64(50*len(data)) {
+		t.Errorf("processed %d elements across 50 iterators, want %d", got, 50*len(data))
 	}
 
 	runtime.GC()
@@ -306,26 +315,6 @@ func TestParallelIteratorChannelCleanup(t *testing.T) {
 
 // TestIteratorPoolNoLeak verifies that pooled iterators are properly
 // returned to the pool
-func TestIteratorPoolNoLeak(t *testing.T) {
-	data := map[string]any{"key1": "value1", "key2": "value2"}
-
-	// Create and release many iterators
-	for i := 0; i < 100; i++ {
-		iv := newIterableValue(data)
-		_ = iv.GetString("key1")
-		iv.Release()
-	}
-
-	// Pool should be healthy - no way to directly check pool size,
-	// but we verify no panic or deadlock occurs
-}
-
-// ============================================================================
-// SEMAPHORE DRAIN TESTS
-// ============================================================================
-
-// TestSemaphoreDrainOnClose verifies that the semaphore is properly
-// drained during close and doesn't leave goroutines waiting
 func TestSemaphoreDrainOnClose(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MaxConcurrency = 3

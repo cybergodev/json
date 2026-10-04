@@ -15,10 +15,10 @@ import (
 //
 // Topics covered:
 // - Basic Delete operations
-// - Delete with Config{CleanupNulls: true} for cleanup
 // - Array element deletion
 // - Nested path deletion
-// - Cleanup options
+// - DeleteClean — delete plus a sweep of null/empty values (no Config needed)
+// - Batch deletion and sanitization patterns
 //
 // Run: go run -tags=example examples/12_advanced_delete.go
 
@@ -32,6 +32,20 @@ func deleteAndShow(data, path string) {
 		return
 	}
 	fmt.Printf("\n   After deleting %s:\n   %s\n", path, result)
+}
+
+// deleteAll applies Delete for every path, threading each result into the
+// next call. Errors are reported per path and skipped so the demo continues.
+func deleteAll(data string, paths []string) string {
+	for _, field := range paths {
+		updated, err := json.Delete(data, field)
+		if err != nil {
+			fmt.Printf("   Error deleting %s: %v\n", field, err)
+			continue
+		}
+		data = updated
+	}
+	return data
 }
 
 func main() {
@@ -246,14 +260,7 @@ func demonstrateBatchDelete() {
 		"metadata.debug_info",
 	}
 
-	deleted := data
-	for _, field := range sensitiveFields {
-		var err error
-		deleted, err = json.Delete(deleted, field)
-		if err != nil {
-			fmt.Printf("   Error deleting %s: %v\n", field, err)
-		}
-	}
+	deleted := deleteAll(data, sensitiveFields)
 
 	fmt.Println("\n   After batch deleting sensitive fields:")
 	fmt.Println("   " + deleted)
@@ -281,20 +288,11 @@ func demonstratePracticalUseCases() {
 	fmt.Println("   " + userData)
 
 	// Sanitize for logging
-	sanitized := userData
-	sensitiveFields := []string{
+	sanitized := deleteAll(userData, []string{
 		"user.password",
 		"user.credit_card",
 		"user.ssn",
-	}
-
-	for _, field := range sensitiveFields {
-		var err error
-		sanitized, err = json.Delete(sanitized, field)
-		if err != nil {
-			fmt.Printf("   Error deleting %s: %v\n", field, err)
-		}
-	}
+	})
 
 	fmt.Println("\n   Sanitized for logging:")
 	fmt.Println("   " + sanitized)
@@ -348,16 +346,7 @@ func demonstratePracticalUseCases() {
 	// Remove specific optional fields one by one with plain Delete. Unlike
 	// DeleteClean (use case 2), this removes only the listed fields and leaves
 	// any other nulls untouched.
-	cleanedForm := formData
-	optionalFields := []string{"user.bio", "user.website", "user.twitter"}
-
-	for _, field := range optionalFields {
-		var err error
-		cleanedForm, err = json.Delete(cleanedForm, field)
-		if err != nil {
-			fmt.Printf("   Error deleting %s: %v\n", field, err)
-		}
-	}
+	cleanedForm := deleteAll(formData, []string{"user.bio", "user.website", "user.twitter"})
 
 	fmt.Println("\n   Cleaned (only provided fields):")
 	fmt.Println("   " + cleanedForm)

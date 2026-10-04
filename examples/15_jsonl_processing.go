@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,10 +22,12 @@ import (
 // Topics covered:
 // - JSONLWriter for writing JSONL output
 // - ParseJSONL and ToJSONL conversion
-// - NDJSONProcessor for file processing
+// - StreamJSONL as the NDJSONProcessor replacement (deprecated, D-005)
 // - Processor JSONL streaming methods
-// - Package-level streaming: ForeachJSONL, StreamJSONLChunked,
-//   StreamJSONLFile, StreamJSONLParallel, StreamLinesInto[T]
+// - Package-level streaming: StreamJSONL, ForeachJSONL, StreamJSONLChunked,
+//   StreamJSONLFile, StreamJSONLParallel, StreamJSONLParallelWithContext,
+//   StreamLinesInto[T], and the JSONL mirror family (FilterJSONL, MapJSONL,
+//   ReduceJSONL, FirstJSONL, CollectJSONL)
 //
 // Run: go run -tags=example examples/15_jsonl_processing.go
 
@@ -40,8 +44,8 @@ func main() {
 	// 3. PROCESSOR JSONL METHODS
 	demonstrateProcessorJSONL()
 
-	// 4. NDJSON PROCESSOR
-	demonstrateNDJSONProcessor()
+	// 4. NDJSON PROCESSING (StreamJSONL — NDJSONProcessor replacement)
+	demonstrateNDJSONReplacement()
 
 	// 5. PACKAGE-LEVEL STREAMING
 	demonstratePackageStreaming()
@@ -225,38 +229,38 @@ func demonstrateProcessorJSONL() {
 	}
 }
 
-func demonstrateNDJSONProcessor() {
-	fmt.Println("\n4. NDJSONProcessor")
-	fmt.Println("-------------------")
+func demonstrateNDJSONReplacement() {
+	fmt.Println("\n4. NDJSON Processing (StreamJSONL)")
+	fmt.Println("----------------------------------")
 
-	// NDJSONProcessor processes JSONL from io.Reader
-	ndprocessor := json.NewNDJSONProcessor()
-
+	// NDJSONProcessor is deprecated (D-005): it duplicated the StreamJSONL
+	// family with a map[string]any callback. A Processor plus StreamJSONL is
+	// the replacement — same limits, same JSONL config knobs, plus typed
+	// access through *json.IterableValue.
 	jsonlData := `{"type":"log","level":"info","msg":"started"}
 {"type":"log","level":"warn","msg":"slow query"}
 {"type":"log","level":"error","msg":"connection failed"}
 {"type":"log","level":"info","msg":"recovered"}`
 
-	reader := strings.NewReader(jsonlData)
-
-	err := ndprocessor.ProcessReader(reader, func(lineNum int, obj map[string]any) error {
-		level, _ := obj["level"].(string)
-		msg, _ := obj["msg"].(string)
-		fmt.Printf("   [%d] %-5s %s\n", lineNum, level, msg)
-		return nil
-	})
-	if err != nil {
-		fmt.Printf("   ProcessReader error: %v\n", err)
-	}
-
-	// CollectJSONL - collect all items
-	fmt.Println("\n   CollectJSONL (collect all items):")
 	processor, err := json.New(json.DefaultConfig())
 	if err != nil {
 		fmt.Printf("   New error: %v\n", err)
 		return
 	}
 	defer processor.Close()
+
+	// StreamJSONL replaces NDJSONProcessor.ProcessReader; item.GetData()
+	// yields the decoded map when map[string]any access is preferred.
+	err = processor.StreamJSONL(strings.NewReader(jsonlData), func(lineNum int, item *json.IterableValue) error {
+		fmt.Printf("   [%d] %-5s %s\n", lineNum, item.GetString("level"), item.GetString("msg"))
+		return nil
+	})
+	if err != nil {
+		fmt.Printf("   StreamJSONL error: %v\n", err)
+	}
+
+	// CollectJSONL - collect all items
+	fmt.Println("\n   CollectJSONL (collect all items):")
 
 	reader2 := strings.NewReader(jsonlData)
 	items, err := processor.CollectJSONL(reader2)
@@ -341,6 +345,73 @@ func demonstratePackageStreaming() {
 		fmt.Printf("   StreamJSONLParallel error: %v\n", err)
 	}
 	fmt.Printf("   StreamJSONLParallel: %d lines on 2 workers\n", processed.Load())
+
+	// Package-level mirrors of the Processor JSONL family (section 3):
+	// StreamJSONL, FilterJSONL, MapJSONL, ReduceJSONL, FirstJSONL and
+	// CollectJSONL — same contracts, no Processor construction needed.
+	fmt.Println("\n   Package-level JSONL mirrors (no Processor):")
+
+	err = json.StreamJSONL(strings.NewReader(jsonlData), func(lineNum int, item *json.IterableValue) error {
+		fmt.Printf("   StreamJSONL line %d: [%s] %s\n", lineNum, item.GetString("level"), item.GetString("msg"))
+		return nil
+	})
+	if err != nil {
+		fmt.Printf("   StreamJSONL error: %v\n", err)
+	}
+
+	errorLevel, err := json.FilterJSONL(strings.NewReader(jsonlData), func(item *json.IterableValue) bool {
+		return item.GetString("level") == "error"
+	})
+	if err != nil {
+		fmt.Printf("   FilterJSONL error: %v\n", err)
+	} else {
+		fmt.Printf("   FilterJSONL (level=error): %d record(s)\n", len(errorLevel))
+	}
+
+	mapped, err := json.MapJSONL(strings.NewReader(jsonlData), func(lineNum int, item *json.IterableValue) (any, error) {
+		return strings.ToUpper(item.GetString("level")), nil
+	})
+	if err != nil {
+		fmt.Printf("   MapJSONL error: %v\n", err)
+	} else {
+		fmt.Printf("   MapJSONL (uppercased levels): %v\n", mapped)
+	}
+
+	count, err := json.ReduceJSONL(strings.NewReader(jsonlData), 0, func(acc any, item *json.IterableValue) any {
+		sum, _ := acc.(int) // seed is the int 0 above; guard against a changed seed
+		return sum + 1
+	})
+	if err != nil {
+		fmt.Printf("   ReduceJSONL error: %v\n", err)
+	} else {
+		fmt.Printf("   ReduceJSONL (line count): %v\n", count)
+	}
+
+	first, found, err := json.FirstJSONL(strings.NewReader(jsonlData), func(item *json.IterableValue) bool {
+		return item.GetString("level") == "error"
+	})
+	if err != nil {
+		fmt.Printf("   FirstJSONL error: %v\n", err)
+	} else if found {
+		fmt.Printf("   FirstJSONL (level=error): %s\n", first.GetString("msg"))
+	}
+
+	collected, err := json.CollectJSONL(strings.NewReader(jsonlData))
+	if err != nil {
+		fmt.Printf("   CollectJSONL error: %v\n", err)
+	} else {
+		fmt.Printf("   CollectJSONL: %d items\n", len(collected))
+	}
+
+	// StreamJSONLParallelWithContext adds context cancellation to the
+	// parallel fan-out above — cancel and the returned error matches
+	// context.Canceled.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled: the run aborts immediately
+	err = json.StreamJSONLParallelWithContext(ctx, strings.NewReader(jsonlData), 2,
+		func(lineNum int, item *json.IterableValue) error { return nil })
+	fmt.Printf("   StreamJSONLParallelWithContext (cancelled): err=%v\n", err)
+	fmt.Printf("     classified as context.Canceled: %t\n", errors.Is(err, context.Canceled))
 
 	// StreamLinesInto[T]: generic, fully typed — each line unmarshals straight
 	// into your struct and the collected results are returned.

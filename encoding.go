@@ -203,7 +203,7 @@ func (enc *Encoder) Encode(v any) error {
 	}
 
 	// PERFORMANCE: Fast path for simple types with no custom encoding
-	// Avoids Config creation and EncodeWithConfig overhead for common cases.
+	// Avoids Config creation and Encode overhead for common cases.
 	// D-002: the fast encoder honors NONE of the processor's encoding
 	// options (FloatPrecision, CustomEscapes, EscapeUnicode, ...), so it may
 	// only run when the processor's config leaves every such option at its
@@ -257,7 +257,7 @@ func (enc *Encoder) Encode(v any) error {
 	}
 
 	// Encode the value using internal method that accepts pre-built config
-	jsonStr, err := processor.EncodeWithConfig(v, config)
+	jsonStr, err := processor.Encode(v, config)
 	if err != nil {
 		return err
 	}
@@ -1135,7 +1135,7 @@ func needsCustomEncodingOpts(cfg Config) bool {
 //
 // NOTE: like encoding/json.Marshal, the output is always HTML-escaped: a
 // supplied cfg.EscapeHTML = false is overridden on this path. Use
-// EncodeWithConfig when caller-controlled escaping is required.
+// Encode when caller-controlled escaping is required.
 //
 // Errors:
 //   - ErrProcessorClosed: processor has been closed
@@ -1245,8 +1245,10 @@ func (p *Processor) EncodeStream(values any, cfg ...Config) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return "", err
 	}
-	config := getConfigOrDefault(cfg...)
-	return p.EncodeWithConfig(values, config)
+	// Variadic passthrough: with no cfg, Encode resolves the processor's baked
+	// configuration (D-006 — previously getConfigOrDefault forced DefaultConfig,
+	// ignoring baked encoding options on a custom processor).
+	return p.Encode(values, cfg...)
 }
 
 // EncodeBatch encodes multiple key-value pairs as a JSON object.
@@ -1265,8 +1267,9 @@ func (p *Processor) EncodeBatch(pairs map[string]any, cfg ...Config) (string, er
 	if err := p.checkClosed(); err != nil {
 		return "", err
 	}
-	config := getConfigOrDefault(cfg...)
-	return p.EncodeWithConfig(pairs, config)
+	// Variadic passthrough: with no cfg, Encode resolves the processor's baked
+	// configuration (D-006 — see EncodeStream).
+	return p.Encode(pairs, cfg...)
 }
 
 // EncodeFields encodes struct fields selectively based on field names.
@@ -1291,7 +1294,7 @@ func (p *Processor) EncodeFields(value any, fields []string, cfg ...Config) (str
 	// First convert to JSON and parse back to get map representation
 	config := DefaultConfig()
 	config.Pretty = false
-	tempJSON, err := processor.EncodeWithConfig(value, config)
+	tempJSON, err := processor.Encode(value, config)
 	if err != nil {
 		return "", err
 	}
@@ -1321,35 +1324,51 @@ func (p *Processor) EncodeFields(value any, fields []string, cfg ...Config) (str
 		}
 	}
 
-	finalConfig := DefaultConfig()
-	if len(cfg) > 0 {
-		finalConfig = cfg[0]
-	}
-	return processor.EncodeWithConfig(filtered, finalConfig)
+	// Variadic passthrough — the final encode honors cfg when supplied,
+	// otherwise the processor's baked encoding options (D-006; the two
+	// DefaultConfig() round-trip steps above are deliberate normalization).
+	return processor.Encode(filtered, cfg...)
 }
 
 // EncodeWithConfig converts any Go value to JSON string with full configuration control.
+//
+// Deprecated: EncodeWithConfig is functionally identical to Encode — the name
+// predates Encode accepting an optional trailing Config. Use Encode(value, cfg).
+// EncodeWithConfig will not be removed within v1 (per D-005 the module stays
+// on v1.x).
+//
+// Errors: see Encode.
+func (p *Processor) EncodeWithConfig(value any, cfg ...Config) (string, error) {
+	return p.Encode(value, cfg...)
+}
+
+// Encode converts any Go value to JSON string with full configuration control.
 // PERFORMANCE: Uses FastEncoder for simple types to avoid reflection overhead.
+//
+// The optional trailing Config selects the encoding behavior for this call —
+// Pretty, Indent, EscapeHTML, SortKeys, FloatPrecision, CustomEscapes, and the
+// depth/size limits. Omitted, the processor's baked configuration applies
+// (DefaultConfig for a processor from New()).
 //
 // Example:
 //
 //	// Default configuration
-//	result, err := processor.EncodeWithConfig(data)
+//	result, err := processor.Encode(data)
 //
 //	// With custom configuration
 //	cfg := json.DefaultConfig()
 //	cfg.Pretty = true
-//	result, err := processor.EncodeWithConfig(data, cfg)
+//	result, err := processor.Encode(data, cfg)
 //
 //	// With preset configuration
-//	result, err := processor.EncodeWithConfig(data, json.PrettyConfig())
+//	result, err := processor.Encode(data, json.PrettyConfig())
 //
 // Errors:
 //   - ErrProcessorClosed: processor has been closed
 //   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
 //   - ErrSizeLimit: encoded output exceeds MaxJSONSize
 //   - ErrDepthLimit: encoding exceeds the maximum nesting depth
-func (p *Processor) EncodeWithConfig(value any, cfg ...Config) (string, error) {
+func (p *Processor) Encode(value any, cfg ...Config) (string, error) {
 	b, err := p.encodeWithConfigToBytes(value, cfg...)
 	if err != nil {
 		return "", err
@@ -1363,7 +1382,7 @@ func (p *Processor) encodeWithConfigToBytes(value any, cfg ...Config) ([]byte, e
 	// Concurrency governance: register as an in-flight op so a concurrent Close()
 	// (e.g. cache eviction of a config-cached processor) drains via waitForActiveOps
 	// rather than tearing down resources mid-encode. This is the single funnel for all
-	// encode entry points (Marshal/MarshalIndent/EncodeWithConfig, and via those
+	// encode entry points (Marshal/MarshalIndent/Encode, and via those
 	// EncodeStream/EncodeBatch), none of which are reached from within an already-
 	// governed op, so acquiring here is never nested. In unlimited-concurrency mode
 	// (the default) acquireSemaphore is a no-op, so the cost is two atomic ops.
@@ -1376,9 +1395,21 @@ func (p *Processor) encodeWithConfigToBytes(value any, cfg ...Config) ([]byte, e
 	if len(cfg) > 0 {
 		config = cfg[0]
 	} else {
-		config = DefaultConfig()
+		// No-cfg: the processor's baked configuration applies (doc.go contract).
+		// D-006: previously DefaultConfig(), so New(cfg).Encode(v) ignored the
+		// baked encoding options (Pretty, EscapeHTML, FloatPrecision, MaxDepth)
+		// and diverged from json.Encode(v, cfg).
+		config = p.config
 	}
 
+	return p.encodeConfiguredToBytes(value, config)
+}
+
+// encodeConfiguredToBytes is the non-governed core of encodeWithConfigToBytes:
+// config is already resolved (per-call cfg or the processor's baked config) and
+// the caller holds the governed-op slot. Extracted so buffer-writing callers
+// (see encodeConfiguredToBuffer) can share the exact same encode funnel.
+func (p *Processor) encodeConfiguredToBytes(value any, config Config) ([]byte, error) {
 	// needsCustomEncodingOpts is pure; compute once and reuse on the full-encode
 	// branch below to avoid a second evaluation of the same config.
 	customOpts := needsCustomEncodingOpts(config)
@@ -1440,7 +1471,7 @@ func (p *Processor) encodeWithConfigToBytes(value any, cfg ...Config) ([]byte, e
 // (internal.FastEncoder) fixes escaping, precision, and inclusion behavior at
 // stdlib defaults, so running it with a non-default option silently ignores
 // that option (D-002: a processor configured with FloatPrecision=2 emitted
-// full precision here, while EncodeWithConfig rounded). Pretty/Indent/Prefix
+// full precision here, while Encode rounded). Pretty/Indent/Prefix
 // are handled by the caller's enc.indent/enc.prefix check plus !Pretty here.
 func encodingFastPathEligible(cfg *Config) bool {
 	return !cfg.Pretty &&
@@ -1521,35 +1552,125 @@ func (p *Processor) fastEncodeSimpleToBytes(value any, maxDepth int) ([]byte, bo
 	return append([]byte(nil), data...), true
 }
 
-// Encode converts any Go value to JSON string.
-//
-// Deprecated: Encode is functionally identical to EncodeWithConfig (it forwards
-// directly to it). Use EncodeWithConfig instead. Encode will be removed in a
-// future major version.
-//
-// Errors: see EncodeWithConfig.
-func (p *Processor) Encode(value any, config ...Config) (string, error) {
-	var cfg Config
-	if len(config) > 0 {
-		cfg = config[0]
-	} else {
-		cfg = DefaultConfig()
+// fastEncodeSimpleToBuffer is fastEncodeSimpleToBytes writing into dst instead
+// of returning a fresh []byte: the pooled encoder's output is copied straight
+// into the caller's accumulation buffer, so the per-item clone allocation
+// (and its memmove) disappears (P-001). Eligibility, depth handling, and the
+// (nil, false)-style fallback contract are identical to fastEncodeSimpleToBytes.
+func (p *Processor) fastEncodeSimpleToBuffer(value any, maxDepth int, dst *bytes.Buffer) bool {
+	if !isJSONNativeValue(value) && maxDepth > 0 {
+		if err := p.validateDepth(value, maxDepth, 0); err != nil {
+			// Return false: the full path re-runs validateDepth and surfaces
+			// the proper typed error (see fastEncodeSimpleToBytes).
+			return false
+		}
 	}
-	return p.EncodeWithConfig(value, cfg)
+
+	encoder := internal.GetEncoder()
+	defer internal.PutEncoder(encoder)
+	if maxDepth > 0 {
+		encoder.SetMaxEncodeDepth(maxDepth)
+	}
+
+	if err := encoder.EncodeValue(value); err != nil {
+		return false
+	}
+
+	data := encoder.Bytes()
+	if internal.NeedsHTMLEscapeBytes(data) {
+		internal.HTMLEscapeBytesTo(dst, data)
+		return true
+	}
+	dst.Write(data)
+	return true
+}
+
+// encodeConfiguredToBuffer appends the JSON encoding of value to dst — the
+// buffer-writing counterpart of encodeConfiguredToBytes, used by ToJSONL so a
+// batch of items is encoded into one shared output buffer instead of one
+// transient []byte per item. Funnel parity with encodeConfiguredToBytes: same
+// fast-path eligibility, same depth validation, same custom-opts fallback, and
+// the same per-item MaxJSONSize enforcement (measured on the bytes appended
+// for this item). Callers must already hold the governed-op slot — this helper
+// never acquires governance itself.
+func (p *Processor) encodeConfiguredToBuffer(value any, config Config, dst *bytes.Buffer) error {
+	start := dst.Len()
+
+	// needsCustomEncodingOpts is pure; compute once and reuse on the full-encode
+	// branch below to avoid a second evaluation of the same config.
+	customOpts := needsCustomEncodingOpts(config)
+
+	// Fast path for simple types (see encodeConfiguredToBytes; the
+	// EscapeHTML==false case never reaches here for the same reasons).
+	if !config.Pretty && !customOpts {
+		if p.fastEncodeSimpleToBuffer(value, config.MaxDepth, dst) {
+			return p.checkEncodedBufferSize(dst, start)
+		}
+	}
+
+	if config.MaxDepth > 0 {
+		if err := p.validateDepth(value, config.MaxDepth, 0); err != nil {
+			return err
+		}
+	}
+
+	var result []byte
+	var err error
+
+	if customOpts {
+		encoder := newCustomEncoder(config)
+		defer encoder.Close()
+		result, err = encoder.EncodeToBytes(value)
+	} else {
+		result, err = internal.MarshalJSONToBytes(value, config.Pretty, config.Prefix, config.Indent)
+	}
+
+	if err != nil {
+		return &JsonsError{
+			Op:      "encode_with_config",
+			Message: "failed to encode value",
+			Err:     err,
+		}
+	}
+
+	dst.Write(result)
+	return p.checkEncodedBufferSize(dst, start)
+}
+
+// checkEncodedBufferSize enforces the per-item MaxJSONSize bound for
+// buffer-accumulated encodings: written is the number of bytes appended to dst
+// since start. Mirrors the size check encodeWithConfigToBytes applies to its
+// returned []byte, including the error shape.
+func (p *Processor) checkEncodedBufferSize(dst *bytes.Buffer, start int) error {
+	if n := int64(dst.Len() - start); n > p.config.MaxJSONSize {
+		return &JsonsError{
+			Op:      "encode_with_config",
+			Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", n, p.config.MaxJSONSize),
+			Err:     ErrSizeLimit,
+		}
+	}
+	return nil
 }
 
 // EncodePretty converts any Go value to pretty-formatted JSON string
 // This is a convenience method that matches the package-level EncodePretty signature
 //
-// Errors: see EncodeWithConfig.
-func (p *Processor) EncodePretty(value any, config ...Config) (string, error) {
-	var cfg Config
-	if len(config) > 0 {
-		cfg = config[0]
+// Errors: see Encode.
+func (p *Processor) EncodePretty(value any, cfg ...Config) (string, error) {
+	var config Config
+	if len(cfg) > 0 {
+		// Caller-supplied cfg passes through unchanged (historical contract:
+		// EncodePretty does not force Pretty on an explicit cfg).
+		config = cfg[0]
 	} else {
-		cfg = PrettyConfig()
+		// No-cfg: the processor's baked configuration with Pretty forced
+		// (D-006 — previously PrettyConfig(), which ignored a custom
+		// processor's baked Indent/escaping). For a default processor this
+		// is byte-identical to PrettyConfig(): DefaultConfig sets Indent "  ".
+		config = p.config
+		config.Pretty = true
 	}
-	return p.EncodeWithConfig(value, cfg)
+	return p.Encode(value, config)
 }
 
 // customEncoder provides advanced JSON encoding with configurable options

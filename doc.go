@@ -68,9 +68,19 @@
 // byte-compatible while still allowing configuration. When cfg is supplied, its
 // security limits (MaxJSONSize, MaxNestingDepthSecurity, FullSecurityScan) and
 // encoding options take effect on that call; when omitted, the processor's own
-// configuration applies.
+// configuration applies. The JSONL/stream family (StreamJSONL, MapJSONL,
+// ReduceJSONL, ...) follows the same convention on both layers (D-005): the
+// package-level form selects a config-cached processor, the Processor methods
+// take the per-call Config directly.
 //
-// Three intentional exceptions to the trailing-cfg convention:
+// Canonical names (D-005): Encode is the canonical string-returning encoder —
+// EncodeWithConfig is a deprecated alias retained for compatibility. Likewise
+// NewSchema replaces NewSchemaWithConfig, the error-returning ForeachWithError
+// / ForeachNestedWithError replace the void Foreach / ForeachNested (which drop
+// errors), and the StreamJSONL family replaces NDJSONProcessor. Deprecated
+// symbols are kept for the lifetime of v1.
+//
+// Four intentional exceptions to the trailing-cfg convention:
 //
 //   - Typed getters (GetTyped, GetString, GetInt, ...) take a variadic default
 //     value instead of cfg (Go allows only one variadic parameter). Use SafeGet
@@ -80,6 +90,10 @@
 //   - Valid returns a single bool (encoding/json drop-in); ValidWithConfig
 //     returns (bool, error) for callers that need the failure reason. Both take
 //     cfg; the name difference is historical.
+//   - CompareJSON's package-level no-cfg path skips security validation and
+//     compares via the standard-library encoder (a documented fast path);
+//     the Processor method always validates. Pass a cfg — or call the method —
+//     to validate untrusted input.
 //
 // # Key Features
 //

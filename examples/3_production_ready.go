@@ -119,6 +119,15 @@ func demonstrateConfigurations(testData string) {
 
 	result3, _ := largeProc.Get(testData, "config.version")
 	fmt.Printf("   - Large data result: %v\n", result3)
+
+	// 5. Config self-validation: invalid values are clamped in place;
+	// ValidateWithWarnings reports every correction New() will bake in.
+	fmt.Println("\n   Config Validation (ValidateWithWarnings):")
+	checked := json.DefaultConfig()
+	checked.MaxCacheSize = -5 // invalid: negative
+	for _, w := range checked.ValidateWithWarnings() {
+		fmt.Printf("   - %s: %v -> %v (%s)\n", w.Field, w.OldValue, w.NewValue, w.Reason)
+	}
 }
 
 func demonstrateConcurrency(testData string) {
@@ -203,10 +212,9 @@ func demonstratePerformance(testData string) {
 	cachedDuration := time.Since(start)
 
 	stats := cachedProc.GetStats()
-	hitRatio := float64(stats.HitCount) / float64(stats.HitCount+stats.MissCount) * 100
 
 	fmt.Printf("   1000 cached operations in: %v\n", cachedDuration)
-	fmt.Printf("   Cache hit ratio: %.2f%%\n", hitRatio)
+	fmt.Printf("   Cache hit ratio: %.2f%%\n", stats.HitRatio*100)
 	fmt.Printf("   Throughput: %.0f ops/sec\n", 1000.0/cachedDuration.Seconds())
 
 	// Test without cache for comparison
@@ -260,6 +268,14 @@ func demonstrateResourceManagement(testData string) {
 		fmt.Printf("   Operation failed: %v\n", err)
 	} else {
 		fmt.Printf("   Context-aware operation succeeded: %v\n", result)
+	}
+
+	// The package-level mirror runs the same context-aware read on the
+	// shared global processor — no Processor instance needed.
+	if _, err := json.GetWithContext(ctx, testData, "config.version"); err != nil {
+		fmt.Printf("   Package-level GetWithContext failed: %v\n", err)
+	} else {
+		fmt.Println("   Package-level GetWithContext succeeded")
 	}
 }
 
@@ -338,6 +354,10 @@ func demonstrateGlobalProcessor(testData string) {
 	globalStats := json.GetStats()
 	fmt.Printf("   Global GetStats(): operations=%d, errors=%d\n",
 		globalStats.OperationCount, globalStats.ErrorCount)
+
+	// Package-level GetHealthStatus mirrors that for the global's health.
+	fmt.Printf("   Global GetHealthStatus(): healthy=%t\n",
+		json.GetHealthStatus().Healthy)
 
 	// Processor-level health check reports each subsystem individually.
 	health := processor.GetHealthStatus()

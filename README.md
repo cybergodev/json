@@ -248,15 +248,15 @@ compact := buf.String()
 // Or the string-in/string-out form (compact a JSON string directly)
 compact, _ = json.CompactString(jsonStr)
 
-// Encoding with config — EncodeWithConfig is the recommended encoder
-// (json.Encode is a deprecated alias, scheduled for removal)
+// Encoding with config — Encode is the canonical string-returning encoder
+// (EncodeWithConfig is a deprecated alias kept for compatibility)
 cfg := json.DefaultConfig()
 cfg.Pretty = true
 cfg.SortKeys = true
-result, _ := json.EncodeWithConfig(data, cfg)
+result, _ := json.Encode(data, cfg)
 
 // Preset configs
-result, _ = json.EncodeWithConfig(data, json.PrettyConfig())
+result, _ = json.Encode(data, json.PrettyConfig())
 
 // Quick pretty encoding
 result, _ = json.EncodePretty(data)
@@ -409,28 +409,31 @@ names, _ := json.Get(arr, "users{id,name}")
 ### Iteration
 
 ```go
-// Basic iteration
-json.Foreach(data, func(key any, item *json.IterableValue) {
+// Basic iteration (error-returning form; the void Foreach is deprecated
+// because it drops errors)
+err := json.ForeachWithError(data, ".", func(key any, item *json.IterableValue) error {
     name := item.GetString("name")
     fmt.Printf("Key: %v, Name: %s\n", key, name)
+    return nil
 })
 
 // With path
-json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
+err = json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
     name := item.GetString("name")
     fmt.Printf("Key: %v, Name: %s\n", key, name)
 })
 
 // Nested iteration (specify nested field path)
-json.ForeachNested(data, func(key any, item *json.IterableValue) {
+err = json.ForeachNestedWithError(data, func(key any, item *json.IterableValue) error {
     item.ForeachNested("items", func(nestedKey any, nestedItem *json.IterableValue) {
         fmt.Printf("Nested: %v\n", nestedItem.Get("id"))
     })
+    return nil
 })
 
 // Error-returning callback: return a non-nil error to abort iteration early.
 // (For a plain callback use ForeachWithPath; for file input use ForeachFile.)
-err := json.ForeachWithError(data, "users", func(key any, item *json.IterableValue) error {
+err = json.ForeachWithError(data, "users", func(key any, item *json.IterableValue) error {
     if item.IsNull("id") {
         log.Printf("warning: missing id at key %v", key)
     }
@@ -533,10 +536,11 @@ writer.Write(record2)
 writer.WriteAll(records)
 stats := writer.Stats() // LinesProcessed, BytesWritten
 
-// NDJSON file processor
-ndjson := json.NewNDJSONProcessor(json.DefaultConfig())
-err = ndjson.ProcessFile("data.ndjson", func(lineNum int, obj map[string]any) error {
-    fmt.Printf("Line %d: %v\n", lineNum, obj["id"])
+// NDJSON file processing (StreamJSONLFile — NDJSONProcessor is deprecated)
+proc, _ := json.New(json.DefaultConfig())
+defer proc.Close()
+err = proc.StreamJSONLFile("data.ndjson", func(lineNum int, item *json.IterableValue) error {
+    fmt.Printf("Line %d: %v\n", lineNum, item.Get("id")) // item.GetData() for the map
     return nil
 })
 

@@ -295,17 +295,6 @@ const (
 	FlagHasStep
 )
 
-// Public API aliases for flag constants (backward compatibility)
-// These provide more descriptive names for the public API
-const (
-	PathFlagNegative = FlagIsNegative // Indicates negative array index
-	PathFlagWildcard = FlagIsWildcard // Indicates wildcard segment
-	PathFlagFlat     = FlagIsFlat     // Indicates flat extraction mode
-	PathFlagHasStart = FlagHasStart   // Indicates slice has start value
-	PathFlagHasEnd   = FlagHasEnd     // Indicates slice has end value
-	PathFlagHasStep  = FlagHasStep    // Indicates slice has step value
-)
-
 // PathSegment represents a single segment in a JSON path
 // Optimized to avoid pointer allocations by using direct values and bit flags
 type PathSegment struct {
@@ -463,14 +452,6 @@ func NewExtractSegmentWithFlat(key string, flat bool) PathSegment {
 		Type:  ExtractSegment,
 		Key:   key,
 		Flags: flags,
-	}
-}
-
-// NewWildcardSegment creates a wildcard segment
-func NewWildcardSegment() PathSegment {
-	return PathSegment{
-		Type:  WildcardSegment,
-		Flags: FlagIsWildcard,
 	}
 }
 

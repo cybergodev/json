@@ -67,9 +67,10 @@ func (p *Processor) ValidateSchema(jsonStr string, schema *Schema, cfg ...Config
 		}
 	}
 
-	// Parse JSON
-	var data any
-	err = p.Parse(jsonStr, &data, *options)
+	// Parse JSON. parseJSON (not p.Parse): the input was validated above, so
+	// the sentinel-dereferencing p.Parse call would re-validate through a
+	// transient securityValidator on every schema check (P-001).
+	data, err := p.parseJSON(jsonStr, "validate_schema", "", options)
 	if err != nil {
 		return nil, err
 	}

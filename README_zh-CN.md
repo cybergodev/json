@@ -248,15 +248,15 @@ compact := buf.String()
 // 或使用 string-in/string-out 形式（直接压缩 JSON 字符串）
 compact, _ = json.CompactString(jsonStr)
 
-// 带配置编码 —— EncodeWithConfig 是推荐的编码函数
-// （json.Encode 是已废弃的别名，计划移除）
+// 带配置编码 —— Encode 是规范的字符串编码函数
+// （EncodeWithConfig 是保留兼容的已废弃别名）
 cfg := json.DefaultConfig()
 cfg.Pretty = true
 cfg.SortKeys = true
-result, _ := json.EncodeWithConfig(data, cfg)
+result, _ := json.Encode(data, cfg)
 
 // 预设配置
-result, _ = json.EncodeWithConfig(data, json.PrettyConfig())
+result, _ = json.Encode(data, json.PrettyConfig())
 
 // 快速美化编码
 result, _ = json.EncodePretty(data)
@@ -408,28 +408,30 @@ names, _ := json.Get(arr, "users{id,name}")
 ### 数据迭代
 
 ```go
-// 基础迭代
-json.Foreach(data, func(key any, item *json.IterableValue) {
+// 基础迭代（返回 error 的形式；void 的 Foreach 已废弃，因其丢弃错误）
+err := json.ForeachWithError(data, ".", func(key any, item *json.IterableValue) error {
     name := item.GetString("name")
     fmt.Printf("键: %v, 名称: %s\n", key, name)
+    return nil
 })
 
 // 带路径迭代
-json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
+err = json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
     name := item.GetString("name")
     fmt.Printf("键: %v, 名称: %s\n", key, name)
 })
 
 // 嵌套迭代（指定嵌套字段路径）
-json.ForeachNested(data, func(key any, item *json.IterableValue) {
+err = json.ForeachNestedWithError(data, func(key any, item *json.IterableValue) error {
     item.ForeachNested("items", func(nestedKey any, nestedItem *json.IterableValue) {
         fmt.Printf("嵌套: %v\n", nestedItem.Get("id"))
     })
+    return nil
 })
 
 // 返回 error 的回调：返回非 nil 的 error 可提前终止迭代。
 // （普通回调请用 ForeachWithPath；基于文件输入请用 ForeachFile。）
-err := json.ForeachWithError(data, "users", func(key any, item *json.IterableValue) error {
+err = json.ForeachWithError(data, "users", func(key any, item *json.IterableValue) error {
     if item.IsNull("id") {
         log.Printf("警告: 键 %v 缺少 id", key)
     }
@@ -532,10 +534,11 @@ writer.Write(record2)
 writer.WriteAll(records)
 stats := writer.Stats() // LinesProcessed, BytesWritten
 
-// NDJSON 文件处理器
-ndjson := json.NewNDJSONProcessor(json.DefaultConfig())
-err = ndjson.ProcessFile("data.ndjson", func(lineNum int, obj map[string]any) error {
-    fmt.Printf("第 %d 行: %v\n", lineNum, obj["id"])
+// NDJSON 文件处理（StreamJSONLFile —— NDJSONProcessor 已废弃）
+proc, _ := json.New(json.DefaultConfig())
+defer proc.Close()
+err = proc.StreamJSONLFile("data.ndjson", func(lineNum int, item *json.IterableValue) error {
+    fmt.Printf("第 %d 行: %v\n", lineNum, item.Get("id")) // item.GetData() 取整个 map
     return nil
 })
 

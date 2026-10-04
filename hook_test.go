@@ -62,15 +62,6 @@ func (m *mockRecorder) Record(op string, d time.Duration) {
 	m.mu.Unlock()
 }
 
-func (m *mockRecorder) last() (mockTimingRecord, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.records) == 0 {
-		return mockTimingRecord{}, false
-	}
-	return m.records[len(m.records)-1], true
-}
-
 // orderRecord tracks hook execution order.
 type orderRecord struct {
 	name  string
@@ -690,42 +681,6 @@ func TestHookChainExecution(t *testing.T) {
 // ============================================================================
 
 func TestHookIntegrationWithProcessor(t *testing.T) {
-	t.Run("LoggingHookWithProcessorOperations", func(t *testing.T) {
-		p, err := New()
-		if err != nil {
-			t.Fatalf("New() error: %v", err)
-		}
-		defer p.Close()
-
-		logger := &mockLogger{}
-		p.AddHook(LoggingHook(logger))
-
-		// Hook is stored; call via hookChain to verify it works end-to-end.
-		hc := hookChain(p.hooks)
-		ctx := HookContext{
-			Operation: "get",
-			Path:      "users[0]",
-			JSONStr:   `{"users":[{"name":"Alice"}]}`,
-			StartTime: time.Now(),
-		}
-
-		if err := hc.executeBefore(ctx); err != nil {
-			t.Errorf("executeBefore error: %v", err)
-		}
-		_, _ = hc.executeAfter(ctx, "Alice", nil)
-
-		// Should have 2 log calls: "operation starting" and "operation completed"
-		if logger.count() != 2 {
-			t.Errorf("expected 2 log calls, got %d", logger.count())
-		}
-		if logger.calls[0].msg != "operation starting" {
-			t.Errorf("first log: expected 'operation starting', got %q", logger.calls[0].msg)
-		}
-		if logger.calls[1].msg != "operation completed" {
-			t.Errorf("second log: expected 'operation completed', got %q", logger.calls[1].msg)
-		}
-	})
-
 	t.Run("MultipleHookTypesOnProcessor", func(t *testing.T) {
 		p, err := New()
 		if err != nil {

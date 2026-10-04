@@ -958,8 +958,9 @@ func CompareJSON(json1, json2 string, cfg ...Config) (bool, error) {
 // CompareJSON is the Processor method equivalent of the package-level CompareJSON.
 // Unlike the package function's no-config path, the method always runs security
 // validation — against the supplied cfg when given, otherwise against the processor's
-// own configuration — and marshals both sides with the library encoder so that the
-// configured encoding (e.g. EscapeHTML) applies symmetrically.
+// own configuration — and marshals both sides with the same library encoder, so
+// the comparison is symmetric regardless of key order (map keys are sorted on
+// both sides; Marshal always HTML-escapes).
 //
 // Example:
 //
@@ -1101,6 +1102,15 @@ func (p *Processor) MergeJSON(json1, json2 string, cfg ...Config) (string, error
 	}
 	defer releaseConfig(options)
 
+	// No-cfg: the processor's baked configuration applies (doc contract;
+	// D-006 — previously options carried DefaultConfig values here, so
+	// New(cfg).MergeJSON ignored the baked MergeMode and re-encoded with
+	// default options, diverging from json.MergeJSON(a, b, cfg)).
+	if len(cfg) == 0 {
+		return mergeJSONWithMode(json1, json2, p.config.MergeMode, func(v any) (string, error) {
+			return p.EncodeWithConfig(v, p.config)
+		})
+	}
 	return mergeJSONWithMode(json1, json2, options.MergeMode, func(v any) (string, error) {
 		return p.EncodeWithConfig(v, *options)
 	})

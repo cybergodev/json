@@ -1466,3 +1466,79 @@ func BenchmarkStdlibMarshal(b *testing.B) {
 		_, _ = json.Marshal(data)
 	}
 }
+
+// ============================================================================
+// POOL STATE-LEAK REGRESSION
+// ============================================================================
+
+// TestFastEncoderPoolStateNeverLeaks locks the pool's no-leak invariant:
+// neither a per-instance depth cap nor a residual nesting depth (elevated
+// when an encode fails mid-container and skips its leaveContainer pairs)
+// may survive a pool round-trip. Checkout (GetEncoder/GetEncoderWithSize)
+// and return (PutEncoder) both run resetState; this test fails if either
+// side regresses.
+//
+// The assertions inspect the pointer AFTER PutEncoder returns it to the
+// pool, so they do not depend on sync.Pool's LIFO identity guarantees.
+func TestFastEncoderPoolStateNeverLeaks(t *testing.T) {
+	t.Run("return clears cap and depth", func(t *testing.T) {
+		e := GetEncoder()
+		e.SetMaxEncodeDepth(3)
+		e.depth = 2 // simulate residual nesting from a failed encode
+		PutEncoder(e)
+		if e.depth != 0 || e.maxDepthCap != 0 {
+			t.Errorf("returned encoder still dirty: depth=%d maxDepthCap=%d", e.depth, e.maxDepthCap)
+		}
+	})
+
+	t.Run("checkout yields clean state", func(t *testing.T) {
+		// Seed a dirty encoder into the pool first; the single-goroutine
+		// LIFO pool hands the same object back on the next Get.
+		dirty := GetEncoder()
+		dirty.SetMaxEncodeDepth(3)
+		dirty.depth = 2
+		PutEncoder(dirty)
+
+		for range 3 {
+			e := GetEncoder()
+			if e.depth != 0 {
+				t.Errorf("checkout depth = %d, want 0", e.depth)
+			}
+			if got := e.effectiveMaxDepth(); got != MaxNestingDepth {
+				t.Errorf("checkout effectiveMaxDepth = %d, want %d (stale cap leaked)", got, MaxNestingDepth)
+			}
+			PutEncoder(e)
+		}
+	})
+
+	t.Run("depth residual after mid-container error is cleaned", func(t *testing.T) {
+		e := GetEncoder()
+		err := e.EncodeValue(map[string]any{"k": make(chan int)}) // unencodable value inside a container
+		if err == nil {
+			t.Fatal("expected encode error for chan value")
+		}
+		// e.depth may legitimately be elevated here (the error skips the
+		// leaveContainer pairs). The pool round-trip must clear it.
+		PutEncoder(e)
+		if e.depth != 0 {
+			t.Errorf("depth = %d after PutEncoder, want 0", e.depth)
+		}
+	})
+
+	t.Run("size-tiered checkouts are clean", func(t *testing.T) {
+		for _, hint := range []int{2048, 8192, 100_000} {
+			e := GetEncoderWithSize(hint)
+			e.SetMaxEncodeDepth(5)
+			e.depth = 1
+			PutEncoder(e)
+			if e.depth != 0 || e.maxDepthCap != 0 {
+				t.Errorf("hint %d: returned encoder dirty (depth=%d cap=%d)", hint, e.depth, e.maxDepthCap)
+			}
+			fresh := GetEncoderWithSize(hint)
+			if fresh.depth != 0 || fresh.effectiveMaxDepth() != MaxNestingDepth {
+				t.Errorf("hint %d: checkout dirty (depth=%d maxDepth=%d)", hint, fresh.depth, fresh.effectiveMaxDepth())
+			}
+			PutEncoder(fresh)
+		}
+	})
+}

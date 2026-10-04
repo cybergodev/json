@@ -188,16 +188,28 @@ type Config struct {
 
 	// ===== Extension Points =====
 
-	// CustomEncoder replaces the default encoder entirely.
-	// If set, Encode operations use this encoder instead of the built-in one.
+	// CustomEncoder was intended to replace the default encoder for all values.
+	//
+	// Deprecated: CustomEncoder is not wired into the encoding pipeline —
+	// setting it has no effect on output (it only participates in config
+	// cache keying and fast-path routing). Retained for v1 compatibility;
+	// the built-in encoder cannot be replaced.
 	CustomEncoder CustomEncoder
 
-	// CustomTypeEncoders provides encoding for specific types.
-	// Keys are reflect.Type values; values implement TypeEncoder.
+	// CustomTypeEncoders was intended to provide encoding for specific types.
+	//
+	// Deprecated: CustomTypeEncoders is never consulted by the encoding
+	// pipeline — setting it has no effect on output. Retained for v1
+	// compatibility; use the built-in encoding (json.Marshaler /
+	// encoding.TextMarshaler on your types) instead.
 	CustomTypeEncoders map[reflect.Type]TypeEncoder
 
-	// CustomValidators run before operations.
-	// All validators must pass for the operation to proceed.
+	// CustomValidators was intended to run user validation before operations.
+	//
+	// Deprecated: CustomValidators are never executed by any public
+	// operation — setting them (or calling AddValidator) has no effect.
+	// Retained for v1 compatibility; use Config.AddHook with a Before hook
+	// for pre-operation checks.
 	CustomValidators []Validator
 
 	// AdditionalDangerousPatterns adds security patterns beyond defaults.
@@ -227,32 +239,6 @@ type Config struct {
 	CustomPathParser PathParser
 }
 
-// SecurityLimits holds a summary of the security-related limits from Config.
-// Returned by Config.getSecurityLimits for structured access to limit values.
-type SecurityLimits struct {
-	MaxNestingDepth           int   `json:"max_nesting_depth"`
-	MaxSecurityValidationSize int64 `json:"max_security_validation_size"`
-	MaxObjectKeys             int   `json:"max_object_keys"`
-	MaxArrayElements          int   `json:"max_array_elements"`
-	MaxJSONSize               int64 `json:"max_json_size"`
-	MaxPathDepth              int   `json:"max_path_depth"`
-}
-
-// getSecurityLimits returns a summary of current security limits
-func (c *Config) getSecurityLimits() SecurityLimits {
-	if c == nil {
-		return SecurityLimits{}
-	}
-	return SecurityLimits{
-		MaxNestingDepth:           c.MaxNestingDepthSecurity,
-		MaxSecurityValidationSize: c.MaxSecurityValidationSize,
-		MaxObjectKeys:             c.MaxObjectKeys,
-		MaxArrayElements:          c.MaxArrayElements,
-		MaxJSONSize:               c.MaxJSONSize,
-		MaxPathDepth:              c.MaxPathDepth,
-	}
-}
-
 // AddHook adds an operation hook to the configuration.
 // Hooks are executed in order for Before and in reverse order for After.
 func (c *Config) AddHook(hook Hook) {
@@ -263,7 +249,10 @@ func (c *Config) AddHook(hook Hook) {
 }
 
 // AddValidator adds a custom validator to the configuration.
-// Validators are executed in order; all must pass for operations to proceed.
+//
+// Deprecated: validators are never executed by any public operation — added
+// validators have no effect. Use AddHook with a Before hook for
+// pre-operation checks.
 func (c *Config) AddValidator(validator Validator) {
 	if c == nil {
 		return
@@ -896,7 +885,7 @@ type SchemaConfig struct {
 //	cfg := json.DefaultSchemaConfig()
 //	cfg.Type = "object"
 //	cfg.Required = []string{"name", "email"}
-//	schema := json.NewSchemaWithConfig(cfg)
+//	schema := json.NewSchema(cfg)
 func DefaultSchemaConfig() SchemaConfig {
 	return SchemaConfig{
 		AdditionalProperties: ptrBool(true),
@@ -907,9 +896,20 @@ func DefaultSchemaConfig() SchemaConfig {
 // This is a helper function for SchemaConfig optional fields.
 func ptrBool(v bool) *bool { return &v }
 
-// NewSchemaWithConfig creates a new Schema with the provided configuration.
+// NewSchema creates a new Schema with the provided configuration.
 // This is the recommended way to create configured Schema instances.
-func NewSchemaWithConfig(cfg SchemaConfig) *Schema {
+//
+// Example:
+//
+//	cfg := json.DefaultSchemaConfig()
+//	cfg.Type = "object"
+//	cfg.Required = []string{"name", "email"}
+//	schema := json.NewSchema(cfg)
+//
+// D-005 Phase 2: NewSchema replaces NewSchemaWithConfig — every other
+// constructor in this package is New*(cfg) with no suffix, so the schema
+// constructor now follows the same convention.
+func NewSchema(cfg SchemaConfig) *Schema {
 	s := &Schema{
 		Type:        cfg.Type,
 		Properties:  cfg.Properties,
@@ -974,6 +974,16 @@ func NewSchemaWithConfig(cfg SchemaConfig) *Schema {
 	}
 
 	return s
+}
+
+// NewSchemaWithConfig creates a new Schema with the provided configuration.
+//
+// Deprecated: NewSchemaWithConfig is functionally identical to NewSchema — the
+// "WithConfig" suffix predates the unified Config convention and no other
+// constructor carries it. Use NewSchema(cfg). NewSchemaWithConfig will not be
+// removed within v1 (per D-005 the module stays on v1.x).
+func NewSchemaWithConfig(cfg SchemaConfig) *Schema {
+	return NewSchema(cfg)
 }
 
 // ============================================================================

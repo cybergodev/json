@@ -196,12 +196,17 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 
 	// Batch size bound, matching ProcessBatch (D-002): an unbounded updates
 	// map is the same memory-exhaustion vector MaxBatchSize exists for, but
-	// SetMultiple never enforced it.
-	if len(updates) > options.MaxBatchSize {
+	// SetMultiple never enforced it. No-cfg honors the processor's baked
+	// MaxBatchSize, matching ProcessBatch (D-006).
+	maxBatchSize := p.config.MaxBatchSize
+	if len(cfg) > 0 {
+		maxBatchSize = options.MaxBatchSize
+	}
+	if len(updates) > maxBatchSize {
 		p.incrementErrorCount()
 		return jsonStr, &JsonsError{
 			Op:      "set_multiple",
-			Message: fmt.Sprintf("batch size %d exceeds maximum %d (Config.MaxBatchSize)", len(updates), options.MaxBatchSize),
+			Message: fmt.Sprintf("batch size %d exceeds maximum %d (Config.MaxBatchSize)", len(updates), maxBatchSize),
 			Err:     ErrSizeLimit,
 		}
 	}
@@ -288,8 +293,15 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 	}
 
 	// Parse JSON
-	var data any
-	err = p.Parse(jsonStr, &data, *options)
+	//
+	// parseJSON (not p.Parse): the input was already validated above, so the
+	// plain stdlib unmarshal that parseJSON's no-cfg path performs replaces a
+	// second, cache-less full validation. p.Parse(*options) also dereferenced
+	// the prepareOptions sentinel, so every call built a transient
+	// securityValidator (allocating its 256-slot cache map only to discard it)
+	// — the same reason Set parses through this helper after its own
+	// validateOperationInput (P-001).
+	data, err := p.parseJSON(jsonStr, "set_multiple", "", options)
 	if err != nil {
 		p.incrementErrorCount()
 		return jsonStr, &JsonsError{

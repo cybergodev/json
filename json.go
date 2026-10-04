@@ -412,7 +412,7 @@ type JSONLWriter struct {
 //
 // NOTE (D-002): Write honors ONLY Config.EscapeHTML from the supplied cfg —
 // not Pretty/Indent/CustomEscapes/FloatPrecision/MaxJSONSize. For full
-// config-driven encoding per line, build lines with EncodeWithConfig and
+// config-driven encoding per line, build lines with Encode and
 // WriteRaw.
 func NewJSONLWriter(writer io.Writer, cfg ...Config) *JSONLWriter {
 	config := getConfigOrDefault(cfg...)
@@ -593,12 +593,30 @@ func ParseJSONL(data []byte, cfg ...Config) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return p.ParseJSONL(data, cfg...)
+}
+
+// ParseJSONL parses JSONL data from a byte slice using this processor.
+// Uses Config.JSONLSkipComments and Config.JSONLContinueOnErr for processing
+// options — from the optional trailing cfg when supplied, otherwise from the
+// processor's baked configuration. This is the Processor mirror of the
+// package-level json.ParseJSONL (D-005 Phase 2).
+//
+// Errors:
+//   - ErrProcessorClosed: the processor has been closed
+//   - ErrInvalidJSON: a line is not valid JSON
+//   - any scanner error (including bufio.ErrTooLong when a line exceeds the
+//     configured limit)
+func (p *Processor) ParseJSONL(data []byte, cfg ...Config) ([]any, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
 
 	var results []any
-	err = p.StreamJSONL(bytes.NewReader(data), func(_ int, item *IterableValue) error {
+	err := p.StreamJSONL(bytes.NewReader(data), func(_ int, item *IterableValue) error {
 		results = append(results, item.GetData())
 		return nil
-	})
+	}, cfg...)
 	if err != nil {
 		// No partial results on failure — callers that use results before
 		// checking err would otherwise process half a stream as if it were
@@ -629,11 +647,54 @@ func ParseJSONL(data []byte, cfg ...Config) ([]any, error) {
 //   - ErrSizeLimit: encoded output exceeds MaxJSONSize
 //   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func ToJSONL(data []any, cfg ...Config) ([]byte, error) {
+	// Empty input returns before any processor interaction — preserved from
+	// the pre-Phase-2 implementation, so no processor is constructed (a cfg
+	// with CustomPathParser would otherwise allocate one) for nothing.
 	if len(data) == 0 {
 		return []byte{}, nil
 	}
+	p, err := processorForCfg(cfg...)
+	if err != nil {
+		return nil, err
+	}
+	return p.ToJSONL(data, cfg...)
+}
 
-	config := getConfigOrDefault(cfg...)
+// ToJSONL converts a slice of values to JSONL format using this processor.
+// Encoding options (Config.EscapeHTML etc.) come from the optional trailing
+// cfg when supplied, otherwise from the processor's baked configuration.
+// This is the Processor mirror of the package-level json.ToJSONL
+// (D-005 Phase 2).
+//
+// Errors:
+//   - ErrProcessorClosed: the processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: an element cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
+func (p *Processor) ToJSONL(data []any, cfg ...Config) ([]byte, error) {
+	// Empty input first (mirrors the package-level contract: no processor
+	// state is consulted for empty data).
+	if len(data) == 0 {
+		return []byte{}, nil
+	}
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	opts, err := p.resolveJSONLOptions(cfg...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Concurrency governance once for the whole batch (P-001): the per-item
+	// encodeWithConfigToBytes call acquired and released the slot per element;
+	// encodeConfiguredToBuffer below preserves every other part of that funnel
+	// (fast-path eligibility, depth caps, custom-opts fallback, per-item
+	// MaxJSONSize) but must run inside an already-governed op.
+	if err := p.beginGovernedOp(); err != nil {
+		return nil, err
+	}
+	defer p.endGovernedOp()
 
 	// Estimate buffer size
 	estimatedSize := min(len(data)*64, 64*1024)
@@ -647,23 +708,14 @@ func ToJSONL(data []any, cfg ...Config) ([]byte, error) {
 		buf.Grow(estimatedSize - buf.Cap())
 	}
 
-	// Use processor for encoding (the default/global processor when no cfg is
-	// supplied, matching the doc comment; a config-cached processor otherwise)
-	p, err := processorForCfg(cfg...)
-	if err != nil {
-		return nil, err
-	}
-
 	for _, item := range data {
-		// PERFORMANCE: encode straight to bytes — the pooled buffer is the final
-		// destination, so the intermediate string that EncodeWithConfig would
-		// produce (and buf.WriteString would copy again) is skipped entirely.
-		// encodeWithConfigToBytes keeps the per-item governance/op funnel intact.
-		encoded, err := p.encodeWithConfigToBytes(item, config)
-		if err != nil {
+		// PERFORMANCE: encode straight into the shared output buffer — the
+		// per-item []byte that encodeWithConfigToBytes would clone out of the
+		// pooled encoder (one allocation + copy per item) is skipped entirely
+		// (P-001).
+		if err := p.encodeConfiguredToBuffer(item, *opts, buf); err != nil {
 			return nil, err
 		}
-		buf.Write(encoded)
 		buf.WriteByte('\n')
 	}
 
@@ -688,6 +740,19 @@ func ToJSONL(data []any, cfg ...Config) ([]byte, error) {
 // Errors: see ToJSONL.
 func ToJSONLString(data []any, cfg ...Config) (string, error) {
 	result, err := ToJSONL(data, cfg...)
+	if err != nil {
+		return "", err
+	}
+	return string(result), nil
+}
+
+// ToJSONLString converts a slice of values to a JSONL format string using this
+// processor. This is the Processor mirror of the package-level json.ToJSONLString
+// (D-005 Phase 2).
+//
+// Errors: see ToJSONL.
+func (p *Processor) ToJSONLString(data []any, cfg ...Config) (string, error) {
+	result, err := p.ToJSONL(data, cfg...)
 	if err != nil {
 		return "", err
 	}

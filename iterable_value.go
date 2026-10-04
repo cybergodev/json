@@ -49,14 +49,14 @@ func releaseIterableValues(items []*IterableValue) {
 }
 
 // IterableValue wraps a value to provide convenient access methods during iteration.
-// Used by Foreach and ForeachKey callback functions to provide structured access.
+// Used by the Foreach* family of callback functions to provide structured access.
 // Note: Simplified to avoid resource leaks from holding processor/iterator references.
 //
 // Example:
 //
-//	err := processor.Foreach(data, "items", func(item json.IterableValue) error {
-//	    name, _ := item.GetString("name")
-//	    age, _ := item.GetInt("age")
+//	err := processor.ForeachWithError(data, "items", func(key any, item *json.IterableValue) error {
+//	    name := item.GetString("name")
+//	    age := item.GetInt("age")
 //	    fmt.Printf("Name: %s, Age: %d\n", name, age)
 //	    return nil
 //	})

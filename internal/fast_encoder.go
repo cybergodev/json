@@ -93,8 +93,9 @@ type FastEncoder struct {
 }
 
 // SetMaxEncodeDepth sets the per-encoder container-depth cap; n <= 0 resets
-// to the package default. Callers MUST reset (SetMaxEncodeDepth(0)) or rely
-// on the pool reset below — stale caps must never leak across users.
+// to the package default. Stale caps never leak across pool users: both
+// checkout (GetEncoder/GetEncoderWithSize) and return (PutEncoder) run
+// resetState, which clears maxDepthCap and depth.
 func (e *FastEncoder) SetMaxEncodeDepth(n int) {
 	e.maxDepthCap = n
 }
@@ -165,9 +166,7 @@ var largeEncoderPool = sync.Pool{
 // GetEncoder retrieves an encoder from the pool
 func GetEncoder() *FastEncoder {
 	e := encoderPool.Get().(*FastEncoder)
-	e.buf = e.buf[:0]
-	e.depth = 0
-	e.maxDepthCap = 0
+	e.resetState()
 	return e
 }
 
@@ -185,28 +184,29 @@ func GetEncoderWithSize(hint int) *FastEncoder {
 	default:
 		e = largeEncoderPool.Get().(*FastEncoder)
 	}
-	e.buf = e.buf[:0]
-	e.depth = 0
-	e.maxDepthCap = 0
+	e.resetState()
 	return e
 }
 
 // PutEncoder returns an encoder to the appropriate pool
 // PERFORMANCE: Use tiered pools - buffers > 64KB are discarded to prevent memory bloat
+//
+// The encoder's per-session state (depth, maxDepthCap) is cleared BEFORE
+// pooling so pooled objects are always clean. Checkout-side resetState makes
+// this belt-and-braces: the invariant "no stale caps or depths cross pool
+// boundaries" now holds even if one side regresses.
 func PutEncoder(e *FastEncoder) {
 	if e == nil {
 		return
 	}
+	e.resetState()
 	c := cap(e.buf)
 	switch {
 	case c <= 1024:
-		e.buf = e.buf[:0]
 		encoderPool.Put(e)
 	case c <= 4096:
-		e.buf = e.buf[:0]
 		mediumEncoderPool.Put(e)
 	case c <= 65536: // 64KB threshold
-		e.buf = e.buf[:0]
 		largeEncoderPool.Put(e)
 	// Buffers larger than 64KB are discarded - let GC handle them
 	default:
@@ -219,7 +219,23 @@ func (e *FastEncoder) Bytes() []byte {
 	return e.buf
 }
 
-// Reset clears the encoder buffer
+// resetState clears ALL per-session encoder state: buffer, nesting depth,
+// and the per-instance depth cap. It is the single source of truth for the
+// pool's no-leak contract, run on both checkout and return.
+//
+// Depth matters here: an EncodeValue that fails mid-container skips the
+// leaveContainer pairs, leaving depth elevated; resetState guarantees that
+// residual never affects a subsequent encode.
+func (e *FastEncoder) resetState() {
+	e.buf = e.buf[:0]
+	e.depth = 0
+	e.maxDepthCap = 0
+}
+
+// Reset clears the encoder buffer ONLY — depth and maxDepthCap survive so a
+// caller can reuse the encoder mid-session with its configured cap intact.
+// For a from-scratch encoder (or after an error) prefer returning this one
+// to the pool and checking out a fresh one via GetEncoder.
 func (e *FastEncoder) Reset() {
 	e.buf = e.buf[:0]
 }

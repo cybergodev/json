@@ -214,7 +214,7 @@ func demonstrateSchemaValidation() {
 
 	// Alternative construction: instead of a &json.Schema{...} literal, build
 	// one through the Config pattern — start from DefaultSchemaConfig(), set
-	// fields, and let NewSchemaWithConfig assemble the Schema (nil maps become
+	// fields, and let NewSchema assemble the Schema (nil maps become
 	// empty, pointer fields become "present" flags).
 	minLen, maxLen := 2, 50
 	schemaCfg := json.DefaultSchemaConfig()
@@ -224,10 +224,10 @@ func demonstrateSchemaValidation() {
 		"name":  {Type: "string", MinLength: minLen, MaxLength: maxLen},
 		"email": {Type: "string", Format: "email"},
 	}
-	cfgBuilt := json.NewSchemaWithConfig(schemaCfg)
+	cfgBuilt := json.NewSchema(schemaCfg)
 	verrs, verr := json.ValidateSchema(validUser, cfgBuilt)
 	if verr == nil && len(verrs) == 0 {
-		fmt.Println("\n   ✓ Config-pattern schema (NewSchemaWithConfig) validates the same data")
+		fmt.Println("\n   ✓ Config-pattern schema (NewSchema) validates the same data")
 	}
 
 	// DefaultSchema is the permissive starting point: no type constraint, no
@@ -238,31 +238,37 @@ func demonstrateSchemaValidation() {
 }
 
 func demonstrateSecurityValidation() {
-	fmt.Println("\n4. Security Validation")
-	fmt.Println("------------------------")
+	fmt.Println("\n4. Security Validation (SecurityConfig enforcement)")
+	fmt.Println("----------------------------------------------------")
 
-	// Create a security processor
+	// SecurityConfig hardens every operation on the processor: input size,
+	// nesting depth, and dangerous-pattern checks. json.Valid (section 1)
+	// inspects syntax only — Processor.Valid runs the full security pipeline
+	// and explains rejections.
 	processor, _ := json.New(json.SecurityConfig()) // OK: preset config always valid
 	defer processor.Close()
 
-	testCases := []struct {
-		name string
-		data string
-	}{
-		{"Normal JSON", `{"user": "John", "age": 30}`},
-		{"Deeply nested (within limits)", `{"a":{"b":{"c":"value"}}}`},
-		{"Large JSON (within limits)", generateLargeJSON(100)},
-	}
+	normal := `{"user": "John", "age": 30}`
+	valid, err := processor.Valid(normal)
+	fmt.Printf("   Normal JSON:               valid=%t err=%v\n", valid, err)
 
-	fmt.Println("   Security validation with SecurityConfig:")
-	for _, tc := range testCases {
-		valid := json.Valid([]byte(tc.data))
-		status := "OK"
-		if !valid {
-			status = "X"
-		}
-		fmt.Printf("   %s %s\n", status, tc.name)
-	}
+	// SecurityConfig caps nesting depth at 30; a 50-level document is
+	// rejected before parsing, classifiable via errors.Is.
+	tooDeep := strings.Repeat(`{"a":`, 50) + `1` + strings.Repeat(`}`, 50)
+	valid, err = processor.Valid(tooDeep)
+	fmt.Printf("   Nesting depth 50 (max 30): valid=%t\n", valid)
+	fmt.Printf("     rejected: %v\n", err)
+	fmt.Printf("     classified as ErrDepthLimit: %t\n", errors.Is(err, json.ErrDepthLimit))
+
+	// Size cap works the same way — lower SecurityConfig's MaxJSONSize for a
+	// tighter processor.
+	tightCfg := json.SecurityConfig()
+	tightCfg.MaxJSONSize = 512
+	tight, _ := json.New(tightCfg) // OK: SecurityConfig-derived, always valid
+	defer tight.Close()
+	_, err = tight.Get(generateLargeJSON(50), "field0")
+	fmt.Printf("   Size cap (512 bytes):      rejected=%t\n", err != nil)
+	fmt.Printf("     classified as ErrSizeLimit: %t\n", errors.Is(err, json.ErrSizeLimit))
 }
 
 func demonstrateProcessorValidation() {
@@ -301,6 +307,9 @@ func demonstrateProcessorValidation() {
 	if err != nil {
 		fmt.Printf("   Invalid path caught: %v\n", err)
 	}
+
+	// ValidBytes: the []byte quick-validity check — boolean only, no reason.
+	fmt.Printf("   ValidBytes(testJSON): %t\n", processor.ValidBytes([]byte(testJSON)))
 }
 
 func demonstratePerCallConfigEnforcement() {

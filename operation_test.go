@@ -1543,6 +1543,11 @@ func TestOperationSetArrayExtract(t *testing.T) {
 	})
 }
 
+// TestOperationSetArrayExtractFlat pins the {flat:field} Set contract on root
+// arrays: the whole value is written to the named field of EVERY element —
+// an array value replaces the field wholesale (not element-wise), a scalar
+// replaces it directly, and a missing field is created (CreatePaths default).
+// These behaviors were previously logged but never asserted (FIX-001).
 func TestOperationSetArrayExtractFlat(t *testing.T) {
 	t.Run("flat extract set with array value", func(t *testing.T) {
 		json := `[{"tags":["a","b"]},{"tags":["c","d"]}]`
@@ -1552,10 +1557,14 @@ func TestOperationSetArrayExtractFlat(t *testing.T) {
 		}
 		arr := mustParseArray(t, result)
 		for i, item := range arr {
-			obj := item.(map[string]any)
-			tags := obj["tags"]
-			// The tags field should have been modified
-			t.Logf("item[%d].tags = %v (%T)", i, tags, tags)
+			obj, ok := item.(map[string]any)
+			if !ok {
+				t.Fatalf("item[%d] is not a map", i)
+			}
+			got, ok := obj["tags"].([]any)
+			if !ok || len(got) != 2 || got[0] != "e" || got[1] != "f" {
+				t.Errorf("item[%d].tags = %#v, want [e f] (wholesale replacement)", i, obj["tags"])
+			}
 		}
 	})
 
@@ -1566,42 +1575,30 @@ func TestOperationSetArrayExtractFlat(t *testing.T) {
 			t.Fatalf("Set() error: %v", err)
 		}
 		arr := mustParseArray(t, result)
-		for _, item := range arr {
+		for i, item := range arr {
 			obj := item.(map[string]any)
-			tags := obj["tags"]
-			// With flat extract + single value, the field gets replaced
-			t.Logf("tags = %v (%T)", tags, tags)
-		}
-	})
-
-	t.Run("flat extract set on field without existing array", func(t *testing.T) {
-		json := `[{"val":"x"},{"val":"y"}]`
-		result, err := Set(json, "{flat:val}", "z")
-		if err != nil {
-			t.Fatalf("Set() error: %v", err)
-		}
-		arr := mustParseArray(t, result)
-		for _, item := range arr {
-			obj := item.(map[string]any)
-			val := obj["val"]
-			t.Logf("val = %v (%T)", val, val)
-		}
-	})
-
-	t.Run("flat extract set creates new field on map elements", func(t *testing.T) {
-		json := `[{"k":[]},{"k":[]}]`
-		result, err := Set(json, "{flat:k}", "v")
-		if err != nil {
-			t.Fatalf("Set() error: %v", err)
-		}
-		arr := mustParseArray(t, result)
-		for _, item := range arr {
-			obj, ok := item.(map[string]any)
-			if !ok {
-				t.Fatalf("expected map, got %T", item)
+			if obj["tags"] != "c" {
+				t.Errorf("item[%d].tags = %#v, want \"c\"", i, obj["tags"])
 			}
-			k := obj["k"]
-			t.Logf("k = %v (%T)", k, k)
+		}
+	})
+
+	t.Run("flat extract set on absent field creates it", func(t *testing.T) {
+		json := `[{"val":"x"},{"val":"y"}]`
+		// The path names "tags"; CreatePaths (default on) creates the field.
+		result, err := Set(json, "{flat:tags}", "z")
+		if err != nil {
+			t.Fatalf("Set() error: %v", err)
+		}
+		arr := mustParseArray(t, result)
+		for i, item := range arr {
+			obj := item.(map[string]any)
+			if obj["tags"] != "z" {
+				t.Errorf("item[%d].tags = %#v, want created \"z\"", i, obj["tags"])
+			}
+			if obj["val"] == nil {
+				t.Errorf("item[%d].val unexpectedly removed", i)
+			}
 		}
 	})
 }
@@ -2277,11 +2274,6 @@ const setArrayInput = `[
   {"name_cn": "极氪", "name_en": "ZEEKR Intelligent Technology Holding Limited", "name_hk": "極氪", "symbol": "ZK.US"}
 ]`
 
-const deleteArrayInput = `[
-  {"name_cn": "万国数据", "name_en": "GDS Holdings Limited", "name_hk": "万国数据", "symbol": "GDS.US"},
-  {"name_cn": "极氪", "name_en": "ZEEKR Intelligent Technology Holding Limited", "name_hk": "極氪", "symbol": "ZK.US"}
-]`
-
 // assertSetField verifies the value of a field on the given array element after
 // parsing the result JSON. wantOK=false asserts the field is absent.
 func assertSetField(t *testing.T, result string, elemIdx int, field string, want any, wantOK bool) {
@@ -2540,7 +2532,7 @@ func TestDeleteArrayElementScenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := Delete(deleteArrayInput, tt.path)
+			result, err := Delete(setArrayInput, tt.path)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for path %q, got nil; result: %s", tt.path, result)
@@ -2607,8 +2599,16 @@ func TestOperationSet_Extension_Boundary(t *testing.T) {
 		}
 	})
 	t.Run("root_array_oob_no_panic", func(t *testing.T) {
-		// OOB index on a root-level array must not panic (errors or rejects).
-		_, _ = Set(`[1,2]`, "[5]", 99)
+		// OOB index on a root-level array must not panic: it errors, leaving
+		// the input untouched.
+		const in = `[1,2]`
+		out, err := Set(in, "[5]", 99)
+		if err == nil {
+			t.Error("root OOB index: expected error, got nil")
+		}
+		if out != in {
+			t.Errorf("root OOB index: output %s must equal input %s on error", out, in)
+		}
 	})
 }
 
@@ -2639,7 +2639,15 @@ func TestOperationSet_ArrayExtractFlat_Boundary(t *testing.T) {
 		}
 	})
 	t.Run("non_map_item", func(t *testing.T) {
-		// items[0] is a number, not a map -> cannot set {flat:tags}; must not panic.
-		_, _ = Set(`{"items":[42]}`, "items{flat:tags}", "y")
+		// items[0] is a number, not a map: the flat-set cannot apply and the
+		// element is silently skipped (no error, input unchanged).
+		const in = `{"items":[42]}`
+		out, err := Set(in, "items{flat:tags}", "y")
+		if err != nil {
+			t.Errorf("non-map item: unexpected error %v", err)
+		}
+		if out != in {
+			t.Errorf("non-map item: output %s changed from input %s", out, in)
+		}
 	})
 }

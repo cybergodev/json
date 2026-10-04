@@ -42,12 +42,19 @@ func (p *Processor) ProcessBatch(operations []BatchOperation, cfg ...Config) ([]
 	}
 	defer releaseConfig(options)
 
-	// Honor the per-call cfg's MaxBatchSize (via the prepared options), not the
-	// processor's own config — every other limit in the API is applied per-call.
-	if len(operations) > options.MaxBatchSize {
+	// Batch size bound. Per-call cfg overrides; otherwise the processor's
+	// baked MaxBatchSize applies — the same no-cfg rule as Set's CreatePaths
+	// and the security limits (D-006: previously the default singleton's value,
+	// so New(cfg).ProcessBatch ignored a tightened baked limit while
+	// json.ProcessBatch(ops, cfg) enforced it).
+	maxBatchSize := p.config.MaxBatchSize
+	if len(cfg) > 0 {
+		maxBatchSize = options.MaxBatchSize
+	}
+	if len(operations) > maxBatchSize {
 		return nil, &JsonsError{
 			Op:      "process_batch",
-			Message: fmt.Sprintf("batch size %d exceeds maximum %d", len(operations), options.MaxBatchSize),
+			Message: fmt.Sprintf("batch size %d exceeds maximum %d", len(operations), maxBatchSize),
 			Err:     ErrSizeLimit,
 		}
 	}
@@ -429,7 +436,7 @@ func (p *Processor) validateInputForOptions(jsonStr string, options *Config) err
 		options.MaxObjectKeys,
 		options.MaxArrayElements,
 	)
-	sv.validationCache = nil // transient one-shot validator: skip cache machinery
+	sv.cacheDisabled = true // transient one-shot validator: skip cache machinery
 	return sv.ValidateJSONInput(jsonStr)
 }
 

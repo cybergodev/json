@@ -23,6 +23,18 @@ func (p *Processor) iterRoot(jsonStr, path string, cfg ...Config) (any, error) {
 }
 
 // Foreach iterates over JSON arrays or objects using this processor
+//
+// Deprecated: Foreach drops errors — an invalid document, a failed path
+// resolution, or a closed processor silently skips the callback entirely.
+// Use ForeachWithError, which returns the error (its callback must return
+// nil to continue):
+//
+//	err := p.ForeachWithError(jsonStr, ".", func(key any, item *json.IterableValue) error {
+//	    // ...
+//	    return nil
+//	})
+//
+// Foreach will not be removed within v1 (per D-005 the module stays on v1.x).
 func (p *Processor) Foreach(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config) {
 	data, err := p.iterRoot(jsonStr, ".", cfg...)
 	if err != nil {
@@ -80,6 +92,12 @@ func (p *Processor) ForeachReturn(jsonStr string, fn func(key any, item *Iterabl
 
 // ForeachNested recursively iterates over all nested JSON structures
 // This method traverses through all nested objects and arrays
+//
+// Deprecated: ForeachNested drops errors the same way Foreach does — a failed
+// parse or closed processor silently skips the callback. Use
+// ForeachNestedWithError, which returns the error (its callback must return
+// nil to continue). ForeachNested will not be removed within v1 (per D-005
+// the module stays on v1.x).
 func (p *Processor) ForeachNested(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config) {
 	data, err := p.iterRoot(jsonStr, ".", cfg...)
 	if err != nil {

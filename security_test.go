@@ -292,8 +292,10 @@ func TestSecurityEdgeCases(t *testing.T) {
 		}
 
 		testData := `{"a": {"b": "value"}}`
-		// Library handles long paths gracefully
-		_, _ = processor.Get(testData, longPath)
+		// The over-long path must be rejected, not silently navigated.
+		if _, err := processor.Get(testData, longPath); err == nil {
+			t.Error("1001-segment path: expected rejection, got nil error")
+		}
 	})
 
 	t.Run("MassiveArrayIndex", func(t *testing.T) {
@@ -301,8 +303,15 @@ func TestSecurityEdgeCases(t *testing.T) {
 		defer processor.Close()
 
 		testData := `{"arr": [1, 2, 3]}`
-		// Library handles out of bounds gracefully
-		_, _ = processor.Get(testData, "arr[999999999]")
+		// The index is beyond the reasonable-range guard and is rejected as
+		// an invalid path rather than silently resolving to nil.
+		v, err := processor.Get(testData, "arr[999999999]")
+		if err == nil {
+			t.Error("massive array index: expected rejection, got nil error")
+		}
+		if v != nil {
+			t.Errorf("massive array index: got %v, want nil", v)
+		}
 	})
 
 	t.Run("NegativeIndexEdgeCases", func(t *testing.T) {
@@ -345,358 +354,6 @@ func generateLargeJSON(size int) string {
 // File Security Tests (from file_security_test.go)
 // ============================================================================
 
-// TestWindowsDeviceNames tests Windows reserved device name detection
-func TestWindowsDeviceNames(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific test on non-Windows platform")
-	}
-
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "CON device",
-			filePath:    "CON",
-			expectError: true,
-			description: "Windows reserved device name CON",
-		},
-		{
-			name:        "PRN device",
-			filePath:    "PRN",
-			expectError: true,
-			description: "Windows reserved device name PRN",
-		},
-		{
-			name:        "AUX device",
-			filePath:    "AUX",
-			expectError: true,
-			description: "Windows reserved device name AUX",
-		},
-		{
-			name:        "NUL device",
-			filePath:    "NUL",
-			expectError: true,
-			description: "Windows reserved device name NUL",
-		},
-		{
-			name:        "COM1 device",
-			filePath:    "COM1",
-			expectError: true,
-			description: "Windows COM port 1",
-		},
-		{
-			name:        "COM9 device",
-			filePath:    "COM9",
-			expectError: true,
-			description: "Windows COM port 9",
-		},
-		{
-			name:        "COM0 device",
-			filePath:    "COM0",
-			expectError: true,
-			description: "Windows COM0 (invalid but reserved)",
-		},
-		{
-			name:        "LPT1 device",
-			filePath:    "LPT1",
-			expectError: true,
-			description: "Windows LPT port 1",
-		},
-		{
-			name:        "LPT9 device",
-			filePath:    "LPT9",
-			expectError: true,
-			description: "Windows LPT port 9",
-		},
-		{
-			name:        "LPT0 device",
-			filePath:    "LPT0",
-			expectError: true,
-			description: "Windows LPT0 (invalid but reserved)",
-		},
-		{
-			name:        "CONIN device",
-			filePath:    "CONIN$",
-			expectError: true,
-			description: "Windows console input",
-		},
-		{
-			name:        "CONOUT device",
-			filePath:    "CONOUT$",
-			expectError: true,
-			description: "Windows console output",
-		},
-		{
-			name:        "device with extension",
-			filePath:    "CON.txt",
-			expectError: true,
-			description: "Reserved name with extension",
-		},
-		{
-			name:        "normal file",
-			filePath:    "normal.json",
-			expectError: false,
-			description: "Normal file name",
-		},
-		{
-			name:        "path with device",
-			filePath:    "data/CON",
-			expectError: true,
-			description: "Path containing device name",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("%s: Unexpected error for path '%s': %v", tt.description, tt.filePath, err)
-			}
-		})
-	}
-}
-
-// TestPathTraversalDetection tests path traversal attack detection
-func TestPathTraversalDetection(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "double dot traversal",
-			filePath:    "../../etc/passwd",
-			expectError: true,
-			description: "Standard path traversal",
-		},
-		{
-			name:        "URL encoded traversal",
-			filePath:    "%2e%2e/%2e%2e/etc/passwd",
-			expectError: true,
-			description: "URL encoded double dots",
-		},
-		{
-			name:        "double URL encoded",
-			filePath:    "%252e%252e/%252e%252e",
-			expectError: true,
-			description: "Double URL encoded traversal",
-		},
-		{
-			name:        "mixed encoding traversal",
-			filePath:    "..%2fetc/passwd",
-			expectError: true,
-			description: "Mixed URL and normal separator",
-		},
-		{
-			name:        "Windows backslash encoded",
-			filePath:    "..%5cetc/passwd",
-			expectError: true,
-			description: "Encoded Windows backslash",
-		},
-		{
-			name:        "UTF-8 overlong encoding",
-			filePath:    "..%c0%af/etc/passwd",
-			expectError: true,
-			description: "UTF-8 overlong encoding attack",
-		},
-		{
-			name:        "partial double encoding",
-			filePath:    "..%2e",
-			expectError: true,
-			description: "Partial double encoding",
-		},
-		{
-			name:        "null byte injection",
-			filePath:    "file.txt\x00",
-			expectError: true,
-			description: "Null byte in path",
-		},
-		{
-			name:        "newline injection",
-			filePath:    "file.txt%0a",
-			expectError: true,
-			description: "Encoded newline injection",
-		},
-		{
-			name:        "carriage return injection",
-			filePath:    "file.txt%0d",
-			expectError: true,
-			description: "Encoded CR injection",
-		},
-		{
-			name:        "tab injection",
-			filePath:    "file.txt%09",
-			expectError: true,
-			description: "Encoded tab injection",
-		},
-		{
-			name:        "five consecutive dots",
-			filePath:    ".....//etc/passwd",
-			expectError: true,
-			description: "Five dots pattern",
-		},
-		{
-			name:        "six consecutive dots",
-			filePath:    "......//etc/passwd",
-			expectError: true,
-			description: "Six dots pattern",
-		},
-		{
-			name:        "normal path",
-			filePath:    "data/user/profile.json",
-			expectError: false,
-			description: "Normal file path",
-		},
-		{
-			name:        "absolute path",
-			filePath:    "/home/user/data.json",
-			expectError: false,
-			description: "Absolute path (allowed on Unix)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				// Allow certain errors that aren't security-related
-				if !strings.Contains(err.Error(), "security") &&
-					!strings.Contains(err.Error(), "traversal") &&
-					!strings.Contains(err.Error(), "null byte") {
-					t.Errorf("%s: Unexpected error for path '%s': %v", tt.description, tt.filePath, err)
-				}
-			}
-		})
-	}
-}
-
-// TestAlternateDataStreamDetection tests ADS detection on Windows
-func TestAlternateDataStreamDetection(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific ADS test on non-Windows platform")
-	}
-
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "ADS with colon",
-			filePath:    "file.txt:stream",
-			expectError: true,
-			description: "Alternate data stream",
-		},
-		{
-			name:        "ADS with $DATA",
-			filePath:    "file.txt:$DATA",
-			expectError: true,
-			description: "ADS with $DATA stream",
-		},
-		{
-			name:        "complex ADS",
-			filePath:    "file.txt:stream:$DATA",
-			expectError: true,
-			description: "Complex ADS pattern",
-		},
-		{
-			name:        "drive letter not ADS",
-			filePath:    "C:/data/file.txt",
-			expectError: false,
-			description: "Drive letter pattern is valid",
-		},
-		{
-			name:        "drive letter with colon",
-			filePath:    "C:data/file.txt",
-			expectError: false,
-			description: "Relative path from drive",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				if strings.Contains(err.Error(), "alternate data stream") {
-					t.Errorf("%s: Unexpected ADS error for path '%s': %v", tt.description, tt.filePath, err)
-				}
-			}
-		})
-	}
-}
-
-// TestPathLengthValidation tests path length limits
-func TestPathLengthValidation(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	// Create a path that exceeds maxPathLength
-	longPath := strings.Repeat("a", maxPathLength+1)
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "exceeds max length",
-			filePath:    longPath,
-			expectError: true,
-			description: "Path exceeds maximum length",
-		},
-		{
-			name:        "exactly max length",
-			filePath:    strings.Repeat("b", maxPathLength),
-			expectError: false,
-			description: "Path at maximum length",
-		},
-		{
-			name:        "normal length",
-			filePath:    "data/user/profile.json",
-			expectError: false,
-			description: "Normal length path",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path, but got none", tt.description)
-			}
-			if !tt.expectError && err != nil {
-				if strings.Contains(err.Error(), "too long") {
-					t.Errorf("%s: Unexpected length error: %v", tt.description, err)
-				}
-			}
-		})
-	}
-}
-
 // TestInvalidCharactersInWindowsPath tests invalid character detection on Windows
 func TestInvalidCharactersInWindowsPath(t *testing.T) {
 	if runtime.GOOS != "windows" {
@@ -722,84 +379,6 @@ func TestInvalidCharactersInWindowsPath(t *testing.T) {
 				if err == nil {
 					t.Errorf("Expected error for invalid character '%s', but got none", char)
 				}
-			}
-		})
-	}
-}
-
-// TestNullByteDetection tests null byte detection in paths
-func TestNullByteDetection(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name     string
-		filePath string
-	}{
-		{
-			name:     "null at start",
-			filePath: "\x00file.txt",
-		},
-		{
-			name:     "null in middle",
-			filePath: "file\x00.txt",
-		},
-		{
-			name:     "null at end",
-			filePath: "file.txt\x00",
-		},
-		{
-			name:     "multiple nulls",
-			filePath: "file\x00\x00.txt",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if err == nil {
-				t.Errorf("Expected error for path with null byte '%s', but got none", tt.filePath)
-			}
-		})
-	}
-}
-
-// TestUNCPathDetection tests UNC path detection on Windows
-func TestUNCPathDetection(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific UNC test on non-Windows platform")
-	}
-
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-	}{
-		{
-			name:        "UNC with backslashes",
-			filePath:    "\\\\server\\share\\file.txt",
-			expectError: true,
-		},
-		{
-			name:        "UNC with forward slashes",
-			filePath:    "//server/share/file.txt",
-			expectError: true,
-		},
-		{
-			name:        "local path",
-			filePath:    "C:/data/file.txt",
-			expectError: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("Expected error for UNC path, but got none")
 			}
 		})
 	}
@@ -893,145 +472,6 @@ func TestContainsConsecutiveDots(t *testing.T) {
 	}
 }
 
-// TestFilePathValidationEdgeCases tests edge cases in file path validation
-func TestFilePathValidationEdgeCases(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "empty path",
-			filePath:    "",
-			expectError: true,
-			description: "Empty path should error",
-		},
-		{
-			name:        "single character",
-			filePath:    "a",
-			expectError: false,
-			description: "Single character path",
-		},
-		{
-			name:        "current directory",
-			filePath:    ".",
-			expectError: false,
-			description: "Current directory reference",
-		},
-		{
-			name:        "parent directory",
-			filePath:    "..",
-			expectError: true,
-			description: "Parent directory reference (traversal)",
-		},
-		{
-			name:        "file with extension",
-			filePath:    "document.pdf",
-			expectError: false,
-			description: "Normal file with extension",
-		},
-		{
-			name:        "deep path",
-			filePath:    "a/b/c/d/e/f/g/h/i/j/file.txt",
-			expectError: false,
-			description: "Deep but valid path",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("%s: Unexpected error for path '%s': %v", tt.description, tt.filePath, err)
-			}
-		})
-	}
-}
-
-// TestWindowsPathValidationComponents tests Windows path validation components
-func TestWindowsPathValidationComponents(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific test on non-Windows platform")
-	}
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "valid absolute path",
-			filePath:    "C:/Users/user/data.json",
-			expectError: false,
-			description: "Valid Windows absolute path",
-		},
-		{
-			name:        "valid relative path",
-			filePath:    "data/config.json",
-			expectError: false,
-			description: "Valid Windows relative path",
-		},
-		{
-			name:        "path with spaces",
-			filePath:    "C:/Program Files/data.json",
-			expectError: false,
-			description: "Path with spaces (valid)",
-		},
-		{
-			name:        "path with underscore",
-			filePath:    "my_data/file.json",
-			expectError: false,
-			description: "Path with underscore (valid)",
-		},
-		{
-			name:        "path with hyphen",
-			filePath:    "my-data/file.json",
-			expectError: false,
-			description: "Path with hyphen (valid)",
-		},
-		{
-			name:        "path with pipe",
-			filePath:    "data|file.json",
-			expectError: true,
-			description: "Path with pipe (invalid)",
-		},
-		{
-			name:        "path with asterisk",
-			filePath:    "data/*.json",
-			expectError: true,
-			description: "Path with asterisk (invalid)",
-		},
-		{
-			name:        "path with question mark",
-			filePath:    "data/file?.json",
-			expectError: true,
-			description: "Path with question mark (invalid)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p, _ := New()
-			defer p.Close()
-			err := p.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("%s: Unexpected error for path '%s': %v", tt.description, tt.filePath, err)
-			}
-		})
-	}
-}
-
 // TestSecurityValidationWithRealPaths tests security validation with realistic paths
 func TestSecurityValidationWithRealPaths(t *testing.T) {
 	processor, _ := New()
@@ -1099,40 +539,6 @@ func TestFilePathNormalization(t *testing.T) {
 }
 
 // TestSymlinkValidation tests symlink validation in paths
-func TestSymlinkValidation(t *testing.T) {
-	p, _ := New()
-	defer p.Close()
-
-	// This test checks that the validation logic handles symlinks properly
-	// We can't create actual symlinks in tests, but we can verify the logic exists
-
-	tests := []struct {
-		name        string
-		filePath    string
-		description string
-	}{
-		{
-			name:        "potential symlink path",
-			filePath:    "data/link/target.json",
-			description: "Path that might contain symlink",
-		},
-		{
-			name:        "normal file path",
-			filePath:    "data/file.json",
-			description: "Regular file path",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Just verify the validation runs without panicking
-			_ = p.validateFilePath(tt.filePath)
-			t.Logf("Validation completed for: %s", tt.description)
-		})
-	}
-}
-
-// TestCrossPlatformPathValidation tests path validation works on both platforms
 func TestCrossPlatformPathValidation(t *testing.T) {
 	processor, _ := New()
 	defer processor.Close()
@@ -1735,6 +1141,82 @@ func TestPanicProtectionForeachFileChunked(t *testing.T) {
 	sec003AssertPanicked(t, err)
 }
 
+// panickingPathParser implements PathParser by panicking, pinning the
+// parsePathGuarded recover in path.go / processor_cache.go.
+type panickingPathParser struct{}
+
+func (panickingPathParser) ParsePath(path string) ([]PathSegment, error) {
+	panic("boom from CustomPathParser")
+}
+
+// panickingValidator implements Validator by panicking, pinning the
+// validationChain recover in interfaces.go.
+type panickingValidator struct{}
+
+func (panickingValidator) Validate(jsonStr string) error {
+	panic("boom from Validator")
+}
+
+// panickingHook implements Hook with a panicking Before, pinning the
+// hookChain.executeBefore recover in interfaces.go.
+type panickingHook struct{}
+
+func (panickingHook) Before(HookContext) error { panic("boom from Hook.Before") }
+
+func (panickingHook) After(_ HookContext, result any, err error) (any, error) {
+	return result, err
+}
+
+// TestPanicProtectionExtensionPoints pins SEC-003 across the user-implemented
+// extension interfaces: a panicking CustomPathParser, Validator, or Hook is
+// recovered and surfaced as an error (or, for the chain, stops execution)
+// rather than crashing the program.
+func TestPanicProtectionExtensionPoints(t *testing.T) {
+	t.Run("CustomPathParser via Get", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CustomPathParser = panickingPathParser{}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+
+		_, err = p.Get(`{"a":1}`, "a")
+		sec003AssertPanicked(t, err)
+	})
+
+	t.Run("CustomPathParser via Set", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CustomPathParser = panickingPathParser{}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+
+		_, err = p.Set(`{"a":1}`, "a", 2)
+		sec003AssertPanicked(t, err)
+	})
+
+	t.Run("validationChain", func(t *testing.T) {
+		chain := validationChain{panickingValidator{}}
+		sec003AssertPanicked(t, chain.Validate(`{}`))
+	})
+
+	t.Run("Hook Before via Get", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.AddHook(panickingHook{})
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+
+		_, err = p.Get(`{"a":1}`, "a")
+		sec003AssertPanicked(t, err)
+	})
+}
+
 // ============================================================================
 // CONTAINER-LIMIT TESTS (merged from container_limits_test.go)
 // ============================================================================
@@ -2067,3 +1549,455 @@ var getCriticalPatterns = sync.OnceValue(func() []DangerousPattern {
 	}
 	return result
 })
+
+// TestValidateFilePath_Matrix consolidates the eight identical-scaffold
+// validateFilePath tables (device names, traversal, ADS, path length, null
+// bytes, UNC, edge cases, Windows components) into one table-driven test.
+// Rows flagged windows=true replace the per-function runtime.GOOS skips and
+// are skipped silently on other platforms. TestInvalidCharactersInWindowsPath
+// (inline char loop) and the normalization/real-path/cross-platform tests
+// keep their own shapes (FIX-001).
+func TestValidateFilePath_Matrix(t *testing.T) {
+	processor, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer processor.Close()
+
+	rows := []struct {
+		group       string
+		windows     bool
+		name        string
+		filePath    string
+		expectError bool
+	}{
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "CON device",
+			filePath:    "CON",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "PRN device",
+			filePath:    "PRN",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "AUX device",
+			filePath:    "AUX",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "NUL device",
+			filePath:    "NUL",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "COM1 device",
+			filePath:    "COM1",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "COM9 device",
+			filePath:    "COM9",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "COM0 device",
+			filePath:    "COM0",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "LPT1 device",
+			filePath:    "LPT1",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "LPT9 device",
+			filePath:    "LPT9",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "LPT0 device",
+			filePath:    "LPT0",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "CONIN device",
+			filePath:    "CONIN$",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "CONOUT device",
+			filePath:    "CONOUT$",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "device with extension",
+			filePath:    "CON.txt",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "normal file",
+			filePath:    "normal.json",
+			expectError: false,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "path with device",
+			filePath:    "data/CON",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "double dot traversal",
+			filePath:    "../../etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "URL encoded traversal",
+			filePath:    "%2e%2e/%2e%2e/etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "double URL encoded",
+			filePath:    "%252e%252e/%252e%252e",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "mixed encoding traversal",
+			filePath:    "..%2fetc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "Windows backslash encoded",
+			filePath:    "..%5cetc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "UTF-8 overlong encoding",
+			filePath:    "..%c0%af/etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "partial double encoding",
+			filePath:    "..%2e",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "null byte injection",
+			filePath:    "file.txt\x00",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "newline injection",
+			filePath:    "file.txt%0a",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "carriage return injection",
+			filePath:    "file.txt%0d",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "tab injection",
+			filePath:    "file.txt%09",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "five consecutive dots",
+			filePath:    ".....//etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "six consecutive dots",
+			filePath:    "......//etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "normal path",
+			filePath:    "data/user/profile.json",
+			expectError: false,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "absolute path",
+			filePath:    "/home/user/data.json",
+			expectError: false,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "ADS with colon",
+			filePath:    "file.txt:stream",
+			expectError: true,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "ADS with $DATA",
+			filePath:    "file.txt:$DATA",
+			expectError: true,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "complex ADS",
+			filePath:    "file.txt:stream:$DATA",
+			expectError: true,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "drive letter not ADS",
+			filePath:    "C:/data/file.txt",
+			expectError: false,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "drive letter with colon",
+			filePath:    "C:data/file.txt",
+			expectError: false,
+		},
+		{
+			group:       "path-length",
+			windows:     false,
+			name:        "exceeds max length",
+			filePath:    strings.Repeat("a", maxPathLength+1),
+			expectError: true,
+		},
+		{
+			group:       "path-length",
+			windows:     false,
+			name:        "exactly max length",
+			filePath:    strings.Repeat("b", maxPathLength),
+			expectError: false,
+		},
+		{
+			group:       "path-length",
+			windows:     false,
+			name:        "normal length",
+			filePath:    "data/user/profile.json",
+			expectError: false,
+		},
+		{
+			group:       "null-bytes",
+			windows:     false,
+			name:        "null at start",
+			filePath:    "\x00file.txt",
+			expectError: true,
+		},
+		{
+			group:       "null-bytes",
+			windows:     false,
+			name:        "null in middle",
+			filePath:    "file\x00.txt",
+			expectError: true,
+		},
+		{
+			group:       "null-bytes",
+			windows:     false,
+			name:        "null at end",
+			filePath:    "file.txt\x00",
+			expectError: true,
+		},
+		{
+			group:       "null-bytes",
+			windows:     false,
+			name:        "multiple nulls",
+			filePath:    "file\x00\x00.txt",
+			expectError: true,
+		},
+		{
+			group:       "unc",
+			windows:     true,
+			name:        "UNC with backslashes",
+			filePath:    "\\\\server\\share\\file.txt",
+			expectError: true,
+		},
+		{
+			group:       "unc",
+			windows:     true,
+			name:        "UNC with forward slashes",
+			filePath:    "//server/share/file.txt",
+			expectError: true,
+		},
+		{
+			group:       "unc",
+			windows:     true,
+			name:        "local path",
+			filePath:    "C:/data/file.txt",
+			expectError: false,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "empty path",
+			filePath:    "",
+			expectError: true,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "single character",
+			filePath:    "a",
+			expectError: false,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "current directory",
+			filePath:    ".",
+			expectError: false,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "parent directory",
+			filePath:    "..",
+			expectError: true,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "file with extension",
+			filePath:    "document.pdf",
+			expectError: false,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "deep path",
+			filePath:    "a/b/c/d/e/f/g/h/i/j/file.txt",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "valid absolute path",
+			filePath:    "C:/Users/user/data.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "valid relative path",
+			filePath:    "data/config.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with spaces",
+			filePath:    "C:/Program Files/data.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with underscore",
+			filePath:    "my_data/file.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with hyphen",
+			filePath:    "my-data/file.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with pipe",
+			filePath:    "data|file.json",
+			expectError: true,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with asterisk",
+			filePath:    "data/*.json",
+			expectError: true,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with question mark",
+			filePath:    "data/file?.json",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range rows {
+		if tt.windows && runtime.GOOS != "windows" {
+			continue
+		}
+		t.Run(tt.group+"/"+tt.name, func(t *testing.T) {
+			err := processor.validateFilePath(tt.filePath)
+			if tt.expectError && err == nil {
+				t.Errorf("path %q: expected rejection, got nil error", tt.filePath)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("path %q: unexpected error: %v", tt.filePath, err)
+			}
+		})
+	}
+}
