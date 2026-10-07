@@ -94,31 +94,16 @@ func TestAddHook(t *testing.T) {
 			},
 		})
 
-		// Verify the hook was stored and is functional when invoked through the
-		// hookChain directly. End-to-end firing during Get/Set/Delete is covered
-		// by d005_library_regression_test.go (TestHookFiresDuringOperations etc.).
-		if len(p.hooks) != 1 {
-			t.Errorf("expected 1 hook, got %d", len(p.hooks))
-		}
-
-		// Verify the hook works when called manually through hookChain.
-		hc := hookChain(p.hooks)
-		ctx := HookContext{
-			Operation: "get",
-			Path:      "test",
-			StartTime: time.Now(),
-		}
-
-		if err := hc.executeBefore(ctx); err != nil {
-			t.Errorf("executeBefore error: %v", err)
+		// The hook must fire during a REAL Get, not just when driven through
+		// hookChain manually (that path is covered by TestHookChainExecution).
+		if _, err := p.Get(`{"key":"value"}`, "key"); err != nil {
+			t.Fatalf("Get error: %v", err)
 		}
 		if !beforeCalled {
-			t.Error("Before hook was not called")
+			t.Error("Before hook did not fire during Get")
 		}
-
-		_, _ = hc.executeAfter(ctx, "result", nil)
 		if !afterCalled {
-			t.Error("After hook was not called")
+			t.Error("After hook did not fire during Get")
 		}
 	})
 

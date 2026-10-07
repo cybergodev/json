@@ -192,12 +192,13 @@ func TestRecursiveProcessor_SetOperation_Table(t *testing.T) {
 	defer processor.Close()
 
 	tests := []struct {
-		name     string
-		data     any
-		path     string
-		value    any
-		wantErr  bool
-		validate func(t *testing.T, data any)
+		name           string
+		data           any
+		path           string
+		value          any
+		wantErr        bool
+		validate       func(t *testing.T, data any)
+		validateResult func(t *testing.T, result any)
 	}{
 		{
 			name:  "set simple property",
@@ -243,11 +244,18 @@ func TestRecursiveProcessor_SetOperation_Table(t *testing.T) {
 			},
 		},
 		{
-			name:    "set root should fail",
-			data:    map[string]any{"key": "value"},
-			path:    "",
-			value:   "newroot",
-			wantErr: true,
+			// GEN-001: root Set replaces the document; the new root arrives as
+			// the operation result (the in-place data cannot express it).
+			name:  "set root replaces document",
+			data:  map[string]any{"key": "value"},
+			path:  "",
+			value: "newroot",
+			validateResult: func(t *testing.T, result any) {
+				t.Helper()
+				if result != "newroot" {
+					t.Errorf("root set result = %v, want newroot", result)
+				}
+			},
 		},
 		{
 			name:    "set nonexistent path without createPaths",
@@ -282,13 +290,16 @@ func TestRecursiveProcessor_SetOperation_Table(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := rp.ProcessRecursively(tt.data, tt.path, opSet, tt.value)
+			result, err := rp.ProcessRecursively(tt.data, tt.path, opSet, tt.value)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ProcessRecursively() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if tt.validate != nil && err == nil {
 				tt.validate(t, tt.data)
+			}
+			if tt.validateResult != nil && err == nil {
+				tt.validateResult(t, result)
 			}
 		})
 	}
@@ -2044,11 +2055,14 @@ func TestRecursive_Extract_Boundary(t *testing.T) {
 }
 
 // TestRecursive_EmptyPath_Boundary exercises ProcessRecursivelyWithOptions
-// empty-path handling (recursive.go): Set/Delete with an empty path must error.
+// empty-path handling (recursive.go): Set with an empty path replaces the
+// whole document (GEN-001); Delete with an empty path must still error.
 func TestRecursive_EmptyPath_Boundary(t *testing.T) {
-	if _, err := Set(`{"a":1}`, "", 99); err == nil {
-		t.Error("expected error for Set with empty path")
+	result, err := Set(`{"a":1}`, "", 99)
+	if err != nil {
+		t.Fatalf("expected root Set to replace the document, got error: %v", err)
 	}
+	assertJSONEqual(t, `99`, result)
 	if _, err := Delete(`{"a":1}`, ""); err == nil {
 		t.Error("expected error for Delete with empty path")
 	}

@@ -229,8 +229,8 @@ func TestEncodingAdvanced(t *testing.T) {
 
 			result, err := processor.EncodeWithConfig(data, config)
 			helper.AssertNoError(err)
-			// Just verify encoding works, output format may vary
-			helper.AssertTrue(len(result) > 0)
+			helper.AssertTrue(strings.Contains(result, "<script>"))
+			helper.AssertFalse(strings.Contains(result, "\\u003c"))
 		})
 	})
 
@@ -250,8 +250,8 @@ func TestEncodingAdvanced(t *testing.T) {
 
 			result, err := processor.EncodeWithConfig(data, config)
 			helper.AssertNoError(err)
-			// Just verify encoding works, escape behavior may vary
-			helper.AssertTrue(len(result) > 0)
+			// Non-ASCII must not survive as raw UTF-8.
+			helper.AssertFalse(strings.Contains(result, "世界"))
 		})
 
 		t.Run("NoEscapeUnicode", func(t *testing.T) {
@@ -271,15 +271,14 @@ func TestEncodingAdvanced(t *testing.T) {
 		defer processor.Close()
 
 		type Data struct {
-			Name      string `json:"name"`
-			Email     string `json:"email"`
-			Phone     string `json:"phone"`
-			CreatedAt string `json:"created_at"`
+			Name  string `json:"name"`
+			Email string `json:"email"`
+			Extra any    `json:"extra"`
 		}
 
 		data := Data{
-			Name:      "John",
-			CreatedAt: "2024-01-15",
+			Name:  "John",
+			Extra: nil,
 		}
 
 		t.Run("IncludeNullsTrue", func(t *testing.T) {
@@ -289,8 +288,9 @@ func TestEncodingAdvanced(t *testing.T) {
 
 			result, err := processor.EncodeWithConfig(data, config)
 			helper.AssertNoError(err)
-			// Just verify encoding works, null handling may vary
 			helper.AssertTrue(strings.Contains(result, "\"name\""))
+			// Nil any field must be emitted as an explicit null.
+			helper.AssertTrue(strings.Contains(result, `"extra": null`))
 		})
 
 		t.Run("IncludeNullsFalse", func(t *testing.T) {
@@ -300,8 +300,10 @@ func TestEncodingAdvanced(t *testing.T) {
 
 			result, err := processor.EncodeWithConfig(data, config)
 			helper.AssertNoError(err)
-			// Just verify encoding works, null handling may vary
 			helper.AssertTrue(strings.Contains(result, "\"name\""))
+			// Nil any field must be omitted; empty strings are unaffected.
+			helper.AssertFalse(strings.Contains(result, "\"extra\""))
+			helper.AssertTrue(strings.Contains(result, `"email": ""`))
 		})
 	})
 }
@@ -314,43 +316,25 @@ func TestEncodingTypes(t *testing.T) {
 	defer processor.Close()
 
 	t.Run("BasicTypes", func(t *testing.T) {
+		// Scalar encoding is byte-exact; assert the full output, not substrings
+		// (the former "42" substring check would pass for "42x" or "142").
 		tests := []struct {
 			name  string
 			value interface{}
-			check func(string) bool
+			want  string
 		}{
-			{
-				"String",
-				"hello",
-				func(s string) bool { return strings.Contains(s, "\"hello\"") },
-			},
-			{
-				"Int",
-				42,
-				func(s string) bool { return strings.Contains(s, "42") },
-			},
-			{
-				"Float",
-				3.14,
-				func(s string) bool { return strings.Contains(s, "3.14") },
-			},
-			{
-				"Bool",
-				true,
-				func(s string) bool { return strings.Contains(s, "true") },
-			},
-			{
-				"Nil",
-				nil,
-				func(s string) bool { return strings.Contains(s, "null") },
-			},
+			{"String", "hello", `"hello"`},
+			{"Int", 42, `42`},
+			{"Float", 3.14, `3.14`},
+			{"Bool", true, `true`},
+			{"Nil", nil, `null`},
 		}
 
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				result, err := processor.EncodeWithConfig(tt.value, DefaultConfig())
 				helper.AssertNoError(err)
-				helper.AssertTrue(tt.check(result))
+				helper.AssertEqual(tt.want, result)
 			})
 		}
 	})
@@ -1303,8 +1287,8 @@ func TestEncoding_EncodeStruct(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeWithConfig error: %v", err)
 		}
-		if result == "" {
-			t.Error("result should not be empty")
+		if !strings.Contains(result, `"name":"test"`) || !strings.Contains(result, `"value":42`) {
+			t.Errorf("unexpected encode output: %s", result)
 		}
 	})
 
@@ -1317,8 +1301,8 @@ func TestEncoding_EncodeStruct(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeWithConfig error: %v", err)
 		}
-		if result == "" {
-			t.Error("result should not be empty")
+		if !strings.Contains(result, `"name":"test"`) {
+			t.Errorf("missing name field in output: %s", result)
 		}
 	})
 
@@ -1331,8 +1315,9 @@ func TestEncoding_EncodeStruct(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeWithConfig error: %v", err)
 		}
-		if result == "" {
-			t.Error("result should not be empty")
+		// Sorted output must place "a" before "z".
+		if strings.Index(result, `"a"`) > strings.Index(result, `"z"`) {
+			t.Errorf("keys not sorted in output: %s", result)
 		}
 	})
 
@@ -1345,8 +1330,8 @@ func TestEncoding_EncodeStruct(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeWithConfig error: %v", err)
 		}
-		if result == "" {
-			t.Error("result should not be empty")
+		if !strings.Contains(result, "\n") {
+			t.Errorf("pretty output should be multi-line: %s", result)
 		}
 	})
 }

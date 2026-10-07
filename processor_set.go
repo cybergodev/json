@@ -10,12 +10,14 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
-// Set sets a value in JSON at the specified path
+// Set sets a value in JSON at the specified path.
+// A root path ("", ".", or the JSON Pointer root "/") replaces the entire
+// document with value (GEN-001); Delete has no root equivalent.
 // Returns:
 //   - On success: modified JSON string and nil error
 //   - On failure: original unmodified JSON string and error information
 func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (result string, err error) {
-	options, err := p.prepareOperation(jsonStr, path, cfg...)
+	options, jsonHash, err := p.prepareOperation(jsonStr, path, cfg...)
 	if err != nil {
 		// Match Get's accounting: lifecycle rejections (closed processor,
 		// concurrency limit) are not operation errors, but option and
@@ -120,8 +122,15 @@ func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (result 
 		createPaths = options.CreatePaths
 	}
 
-	// Set the value at the specified path
-	err = p.setValueAtPathWithOptions(data, path, value, createPaths)
+	// GEN-001: root paths ("", ".", and the JSON Pointer root "/") replace the
+	// whole document with value — previously "cannot set root value". Root
+	// delete remains unsupported (a document replaced by "nothing" has no JSON
+	// representation); set a fresh value instead.
+	if path == "" || path == "." || path == "/" {
+		data = value
+	} else {
+		err = p.setValueAtPathWithOptions(data, path, value, createPaths)
+	}
 	if err != nil {
 		p.incrementErrorCount()
 		// Return original data and detailed error information
@@ -144,8 +153,10 @@ func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (result 
 		return jsonStr, setError
 	}
 
-	// Invalidate cached results for this JSON string since the data changed
-	p.invalidateJSONCache(jsonStr)
+	// Invalidate cached results for this JSON string since the data changed.
+	// P-003: reuses the hash prepareOperation computed for the validation
+	// prehash — no second full-document scan here.
+	p.invalidateJSONCacheHashed(jsonHash)
 
 	// Convert modified data back to JSON string
 	// PERFORMANCE: Use FastMarshalToString instead of json.Marshal to avoid
@@ -162,10 +173,20 @@ func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (result 
 		}
 	}
 
+	// D-002/R11 (M2, option A): the re-encoded output honors the effective
+	// MaxJSONSize, matching the encode funnel (R8 M1). The output bytes
+	// themselves are unchanged (FastMarshalToString, no HTML escaping).
+	if err := p.checkMutationOutputSize(result, p.mutationOutputMaxSize(options, len(cfg) > 0), "set", path); err != nil {
+		p.incrementErrorCount()
+		return jsonStr, err
+	}
+
 	return result, nil
 }
 
-// SetMultiple sets multiple values in JSON using a map of path-value pairs
+// SetMultiple sets multiple values in JSON using a map of path-value pairs.
+// Unlike Set, a root path ("", ".", "/") is not supported here and still
+// errors — replacing the document is a single-value operation; use Set.
 // Returns:
 //   - On success: modified JSON string and nil error
 //   - On failure: original unmodified JSON string and error information
@@ -211,6 +232,15 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 		}
 	}
 
+	// Rate limiting, matching Get/Set/Delete (D-002/R10): SetMultiple was the
+	// one governed mutation without the gate. No-op unless
+	// MaxOperationsPerSecond > 0 (disabled by default).
+	if p.metrics.operationWindow > 0 {
+		if err := p.checkRateLimit(); err != nil {
+			return jsonStr, err
+		}
+	}
+
 	// Count the operation for stats — see Set for the rationale (mutations
 	// previously went unreported, undercounting GetStats). Error returns below
 	// increment the error counter, as Get does.
@@ -248,12 +278,25 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 		}()
 	}
 
+	// P-003: hash the document once when the result cache is enabled (mirrors
+	// prepareOperation for Set/Delete) — shared with the validation prehash
+	// below and reused for cache invalidation at the end of the mutation.
+	jsonHash := uint64(0)
+	if p.config.EnableCache {
+		jsonHash = hashStringToUint64(jsonStr)
+	}
+
 	// Validate JSON input. Honor SkipValidation (essential DoS checks only) to
 	// stay consistent with Set/Delete, which route through validateOperationInput.
 	// Previously this called validateInputForOptions unconditionally, silently
 	// ignoring SkipValidation — a behavioral divergence from Set.
 	if options.SkipValidation {
 		if err := p.validateInputEssential(jsonStr); err != nil {
+			p.incrementErrorCount()
+			return jsonStr, err
+		}
+	} else if p.config.EnableCache {
+		if err := p.validateInputForOptionsHashed(jsonStr, options, jsonHash); err != nil {
 			p.incrementErrorCount()
 			return jsonStr, err
 		}
@@ -390,8 +433,9 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 
 	// Invalidate cached results for this JSON string since the data changed.
 	// Mirrors Set(): without this, a subsequent Get on the same jsonStr could be
-	// served stale parse/get results from cache.
-	p.invalidateJSONCache(jsonStr)
+	// served stale parse/get results from cache. P-003: reuses the hash
+	// computed above for the validation prehash — no second full-document scan.
+	p.invalidateJSONCacheHashed(jsonHash)
 
 	// Convert modified data back to JSON string
 	// PERFORMANCE: Use FastMarshalToString instead of json.Marshal
@@ -404,6 +448,13 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 			Message: "failed to marshal modified data",
 			Err:     err,
 		}
+	}
+
+	// D-002/R11 (M2, option A): see Set — output honors the effective
+	// MaxJSONSize (encode-funnel parity, R8 M1); output bytes are unchanged.
+	if err := p.checkMutationOutputSize(result, p.mutationOutputMaxSize(options, len(cfg) > 0), "set_multiple", ""); err != nil {
+		p.incrementErrorCount()
+		return jsonStr, err
 	}
 
 	// Partial failure under ContinueOnError: successes were applied, so the

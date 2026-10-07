@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -249,7 +250,13 @@ func TestMetricsCollector_GetSummary(t *testing.T) {
 	mc.RecordCacheMiss()
 
 	summary := mc.GetSummary()
-	if summary == "" {
-		t.Error("GetSummary should return non-empty string")
+	for _, want := range []string{
+		"Operations: 1 total (1 successful, 0 failed)",
+		"Cache: 2 hits, 1 misses",
+		"66.67% hit rate",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("GetSummary missing %q:\n%s", want, summary)
+		}
 	}
 }

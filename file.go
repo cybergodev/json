@@ -2,7 +2,6 @@ package json
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -98,7 +97,7 @@ func (p *Processor) readValidatedFileOp(op, filePath string, cfg ...Config) ([]b
 
 	maxSize := p.effectiveReadMaxSize(cfg...)
 
-	f, err := os.Open(filePath)
+	f, err := openValidatedFile(filePath)
 	if err != nil {
 		return nil, &JsonsError{
 			Op:      op,
@@ -126,6 +125,76 @@ func (p *Processor) readValidatedFileOp(op, filePath string, cfg ...Config) ([]b
 		}
 	}
 	return data, nil
+}
+
+// openValidatedFile opens the file at its physically resolved location.
+// GEN-001 (TOCTOU narrowing): the read entry points validate the path —
+// including symlink resolution and restricted-area checks on the physical
+// target — and previously re-opened the ORIGINAL path, so a leaf symlink
+// swapped in between validation and open could redirect the read to an
+// unchecked location. Opening the resolved path removes that redirect: the
+// file opened is the file validation inspected. (Replacing the resolved file
+// itself between validation and open remains possible — inherent to
+// path-based APIs.)
+func openValidatedFile(filePath string) (*os.File, error) {
+	return os.Open(resolvePhysicalPath(filePath))
+}
+
+// resolvePhysicalPath returns the symlink-resolved form of path. When the leaf
+// does not exist (a file about to be created), the PARENT is resolved instead
+// so intermediate symlink redirections are still folded away.
+func resolvePhysicalPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	if resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		return filepath.Join(resolvedParent, filepath.Base(path))
+	}
+	return path
+}
+
+// pathWithinDir reports whether path is dir itself or located inside it.
+// Both must be cleaned, absolute paths (Config.Validate enforces this for
+// AllowedFileDirs). Windows comparison is case-insensitive, matching its
+// case-insensitive filesystem; a '/' separator is accepted alongside the
+// platform separator for defensiveness.
+func pathWithinDir(path, dir string) bool {
+	if len(path) < len(dir) {
+		return false
+	}
+	if runtime.GOOS == goosWindows {
+		if !strings.EqualFold(path[:len(dir)], dir) {
+			return false
+		}
+	} else if path[:len(dir)] != dir {
+		return false
+	}
+	rest := path[len(dir):]
+	return rest == "" || rest[0] == os.PathSeparator || rest[0] == '/'
+}
+
+// validateFileDirAllowlist enforces Config.AllowedFileDirs (GEN-001): when
+// configured, every file path must resolve inside one of the allowed
+// directories. The check runs on the PHYSICAL path (symlinks resolved) so a
+// link cannot bridge out of an allowed tree. A per-call cfg with a non-empty
+// AllowedFileDirs overrides the processor's list, mirroring
+// effectiveReadMaxSize.
+func (p *Processor) validateFileDirAllowlist(absPath string, cfg ...Config) error {
+	dirs := p.config.AllowedFileDirs
+	if len(cfg) > 0 && len(cfg[0].AllowedFileDirs) > 0 {
+		dirs = cfg[0].AllowedFileDirs
+	}
+	if len(dirs) == 0 {
+		return nil
+	}
+	physical := resolvePhysicalPath(absPath)
+	for _, dir := range dirs {
+		if pathWithinDir(physical, dir) {
+			return nil
+		}
+	}
+	return newSecurityError("validate_file_dir_allowlist",
+		"path resolves outside the configured AllowedFileDirs")
 }
 
 // LoadFromReader loads JSON data from an io.Reader and returns the raw JSON string.
@@ -169,6 +238,12 @@ func (p *Processor) loadFromReaderAsData(reader io.Reader, cfg ...Config) (any, 
 // readValidatedReader reads from a reader with size limiting and validation.
 // Shared helper to eliminate duplicate reader validation code.
 // Honors a per-call cfg.MaxJSONSize (see effectiveReadMaxSize).
+//
+// NOTE (D-002/R11 m1): like Unmarshal's no-config branch, this pure-I/O path
+// is not registered via beginGovernedOp — it reads only immutable processor
+// config, so Close-drain and the MaxConcurrency slot do not apply (accepted
+// divergence; the governed entry points are the Parse/Get calls layered on
+// top by callers like loadFromReaderAsData).
 func (p *Processor) readValidatedReader(reader io.Reader, cfg ...Config) ([]byte, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
@@ -331,7 +406,7 @@ func (p *Processor) writeFileJSON(op, filePath string, data any, cfg ...Config) 
 
 	// Validate file path for security (write variant: no existing-file size
 	// check — the payload being written is what MaxJSONSize governs)
-	if err := p.validateFilePathForWrite(filePath); err != nil {
+	if err := p.validateFilePathForWrite(filePath, cfg...); err != nil {
 		return err
 	}
 
@@ -350,16 +425,30 @@ func (p *Processor) writeFileJSON(op, filePath string, data any, cfg ...Config) 
 		return err
 	}
 
-	// Encode data to JSON
-	config := getConfigOrDefault(cfg...)
-	jsonStr, err := p.EncodeWithConfig(processedData, config)
+	// Encode data to JSON. D-002/R10: forward the caller's cfg verbatim instead
+	// of fabricating a DefaultConfig value — with no cfg, Encode resolves the
+	// processor's baked configuration (D-006), which also keeps M1's
+	// effectiveEncodeMaxSize on the baked MaxJSONSize. (R11 m3: EncodeWithConfig
+	// is the deprecated alias of Encode — call the live name.)
+	jsonStr, err := p.Encode(processedData, cfg...)
 	if err != nil {
 		return err
 	}
 
+	// Permission bits for a newly created file (GEN-001): existing files keep
+	// their permissions (see atomicWriteFile); zero falls back to 0644,
+	// matching os.WriteFile. A per-call cfg overrides the processor setting.
+	mode := os.FileMode(0644)
+	if p.config.SaveFileMode != 0 {
+		mode = p.config.SaveFileMode
+	}
+	if len(cfg) > 0 && cfg[0].SaveFileMode != 0 {
+		mode = cfg[0].SaveFileMode
+	}
+
 	// Write to file atomically (temp + rename) so a crash mid-write cannot
 	// truncate the existing file.
-	if err := atomicWriteFile(filePath, []byte(jsonStr), 0644); err != nil {
+	if err := atomicWriteFile(filePath, []byte(jsonStr), mode); err != nil {
 		return &JsonsError{
 			Op:      op,
 			Message: fmt.Sprintf("failed to write file: %v", err),
@@ -393,9 +482,10 @@ func (p *Processor) SaveToWriter(writer io.Writer, data any, cfg ...Config) erro
 		return err
 	}
 
-	// Encode data to JSON
-	config := getConfigOrDefault(cfg...)
-	jsonStr, err := p.EncodeWithConfig(processedData, config)
+	// Encode data to JSON. D-002/R10: forward cfg verbatim — no-cfg resolves
+	// the baked configuration inside Encode (see writeFileJSON; R11 m3: call
+	// the live name, EncodeWithConfig is its deprecated alias).
+	jsonStr, err := p.Encode(processedData, cfg...)
 	if err != nil {
 		return err
 	}
@@ -527,7 +617,12 @@ func (p *Processor) validateFilePath(filePath string, cfg ...Config) error {
 		return err
 	}
 
-	// Step 6: File size validation (against the effective per-call limit)
+	// Step 6: Directory allowlist on the physical path (GEN-001)
+	if err := p.validateFileDirAllowlist(absPath, cfg...); err != nil {
+		return err
+	}
+
+	// Step 7: File size validation (against the effective per-call limit)
 	return p.validatePathFileSize(absPath, info, p.effectiveReadMaxSize(cfg...))
 }
 
@@ -536,7 +631,9 @@ func (p *Processor) validateFilePath(filePath string, cfg ...Config) error {
 // existing-file size check: the size of the file being replaced is
 // irrelevant to the write, and MaxJSONSize applies to the payload being
 // written (enforced by the encoder), not to the stale target file.
-func (p *Processor) validateFilePathForWrite(filePath string) error {
+// The optional cfg honors a per-call AllowedFileDirs override (GEN-001),
+// matching validateFilePath.
+func (p *Processor) validateFilePathForWrite(filePath string, cfg ...Config) error {
 	if err := validatePathBasic(filePath); err != nil {
 		return err
 	}
@@ -550,8 +647,12 @@ func (p *Processor) validateFilePathForWrite(filePath string) error {
 	if err := validatePathPlatform(absPath); err != nil {
 		return err
 	}
-	_, err = validatePathSymlinks(absPath)
-	return err
+	if _, err := validatePathSymlinks(absPath); err != nil {
+		return err
+	}
+	// Directory allowlist on the physical path (GEN-001) — writes are
+	// restricted exactly like reads when the list is configured.
+	return p.validateFileDirAllowlist(absPath, cfg...)
 }
 
 // validatePathBasic performs basic path validation
@@ -852,6 +953,10 @@ func hasPrefixIgnoreCase(s, prefix string) bool {
 }
 
 // containsConsecutiveDots checks for consecutive dots in any form
+//
+// NOTE (D-002/R8 M5): no production caller — traversal detection is covered by
+// containsBasicTraversalPattern and the encoded-pattern list; retained for
+// tests/future use.
 func containsConsecutiveDots(path string, minCount int) bool {
 	dotCount := 0
 	for _, r := range path {
@@ -1043,7 +1148,11 @@ func NewNDJSONProcessor(cfg ...Config) *NDJSONProcessor {
 	// same): without this a zero-value JSONLMaxLineSize bypassed the clamp and
 	// hit the legacy MaxJSONSize fallback chain, letting NDJSON accept lines
 	// up to 100MB that the StreamJSONL family rejects at 1MB (D-002).
-	config.Validate()
+	//
+	// The error is deliberately discarded: this deprecated constructor cannot
+	// return an error, and only the clamping side effect is wanted. The
+	// StreamJSONL family — its replacement — validates properly.
+	_ = config.Validate() // side effect: clamps JSONL limits into range
 
 	bufferSize := config.JSONLBufferSize
 	if bufferSize <= 0 {
@@ -1071,7 +1180,7 @@ func (np *NDJSONProcessor) ProcessFile(filename string, fn func(lineNum int, obj
 		return err
 	}
 
-	file, err := os.Open(filename)
+	file, err := openValidatedFile(filename)
 	if err != nil {
 		return &JsonsError{Op: "ndjson_process", Message: fmt.Sprintf("failed to open file: %v", err), Err: err}
 	}
@@ -1159,8 +1268,8 @@ func (np *NDJSONProcessor) ProcessReader(reader io.Reader, fn func(lineNum int, 
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
-		var obj map[string]any
-		if err := json.Unmarshal(line, &obj); err != nil {
+		obj, err := decodeJSONLObject(line, np.config.PreserveNumbers)
+		if err != nil {
 			if np.config.JSONLContinueOnErr {
 				continue
 			}

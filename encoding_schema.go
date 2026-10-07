@@ -45,9 +45,12 @@ var (
 //   - ErrSizeLimit: jsonStr exceeds MaxJSONSize
 //   - a JsonsError (errOperationFailed) when schema is nil
 func (p *Processor) ValidateSchema(jsonStr string, schema *Schema, cfg ...Config) ([]ValidationError, error) {
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance — validator + parseJSON (ungoverned callee),
+	// so no nesting.
+	if err := p.beginGovernedOp(); err != nil {
 		return nil, err
 	}
+	defer p.endGovernedOp()
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {

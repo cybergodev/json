@@ -26,6 +26,11 @@ The no-config calls to `Unmarshal` and `Valid` (and the output cap in `Marshal`)
 
 Pass `SkipValidation: true` in a `Config` for stdlib-exact behavior on trusted input.
 
+### Path-Operation Differences (GEN-001)
+
+- `Set` with a root path (`""`, `"."`, or the JSON Pointer root `"/"`) replaces the entire document with the value. It previously failed with "cannot set root value". Code that relied on the error should check the path before calling. Root `Delete` is still rejected — replace the document via `Set` instead.
+- `Config.DetectDuplicateKeys` (opt-in, default off) rejects input objects with repeated keys via `ErrDuplicateKey`. stdlib semantics (last occurrence wins) remain the default and apply to escape-encoding variants of the same key even when the option is on.
+
 ### Extended Signatures (Backward-Compatible)
 
 The following functions accept an optional `cfg ...Config` trailing parameter in addition to the standard `encoding/json` signatures. Calls without the extra argument work identically:
@@ -107,6 +112,7 @@ In addition to standard library errors, the library provides:
 | `ValidationError`| Schema validation error (`Path`, `Message`) |
 
 **Extended Error Variables:**
+
 | Variable | Description |
 |----------|-------------|
 | `ErrSizeLimit` | JSON size exceeds configured limit |

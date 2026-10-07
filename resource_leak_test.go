@@ -76,29 +76,124 @@ func TestProcessorCloseGoroutineCleanup(t *testing.T) {
 	}
 }
 
-// TestProcessorCloseWithTimeout verifies that Close() handles timeout properly
-// and doesn't block indefinitely
-func TestProcessorCloseWithTimeout(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.MaxConcurrency = 5
-	processor, err := New(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
+// TestProcessorCloseCompletes consolidates the four "Close must finish within
+// a timeout" tests — plain close, cache-populated close, close racing
+// in-flight semaphore operations, and ten concurrent closes — into one
+// table-driven test. Each row's closeFn blocks until every close finished.
+func TestProcessorCloseCompletes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping in short mode")
 	}
 
-	// Close should complete within reasonable time
-	done := make(chan error, 1)
-	go func() {
-		done <- processor.Close()
-	}()
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		closeFn func() error
+	}{
+		{
+			name:    "plain close",
+			timeout: 5 * time.Second,
+			closeFn: func() error {
+				cfg := DefaultConfig()
+				cfg.MaxConcurrency = 5
+				p, err := New(cfg)
+				if err != nil {
+					return err
+				}
+				return p.Close()
+			},
+		},
+		{
+			name:    "cache-populated close",
+			timeout: 5 * time.Second,
+			closeFn: func() error {
+				cfg := DefaultConfig()
+				cfg.EnableCache = true
+				cfg.MaxCacheSize = 1000
+				cfg.CacheTTL = 1 * time.Minute
+				p, err := New(cfg)
+				if err != nil {
+					return err
+				}
+				for i := 0; i < 100; i++ {
+					_, _ = p.Get(`{"key": "value"}`, ".")
+				}
+				return p.Close()
+			},
+		},
+		{
+			name:    "close racing in-flight semaphore operations",
+			timeout: 10 * time.Second,
+			closeFn: func() error {
+				cfg := DefaultConfig()
+				cfg.MaxConcurrency = 3
+				p, err := New(cfg)
+				if err != nil {
+					return err
+				}
+				var wg sync.WaitGroup
+				for i := 0; i < 10; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						// These might block waiting for the semaphore.
+						_, _ = p.Get(`{"test": "value"}`, ".")
+					}()
+				}
+				time.Sleep(20 * time.Millisecond)
+				err = p.Close()
+				wg.Wait()
+				return err
+			},
+		},
+		{
+			name:    "ten concurrent closes",
+			timeout: 10 * time.Second,
+			closeFn: func() error {
+				processors := make([]*Processor, 10)
+				for i := range processors {
+					cfg := DefaultConfig()
+					cfg.EnableCache = true
+					p, err := New(cfg)
+					if err != nil {
+						return err
+					}
+					processors[i] = p
+				}
+				var wg sync.WaitGroup
+				var firstErr error
+				var once sync.Once
+				for _, p := range processors {
+					wg.Add(1)
+					go func(proc *Processor) {
+						defer wg.Done()
+						if err := proc.Close(); err != nil {
+							once.Do(func() { firstErr = err })
+						}
+					}(p)
+				}
+				wg.Wait()
+				return firstErr
+			},
+		},
+	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Close returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("Processor.Close() blocked for too long - potential goroutine leak")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() {
+				done <- tt.closeFn()
+			}()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("Close returned error: %v", err)
+				}
+			case <-time.After(tt.timeout):
+				t.Error("Close blocked for too long - potential goroutine leak")
+			}
+		})
 	}
 }
 
@@ -234,49 +329,13 @@ func TestParallelIteratorForEachNoLeak(t *testing.T) {
 }
 
 // ============================================================================
-// CACHE MANAGER CLEANUP TESTS
-// ============================================================================
-
-// TestCacheManagerCloseCleanup verifies that CacheManager.Close() properly
-// waits for cleanup goroutines
-func TestCacheManagerCloseCleanup(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.EnableCache = true
-	cfg.MaxCacheSize = 1000
-	cfg.CacheTTL = 1 * time.Minute
-
-	processor, err := New(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-
-	// Populate cache
-	for i := 0; i < 100; i++ {
-		_, _ = processor.Get(`{"key": "value"}`, ".")
-	}
-
-	// Close should complete without hanging
-	done := make(chan error, 1)
-	go func() {
-		done <- processor.Close()
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Close returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("Processor.Close() with cache blocked for too long")
-	}
-}
-
-// ============================================================================
 // CHANNEL LEAK TESTS
 // ============================================================================
 
-// TestParallelIteratorChannelCleanup verifies that channels created by
-// ParallelIterator are properly cleaned up
+// TestParallelIteratorChannelCleanup drives 50 short-lived ParallelIterators
+// to completion and verifies every element is delivered. (Channel teardown
+// itself is unobservable from here; the hard assertion is iteration
+// correctness — leaked/closed channels would surface as missed elements.)
 func TestParallelIteratorChannelCleanup(t *testing.T) {
 	data := make([]any, 20)
 	for i := range data {
@@ -305,61 +364,8 @@ func TestParallelIteratorChannelCleanup(t *testing.T) {
 	runtime.GC()
 	time.Sleep(50 * time.Millisecond)
 
-	// If channels were leaked, we'd see memory growth
-	// This is a basic sanity check
+	// Settle after GC: keeps the -race allocator steady for the next tests.
 }
-
-// ============================================================================
-// ITERATOR POOL TESTS
-// ============================================================================
-
-// TestIteratorPoolNoLeak verifies that pooled iterators are properly
-// returned to the pool
-func TestSemaphoreDrainOnClose(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.MaxConcurrency = 3
-	processor, err := New(cfg)
-	if err != nil {
-		t.Fatalf("Failed to create processor: %v", err)
-	}
-
-	// Start operations that use the semaphore
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// These might block waiting for semaphore
-			_, _ = processor.Get(`{"test": "value"}`, ".")
-		}()
-	}
-
-	// Give some time for operations to start
-	time.Sleep(20 * time.Millisecond)
-
-	// Close while operations are potentially in progress
-	closeDone := make(chan error, 1)
-	go func() {
-		closeDone <- processor.Close()
-	}()
-
-	select {
-	case err := <-closeDone:
-		if err != nil {
-			t.Errorf("Close returned error: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Error("Close took too long - semaphore drain may be stuck")
-	}
-
-	wg.Wait()
-}
-
-// ============================================================================
-// MEMORY LEAK DETECTION TESTS
-// ============================================================================
-
-// TestNoMemoryGrowthInLoops verifies that repeated operations don't cause
 
 // ============================================================================
 // CONTEXT TIMEOUT TESTS
@@ -482,84 +488,11 @@ func TestParallelIteratorClose(t *testing.T) {
 }
 
 // ============================================================================
-// ASYNC PROCESSOR CLOSE TIMEOUT TESTS
-// ============================================================================
-
-// TestAsyncProcessorCloseTimeout verifies that async processor close
-// has proper timeout protection
-func TestAsyncProcessorCloseTimeout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping in short mode")
-	}
-
-	// Create multiple processors
-	processors := make([]*Processor, 10)
-	for i := range processors {
-		cfg := DefaultConfig()
-		cfg.EnableCache = true
-		p, err := New(cfg)
-		if err != nil {
-			t.Fatalf("Failed to create processor: %v", err)
-		}
-		processors[i] = p
-	}
-
-	// Close all processors concurrently (simulates eviction scenario)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		var wg sync.WaitGroup
-		for _, p := range processors {
-			wg.Add(1)
-			go func(proc *Processor) {
-				defer wg.Done()
-				_ = proc.Close()
-			}(p)
-		}
-		wg.Wait()
-	}()
-
-	select {
-	case <-done:
-		// All closed successfully
-	case <-time.After(10 * time.Second):
-		t.Error("Async close took too long - potential goroutine leak")
-	}
-}
-
-// ============================================================================
 // FIX VERIFICATION TESTS (2026-04-11 resource leak audit)
 // ============================================================================
-
-// TestStaleProcessorCloseHasTimeout verifies that the stale processor close
-// goroutine in getProcessorWithConfig is protected by a timeout (Fix #1).
-func TestStaleProcessorCloseHasTimeout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping in short mode")
-	}
-
-	// Fill the cache to capacity to trigger eviction
-	cfg := DefaultConfig()
-	for i := 0; i < configProcessorCacheLimit+10; i++ {
-		c := cfg
-		c.MaxConcurrency = i + 1 // unique config key
-		_, err := getProcessorWithConfig(c)
-		if err != nil {
-			t.Fatalf("getProcessorWithConfig failed: %v", err)
-		}
-	}
-
-	// Eviction runs asynchronously; verify goroutines don't accumulate
-	initial := countGoroutines()
-	time.Sleep(200 * time.Millisecond)
-	after := countGoroutines()
-
-	leaked := after - initial
-	if leaked > 3 {
-		t.Errorf("Goroutine leak after cache eviction: before=%d after=%d leaked=%d",
-			initial, after, leaked)
-	}
-}
+// The former TestStaleProcessorCloseHasTimeout was removed in the FIX-001
+// consolidation: its eviction-churn goroutine-delta assertion is subsumed by
+// TestEvictionGoroutinesBounded below (5 eviction rounds, same tolerance).
 
 // TestClearStructEncoderCache verifies that ClearStructEncoderCache properly
 // reclaims memory from the global struct encoder cache (Fix #2).
@@ -603,13 +536,17 @@ func TestClearPathTypeCacheOnProcessorClose(t *testing.T) {
 		t.Fatalf("Close returned error: %v", err)
 	}
 
-	// Verify cache is empty by checking shard sizes
-	// (We can't directly access shards, so verify no panic and clean state)
-	processor2, err := New(DefaultConfig())
-	if err != nil {
-		t.Fatalf("Failed to create second processor: %v", err)
+	// Shard maps are not directly inspectable, but the observable contract of
+	// "Close clears the cache" is that classification still works afterwards:
+	// a cleared cache must recompute the same pathType for every path class.
+	if got := getPathType("simple"); got != pathTypeSimple {
+		t.Errorf("post-Close getPathType(simple) = %d, want pathTypeSimple", got)
 	}
-	_ = processor2.Close()
+	for _, path := range []string{"nested.key", "array[0]", "deep.nested.path"} {
+		if got := getPathType(path); got != pathTypeComplex {
+			t.Errorf("post-Close getPathType(%q) = %d, want pathTypeComplex", path, got)
+		}
+	}
 }
 
 // TestHooksClearedOnClose verifies that hooks slice is nil'd on Close(),

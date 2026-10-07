@@ -1,35 +1,7 @@
-// Package json provides a high-performance, thread-safe JSON processing library
-// with 100% encoding/json compatibility and advanced path operations.
-//
-// Key Features:
-//   - 100% encoding/json compatibility - drop-in replacement
-//   - High-performance path operations with smart caching
-//   - Thread-safe concurrent operations
-//   - Type-safe generic operations with Go generics
-//   - Memory-efficient resource pooling
-//   - Production-ready error handling and validation
-//
-// Basic Usage:
-//
-//	// Simple operations (100% compatible with encoding/json)
-//	data, err := json.Marshal(value)
-//	err = json.Unmarshal(data, &target)
-//
-//	// Advanced path operations
-//	value, err := json.Get(`{"user":{"name":"John"}}`, "user.name")
-//	result, err := json.Set(`{"user":{}}`, "user.age", 30)
-//
-//	// Type-safe operations
-//	name := json.GetString(jsonStr, "user.name", "")
-//	age := json.GetInt(jsonStr, "user.age", 0)
-//
-//	// Advanced processor for complex operations
-//	processor := json.New() // Use default config
-//	defer processor.Close()
-//	value, err := processor.Get(jsonStr, "complex.path[0].field")
-
-// The package documentation lives in doc.go; this header is a plain comment
-// so godoc does not concatenate two package comments.
+// The package documentation lives in doc.go. This header is a plain comment
+// (not a doc comment) so godoc does not concatenate two package comments.
+// D-002/R8 (m6): the duplicated package-header text that used to sit above
+// was removed — doc.go is the single source of truth.
 package json
 
 import (
@@ -335,12 +307,29 @@ func StreamLinesInto[T any](reader io.Reader, fn func(lineNum int, data T) error
 		if memLimit > 0 {
 			totalBytes += int64(len(line))
 			if totalBytes > memLimit {
-				return nil, fmt.Errorf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum)
+				// D-002/R8 (m2): ErrSizeLimit sentinel, matching NDJSONProcessor
+				// and the StreamJSONL family.
+				return nil, &JsonsError{
+					Op:      "stream_lines_into",
+					Message: fmt.Sprintf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum),
+					Err:     ErrSizeLimit,
+				}
 			}
 		}
 
 		var data T
-		if err := p.Unmarshal(line, &data); err != nil {
+		// D-002/R9 (m4): honor PreserveNumbers — the no-cfg Unmarshal is
+		// deliberately stdlib-exact (float64), so route through the cfg'd form
+		// when (and only when) preservation is configured. The cfg'd path
+		// validates against the same config the processor was built from, so
+		// validation behavior is unchanged.
+		var err error
+		if configPtr.PreserveNumbers {
+			err = p.Unmarshal(line, &data, *configPtr)
+		} else {
+			err = p.Unmarshal(line, &data)
+		}
+		if err != nil {
 			if configPtr.JSONLContinueOnErr {
 				continue
 			}
@@ -377,6 +366,9 @@ type JSONLStats struct {
 // JSONLWriter writes JSON Lines (NDJSON) format to an io.Writer.
 // Each value is written as a single line of JSON, suitable for
 // log files, data pipelines, and streaming applications.
+//
+// NOTE (P-002): JSONLWriter is NOT safe for concurrent use — its error/counter
+// state is unguarded. Use one writer per goroutine or serialize Write calls.
 //
 // Example:
 //
@@ -466,14 +458,15 @@ func (w *JSONLWriter) Write(data any) error {
 		}
 	}
 
-	// Write encoded JSON + newline
-	n, err := w.writer.Write(internal.StringToBytes(encoded))
-	if err != nil {
-		w.err = err
-		return err
-	}
-	w.bytesOut += int64(n)
-	n, err = w.writer.Write(jsonNewline)
+	// Write encoded JSON + newline as ONE Write call (D-002/R9 m10): the two
+	// writes doubled the syscalls on unbuffered writers (e.g. a bare os.File).
+	// The line is assembled in a pooled buffer, so combining costs one pooled
+	// copy instead of an allocation.
+	buf := internal.GetEncoderBuffer()
+	defer internal.PutEncoderBuffer(buf)
+	buf.WriteString(encoded)
+	buf.WriteByte('\n')
+	n, err := w.writer.Write(buf.Bytes())
 	if err != nil {
 		w.err = err
 		return err
@@ -525,6 +518,9 @@ func (w *JSONLWriter) WriteRaw(line []byte) error {
 		return w.err
 	}
 
+	// NOTE (D-002/R9 m10): deliberately NOT combined with the trailing newline
+	// into a single Write — WriteRaw's contract is zero-copy passthrough of
+	// pre-encoded lines, and combining would force a full copy of every line.
 	n, err := w.writer.Write(line)
 	if err != nil {
 		w.err = err

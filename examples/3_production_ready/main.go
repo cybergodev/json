@@ -24,7 +24,7 @@ import (
 // - The global processor (SetGlobalProcessor / ShutdownGlobalProcessor)
 // - Health status reporting
 //
-// Run: go run -tags=example examples/3_production_ready.go
+// Run: go run -tags=example ./examples/3_production_ready
 
 func main() {
 	fmt.Println("JSON Library - Production Ready")
@@ -88,7 +88,10 @@ func demonstrateConfigurations(testData string) {
 	perfConfig.CacheTTL = 30 * time.Minute
 	perfConfig.ParallelThreshold = 3
 	perfConfig.EnableMetrics = true
-	perfConfig.EnableValidation = false // Skip validation for speed
+	// Skip full security validation for trusted input (D-002/R10: the old
+	// EnableValidation=false here was a no-op — the field is deprecated and
+	// never consulted; SkipValidation is the knob that actually skips).
+	perfConfig.SkipValidation = true
 	perfProc, _ := json.New(perfConfig) // OK: DefaultConfig-derived, always valid
 	defer perfProc.Close()
 
@@ -258,10 +261,10 @@ func demonstrateResourceManagement(testData string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Using unified Config for operation
+	// Using unified Config for operation (StrictMode was removed here: the
+	// field is deprecated and never consulted — D-002/R10)
 	cfg := json.DefaultConfig()
 	cfg.CacheResults = true
-	cfg.StrictMode = false
 
 	result, err := processor.GetWithContext(ctx, testData, "config.features", cfg)
 	if err != nil {
@@ -288,7 +291,8 @@ func demonstrateMonitoring(testData string) {
 	config.MaxCacheSize = 1000
 	config.CacheTTL = 10 * time.Minute
 	config.EnableMetrics = true
-	config.EnableHealthCheck = true
+	// (EnableHealthCheck was removed here: deprecated and never consulted —
+	// GetHealthStatus works regardless. D-002/R10)
 	processor, _ := json.New(config) // OK: DefaultConfig-derived
 	defer processor.Close()
 

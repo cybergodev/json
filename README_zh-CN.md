@@ -855,28 +855,31 @@ if errors.As(err, &jsonErr) {
 
 | 文件 | 描述 |
 |------|------|
-| [1_basic_usage.go](examples/1_basic_usage.go) | 核心操作 |
-| [2_advanced_features.go](examples/2_advanced_features.go) | 复杂路径、嵌套提取 |
-| [3_production_ready.go](examples/3_production_ready.go) | 线程安全模式 |
-| [4_error_handling.go](examples/4_error_handling.go) | 错误处理模式 |
-| [5_encoding_options.go](examples/5_encoding_options.go) | 编码配置 |
-| [6_validation.go](examples/6_validation.go) | Schema 验证 |
-| [7_type_conversion.go](examples/7_type_conversion.go) | 类型转换 |
-| [8_helper_functions.go](examples/8_helper_functions.go) | 辅助工具 |
-| [9_iterator_functions.go](examples/9_iterator_functions.go) | 迭代模式 |
-| [10_file_operations.go](examples/10_file_operations.go) | 文件 I/O |
-| [11_with_defaults.go](examples/11_with_defaults.go) | 默认值处理 |
-| [12_advanced_delete.go](examples/12_advanced_delete.go) | 删除操作 |
-| [13_batch_operations.go](examples/13_batch_operations.go) | 批量处理与缓存 |
-| [14_streaming_iterators.go](examples/14_streaming_iterators.go) | 流式迭代器 |
-| [15_jsonl_processing.go](examples/15_jsonl_processing.go) | JSONL 格式处理 |
-| [16_hooks_and_security.go](examples/16_hooks_and_security.go) | 钩子与安全模式 |
-| [17_advanced_patterns.go](examples/17_advanced_patterns.go) | PreParse、CompiledPath、高级模式 |
+| [1_basic_usage](examples/1_basic_usage/main.go) | 核心操作 |
+| [2_advanced_features](examples/2_advanced_features/main.go) | 复杂路径、嵌套提取 |
+| [3_production_ready](examples/3_production_ready/main.go) | 线程安全模式 |
+| [4_error_handling](examples/4_error_handling/main.go) | 错误处理模式 |
+| [5_encoding_options](examples/5_encoding_options/main.go) | 编码配置 |
+| [6_validation](examples/6_validation/main.go) | Schema 验证 |
+| [7_type_conversion](examples/7_type_conversion/main.go) | 类型转换 |
+| [8_helper_functions](examples/8_helper_functions/main.go) | 辅助工具 |
+| [9_iterator_functions](examples/9_iterator_functions/main.go) | 迭代模式 |
+| [10_file_operations](examples/10_file_operations/main.go) | 文件 I/O |
+| [11_with_defaults](examples/11_with_defaults/main.go) | 默认值处理 |
+| [12_advanced_delete](examples/12_advanced_delete/main.go) | 删除操作 |
+| [13_batch_operations](examples/13_batch_operations/main.go) | 批量处理与缓存 |
+| [14_streaming_iterators](examples/14_streaming_iterators/main.go) | 流式迭代器 |
+| [15_jsonl_processing](examples/15_jsonl_processing/main.go) | JSONL 格式处理 |
+| [16_hooks_and_security](examples/16_hooks_and_security/main.go) | 钩子与安全模式 |
+| [17_advanced_patterns](examples/17_advanced_patterns/main.go) | PreParse、CompiledPath、高级模式 |
 
 ```bash
 # 运行单个示例（需要 build tag）
-go run -tags=example examples/1_basic_usage.go
-go run -tags=example examples/2_advanced_features.go
+go run -tags=example ./examples/1_basic_usage
+go run -tags=example ./examples/2_advanced_features
+
+# 一次性编译检查全部示例（与 CI 门禁一致）
+go vet -tags example ./examples/...
 ```
 
 ---

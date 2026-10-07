@@ -103,6 +103,8 @@ func IsComplexPath(path string) bool {
 
 // IsExtractionPath checks if a path contains extraction patterns that trigger
 // multi-container (distributed) operations: }[, }:, }{, {flat:
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func IsExtractionPath(path string) bool {
 	extractionPatterns := []string{
 		"}[",
@@ -121,6 +123,9 @@ func IsExtractionPath(path string) bool {
 }
 
 // IsExtractionSegment checks if a segment triggers extraction operations
+//
+// NOTE (D-002/R8 M5): no production caller — call sites compare
+// segment.Type == ExtractSegment directly; retained for tests/future use.
 func IsExtractionSegment(segment PathSegment) bool {
 	return segment.Type == ExtractSegment
 }
@@ -344,6 +349,8 @@ func SplitPathIntoSegments(path string, segments []PathSegment) []PathSegment {
 }
 
 // ReconstructPath reconstructs a path string from segments
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func ReconstructPath(segments []PathSegment) string {
 	if len(segments) == 0 {
 		return ""

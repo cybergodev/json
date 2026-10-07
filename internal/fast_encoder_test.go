@@ -116,19 +116,6 @@ func TestFastEncoder_Reset(t *testing.T) {
 // EncodeValue TESTS
 // ============================================================================
 
-func TestFastEncoder_EncodeValue_Nil(t *testing.T) {
-	e := GetEncoder()
-	defer PutEncoder(e)
-
-	err := e.EncodeValue(nil)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if string(e.buf) != "null" {
-		t.Errorf("expected 'null', got %s", string(e.buf))
-	}
-}
-
 func TestFastEncoder_EncodeValue_String(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -532,28 +519,8 @@ func TestFastEncoder_EncodeFloat(t *testing.T) {
 			e := GetEncoder()
 			defer PutEncoder(e)
 
-			e.EncodeFloat(tt.input, tt.bits)
-
-			// For non-special values, verify the result can be parsed back
-			if tt.input != tt.input { // NaN check
-				if string(e.buf) != "NaN" {
-					t.Errorf("expected 'NaN', got %s", string(e.buf))
-				}
-				return
-			}
-
-			if math.IsInf(tt.input, 1) {
-				if string(e.buf) != "Infinity" {
-					t.Errorf("expected 'Infinity', got %s", string(e.buf))
-				}
-				return
-			}
-
-			if math.IsInf(tt.input, -1) {
-				if string(e.buf) != "-Infinity" {
-					t.Errorf("expected '-Infinity', got %s", string(e.buf))
-				}
-				return
+			if err := e.EncodeFloat(tt.input, tt.bits); err != nil {
+				t.Fatalf("EncodeFloat(%v) errored: %v", tt.input, err)
 			}
 
 			// For regular floats, just verify it's a valid number representation
@@ -580,15 +547,15 @@ func TestFastEncoder_EncodeFloat(t *testing.T) {
 }
 
 func TestFastEncoder_EncodeFloat_SpecialValues(t *testing.T) {
-	// SECURITY FIX: NaN and Infinity are now encoded as null for JSON compatibility
-	// JSON standard (RFC 8259) does not support these special values
+	// D-002/R11 (m4): NaN/Inf are not representable in JSON (RFC 8259);
+	// EncodeFloat rejects them like encoding/json's UnsupportedValueError
+	// instead of emitting "null" (the pre-R11 behavior).
 	t.Run("NaN", func(t *testing.T) {
 		e := GetEncoder()
 		defer PutEncoder(e)
 
-		e.EncodeFloat(math.NaN(), 64)
-		if string(e.buf) != "null" {
-			t.Errorf("expected 'null' for JSON compatibility, got %s", string(e.buf))
+		if err := e.EncodeFloat(math.NaN(), 64); err == nil {
+			t.Error("expected error for NaN, got nil")
 		}
 	})
 
@@ -596,9 +563,8 @@ func TestFastEncoder_EncodeFloat_SpecialValues(t *testing.T) {
 		e := GetEncoder()
 		defer PutEncoder(e)
 
-		e.EncodeFloat(math.Inf(1), 64)
-		if string(e.buf) != "null" {
-			t.Errorf("expected 'null' for JSON compatibility, got %s", string(e.buf))
+		if err := e.EncodeFloat(math.Inf(1), 64); err == nil {
+			t.Error("expected error for +Inf, got nil")
 		}
 	})
 
@@ -606,9 +572,17 @@ func TestFastEncoder_EncodeFloat_SpecialValues(t *testing.T) {
 		e := GetEncoder()
 		defer PutEncoder(e)
 
-		e.EncodeFloat(math.Inf(-1), 64)
-		if string(e.buf) != "null" {
-			t.Errorf("expected 'null' for JSON compatibility, got %s", string(e.buf))
+		if err := e.EncodeFloat(math.Inf(-1), 64); err == nil {
+			t.Error("expected error for -Inf, got nil")
+		}
+	})
+
+	t.Run("Float32NaN", func(t *testing.T) {
+		e := GetEncoder()
+		defer PutEncoder(e)
+
+		if err := e.EncodeFloat(float64(float32(math.NaN())), 32); err == nil {
+			t.Error("expected error for float32 NaN, got nil")
 		}
 	})
 }
@@ -855,7 +829,9 @@ func TestFastEncoder_EncodeFloatSlice(t *testing.T) {
 	defer PutEncoder(e)
 
 	input := []float64{1.1, 2.2, 3.3}
-	e.EncodeFloatSlice(input)
+	if err := e.EncodeFloatSlice(input); err != nil {
+		t.Fatalf("EncodeFloatSlice errored: %v", err)
+	}
 
 	var result []float64
 	err := json.Unmarshal(e.buf, &result)
@@ -869,7 +845,9 @@ func TestFastEncoder_EncodeFloat32Slice(t *testing.T) {
 	defer PutEncoder(e)
 
 	input := []float32{1.1, 2.2, 3.3}
-	e.EncodeFloat32Slice(input)
+	if err := e.EncodeFloat32Slice(input); err != nil {
+		t.Fatalf("EncodeFloat32Slice errored: %v", err)
+	}
 
 	var result []float32
 	err := json.Unmarshal(e.buf, &result)
@@ -888,12 +866,42 @@ func TestFastEncoder_EncodeTime(t *testing.T) {
 
 	// Use a fixed time for reproducible tests
 	tm := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
-	e.EncodeTime(tm)
+	if err := e.EncodeTime(tm); err != nil {
+		t.Fatalf("EncodeTime errored: %v", err)
+	}
 
 	expected := `"2024-01-15T10:30:00Z"`
 	if string(e.buf) != expected {
 		t.Errorf("expected %s, got %s", expected, string(e.buf))
 	}
+}
+
+func TestFastEncoder_EncodeTime_YearOutOfRange(t *testing.T) {
+	// D-002/R11 (M3): RFC3339 cannot represent years outside [0,9999];
+	// encoding/json errors for them, so the fast path must too instead of
+	// emitting an invalid 5-digit-year timestamp with a nil error.
+	for _, tc := range []struct {
+		name string
+		tm   time.Time
+	}{
+		{"year 10000", time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{"negative year", time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := GetEncoder()
+			defer PutEncoder(e)
+			if err := e.EncodeTime(tc.tm); err == nil {
+				t.Error("expected year-out-of-range error, got nil")
+			}
+		})
+	}
+	t.Run("boundary years ok", func(t *testing.T) {
+		e := GetEncoder()
+		defer PutEncoder(e)
+		if err := e.EncodeTime(time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)); err != nil {
+			t.Errorf("year 9999 should encode: %v", err)
+		}
+	})
 }
 
 // ============================================================================
@@ -1541,4 +1549,339 @@ func TestFastEncoderPoolStateNeverLeaks(t *testing.T) {
 			PutEncoder(fresh)
 		}
 	})
+}
+
+// ===========================================================================
+// Fast-encoder boundary tests (consolidated from fast_encoder_boundary_test.go)
+// ===========================================================================
+// ============================================================================
+// Boundary tests for internal/fast_encoder.go low-coverage paths.
+// ============================================================================
+
+// --- ClearStructEncoderCache (fast_encoder.go:1435, 0% coverage) ---
+
+func TestClearStructEncoderCache(t *testing.T) {
+	type cached struct {
+		A int    `json:"a"`
+		B string `json:"b"`
+	}
+	// Encoding a struct populates the struct-encoder cache via getEncodeFn.
+	if _, err := FastMarshal(cached{A: 1, B: "x"}); err != nil {
+		t.Fatalf("FastMarshal err: %v", err)
+	}
+	// Clearing must not panic and must leave the cache usable.
+	ClearStructEncoderCache()
+	if _, err := FastMarshal(cached{A: 2, B: "y"}); err != nil {
+		t.Fatalf("FastMarshal after clear err: %v", err)
+	}
+}
+
+// --- isEmptyValue (fast_encoder.go:1580, 0% coverage) ---
+
+func TestIsEmptyValue(t *testing.T) {
+	tests := []struct {
+		name string
+		v    any
+		want bool
+	}{
+		{"zero int", 0, true},
+		{"nonzero int", 42, false},
+		{"empty string", "", true},
+		{"nonempty string", "x", false},
+		{"false", false, true},
+		{"true", true, false},
+		{"nil pointer", (*int)(nil), true},
+		{"non-nil pointer", ptrInt(7), false},
+		{"zero float", float64(0), true},
+		{"nan", math.NaN(), false},
+		{"empty slice", []int{}, true},
+		{"nonempty slice", []int{1}, false},
+		{"empty map", map[string]int{}, true},
+		{"nonempty map", map[string]int{"a": 1}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isEmptyValue(reflect.ValueOf(tt.v)); got != tt.want {
+				t.Errorf("isEmptyValue(%v) = %v, want %v", tt.v, got, tt.want)
+			}
+		})
+	}
+}
+
+func ptrInt(n int) *int { return &n }
+
+// --- FastParseFloat special-value rejection (fast_encoder.go:1298, 69%) ---
+
+func TestFastParseFloat_SpecialValues(t *testing.T) {
+	tests := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"1.5", false},
+		{"42", false},
+		{"-3.14", false},
+		{"nan", true},
+		{"NaN", true},
+		{"inf", true},
+		{"Infinity", true},
+		{"-inf", true},
+		{"+nan", true},
+		{"-Inf", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			_, err := FastParseFloat([]byte(tt.in))
+			if tt.wantErr && err == nil {
+				t.Errorf("FastParseFloat(%q): expected error, got nil", tt.in)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("FastParseFloat(%q): unexpected error: %v", tt.in, err)
+			}
+		})
+	}
+}
+
+// --- getEncodeFn diverse field types (fast_encoder.go:1444, 5% coverage) ---
+
+func TestFastEncoder_DiverseFieldTypes(t *testing.T) {
+	type diverse struct {
+		I8  int8    `json:"i8"`
+		I16 int16   `json:"i16"`
+		I32 int32   `json:"i32"`
+		I64 int64   `json:"i64"`
+		U8  uint8   `json:"u8"`
+		U16 uint16  `json:"u16"`
+		U32 uint32  `json:"u32"`
+		U64 uint64  `json:"u64"`
+		F32 float32 `json:"f32"`
+		F64 float64 `json:"f64"`
+		B   bool    `json:"b"`
+		S   string  `json:"s"`
+	}
+	v := diverse{
+		I8: -8, I16: -16, I32: -32, I64: -64,
+		U8: 8, U16: 16, U32: 32, U64: 64,
+		F32: 1.5, F64: 2.5, B: true, S: "hi",
+	}
+	got, err := FastMarshal(v)
+	if err != nil {
+		t.Fatalf("FastMarshal err: %v", err)
+	}
+	want, _ := json.Marshal(v)
+	if string(got) != string(want) {
+		t.Errorf("diverse types mismatch:\n got %s\nwant %s", got, want)
+	}
+}
+
+// --- EncodeArray error propagation (fast_encoder.go:980, 69%) ---
+
+func TestFastEncoder_EncodeArray_ErrorPropagation(t *testing.T) {
+	e := GetEncoder()
+	defer PutEncoder(e)
+	// An invalid json.Number inside an array forces EncodeValue to error,
+	// which EncodeArray must propagate.
+	err := e.EncodeArray([]any{json.Number("not-a-number")})
+	if err == nil {
+		t.Error("expected EncodeArray to propagate error for invalid json.Number")
+	}
+}
+
+// --- GetStructEncoder + getEncodeFn (fast_encoder.go:1385/1444, 5% coverage) ---
+//
+// GetStructEncoder is exported public API; calling it builds per-field
+// encoders via getEncodeFn for every field type, and populates the cache that
+// ClearStructEncoderCache empties.
+
+func TestGetStructEncoder_DiverseFields(t *testing.T) {
+	type nested struct {
+		X int `json:"x"`
+	}
+	type fields struct {
+		I8  int8           `json:"i8"`
+		I64 int64          `json:"i64"`
+		U8  uint8          `json:"u8"`
+		U64 uint64         `json:"u64"`
+		F32 float32        `json:"f32"`
+		F64 float64        `json:"f64"`
+		B   bool           `json:"b"`
+		S   string         `json:"s"`
+		Sl  []int          `json:"sl"`
+		M   map[string]int `json:"m"`
+		P   *int           `json:"p"`
+		N   nested         `json:"n"`
+	}
+	ft := reflect.TypeOf(fields{})
+	info := GetStructEncoder(ft)
+	if len(info) != 12 {
+		t.Fatalf("GetStructEncoder returned %d fields, want 12", len(info))
+	}
+	// Cached lookup returns the same entry without rebuilding.
+	if info2 := GetStructEncoder(ft); len(info2) != len(info) {
+		t.Error("cached GetStructEncoder returned a different field count")
+	}
+	// Clear empties the cache; a fresh rebuild still yields the same shape.
+	ClearStructEncoderCache()
+	if info3 := GetStructEncoder(ft); len(info3) != 12 {
+		t.Fatalf("after clear, GetStructEncoder returned %d fields, want 12", len(info3))
+	}
+}
+
+// --- EncodeValue top-level type branches (fast_encoder.go:155, 71% coverage) ---
+
+func TestFastEncoder_TopLevelValues(t *testing.T) {
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		v    any
+	}{
+		{"int8", int8(8)},
+		{"int16", int16(16)},
+		{"int32", int32(32)},
+		{"uint8", uint8(8)},
+		{"uint16", uint16(16)},
+		{"uint32", uint32(32)},
+		{"float32", float32(1.5)},
+		{"[]int", []int{1, 2, 3}},
+		{"[]int64", []int64{1, 2}},
+		{"[]float64", []float64{1.5, 2.5}},
+		{"[]byte", []byte("hello")},
+		{"map[string]int64", map[string]int64{"a": 1}},
+		{"map[string]float64", map[string]float64{"a": 1.5}},
+		{"time", now},
+		{"json.Number", json.Number("42")},
+		{"json.RawMessage", json.RawMessage(`{"k":1}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FastMarshal(tt.v)
+			if err != nil {
+				t.Fatalf("FastMarshal(%s) err: %v", tt.name, err)
+			}
+			want, werr := json.Marshal(tt.v)
+			if werr != nil {
+				t.Fatalf("stdlib marshal(%s) err: %v", tt.name, werr)
+			}
+			if string(got) != string(want) {
+				t.Errorf("%s mismatch:\n got %s\nwant %s", tt.name, got, want)
+			}
+		})
+	}
+}
+
+// --- EncodeStringSlice large pre-allocation (fast_encoder.go:1008, 58%) ---
+
+func TestFastEncoder_EncodeStringSlice_Large(t *testing.T) {
+	e := GetEncoder()
+	defer PutEncoder(e)
+	// >8 elements exercises the large-slice pre-allocation path.
+	big := make([]string, 20)
+	for i := range big {
+		big[i] = "x"
+	}
+	e.EncodeStringSlice(big)
+	want, _ := json.Marshal(big)
+	if string(e.buf) != string(want) {
+		t.Errorf("EncodeStringSlice mismatch:\n got %s\nwant %s", e.buf, want)
+	}
+}
+
+// --- EncodeBase64 buffer growth (fast_encoder.go:1123, 70%) ---
+
+func TestFastEncoder_EncodeBase64_Large(t *testing.T) {
+	e := GetEncoder()
+	defer PutEncoder(e)
+	// Larger than the encoder's initial 512-byte buffer forces capacity growth.
+	big := make([]byte, 1024)
+	for i := range big {
+		big[i] = byte(i)
+	}
+	e.EncodeBase64(big)
+	want, _ := json.Marshal(big)
+	if string(e.buf) != string(want) {
+		t.Errorf("EncodeBase64 mismatch:\n got %s\nwant %s", e.buf, want)
+	}
+}
+
+// --- getEncodeFn closure bodies (fast_encoder.go:1678, 24% coverage) ---
+//
+// GetStructEncoder builds per-field encoders via getEncodeFn, but the closures
+// only execute when the field is encoded. Encode every field kind directly —
+// populated AND zero values (nil pointer/map/slice/[]byte hit the "null"
+// branches) — and compare against encoding/json. Types without a specialized
+// encoder get nil EncodeFn; the caller then uses EncodeValue, mirroring the
+// reflect.Struct consumer.
+
+func TestGetEncodeFn_FieldClosures(t *testing.T) {
+	type inner struct {
+		X int `json:"x"`
+	}
+	type diverse struct {
+		I8    int8               `json:"i8"`
+		I64   int64              `json:"i64"`
+		U8    uint8              `json:"u8"`
+		U64   uint64             `json:"u64"`
+		Up    uintptr            `json:"up"`
+		F32   float32            `json:"f32"`
+		F64   float64            `json:"f64"`
+		B     bool               `json:"b"`
+		S     string             `json:"s"`
+		Bs    []byte             `json:"bs"`
+		Sl    []int              `json:"sl"`
+		MSS   map[string]string  `json:"mss"`
+		MSI   map[string]int     `json:"msi"`
+		MSI64 map[string]int64   `json:"msi64"`
+		MSF   map[string]float64 `json:"msf"`
+		P     *int               `json:"p"`
+		N     inner              `json:"n"`
+	}
+	n := 7
+	zero := diverse{}
+	full := diverse{
+		I8: -8, I64: -64, U8: 8, U64: 64, Up: 3, F32: 1.5, F64: 2.5,
+		B: true, S: "hi",
+		Bs:    []byte("ab"),
+		Sl:    []int{1},
+		MSS:   map[string]string{"k": "v"},
+		MSI:   map[string]int{"k": 1},
+		MSI64: map[string]int64{"k": 1},
+		MSF:   map[string]float64{"k": 1.5},
+		P:     &n,
+		N:     inner{X: 9},
+	}
+
+	for _, v := range []diverse{full, zero} {
+		rv := reflect.ValueOf(v)
+		rt := rv.Type()
+		fields := GetStructEncoder(rt)
+		if len(fields) != rt.NumField() {
+			t.Fatalf("GetStructEncoder returned %d fields, want %d", len(fields), rt.NumField())
+		}
+
+		for _, f := range fields {
+			fv := rv.Field(f.Index)
+			want, werr := json.Marshal(fv.Interface())
+			if werr != nil {
+				t.Fatalf("stdlib marshal field %s err: %v", f.Name, werr)
+			}
+
+			e := GetEncoder()
+			var err error
+			if f.EncodeFn != nil {
+				err = f.EncodeFn(e, fv)
+			} else {
+				// Production contract for types without a specialized encoder.
+				err = e.EncodeValue(fv.Interface())
+			}
+			got := string(e.Bytes())
+			PutEncoder(e)
+
+			if err != nil {
+				t.Errorf("field %s (%s): %v", f.Name, f.Type, err)
+				continue
+			}
+			if got != string(want) {
+				t.Errorf("field %s (%s) mismatch:\n got %s\nwant %s", f.Name, f.Type, got, want)
+			}
+		}
+	}
 }

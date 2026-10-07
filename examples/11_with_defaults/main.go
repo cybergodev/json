@@ -17,7 +17,7 @@ import (
 // - GetTyped[T] — type-safe read returning T directly (no error)
 // - Practical use cases
 //
-// Run: go run -tags=example examples/11_with_defaults.go
+// Run: go run -tags=example ./examples/11_with_defaults
 
 func main() {
 	fmt.Println("JSON Library - With Defaults")

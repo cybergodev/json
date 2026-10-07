@@ -1,11 +1,14 @@
 package json
 
 import (
+	"context"
 	"encoding/json"
 	stdjson "encoding/json"
+	"errors"
 	"io"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,12 +26,29 @@ import (
 //	Round 4 — C1–C4: Number preservation, non-BMP escapes, CompiledPath
 //	          reverse slice, parallel iterator.
 //	Round 6 — map-value collection determinism and scan-window security.
+//	Round 8 — C1/C2/M1/M3/M4/m2: no-cfg PreserveNumbers honored on the parse
+//	          funnel (Get/Set/Delete/ParseAny), Delete fast-path guard, per-call
+//	          MaxJSONSize on encode output, rate-limit wiring, MaxConcurrency
+//	          0→default, JSONL mem-limit ErrSizeLimit sentinel.
+//	Round 9 — m3/m4/m9-m12: governance coverage for Parse/Valid/PreParse/
+//	          *FromParsed/Prettify/Compact/ValidateSchema (+CompareJSON via
+//	          p.Marshal), JSONL engines honor PreserveNumbers, root-array
+//	          extension explicit error, JSONLWriter single-write.
+//	Round 10 — 回查轮: no-cfg baked encode limits (MarshalIndent/SaveToWriter/
+//	          CompareJSON — M1 regression fix), convertTo* handle library
+//	          Number, SetMultiple rate-limit gate, parallel-engine mem cap,
+//	          SetFromParsed baked CreatePaths, baked CacheResults.
+//	Round 11 — C1/M1–M3/m4: decoder paths reject trailing garbage,
+//	          GetMultiple governance, mutation output size limit,
+//	          EncodeTime year-range guard, EncodeFloat NaN/Inf rejection.
 //
 // Formerly split across regression_test.go, d002_round2_regression_test.go,
 // d002_round4_verify_test.go, and d002_round6_regression_test.go; consolidated
 // into this single file on 2026-08-30 (test content preserved verbatim).
-// asStr/d002fmt live in the shared-helpers section because rounds 1 and 2 both
-// use them; round-6 helpers stay inside their section.
+// regression_round10_test.go and regression_round11_test.go were merged in on
+// 2026-10-04, likewise verbatim. asStr/d002fmt live in the shared-helpers
+// section because rounds 1 and 2 both use them; round-6 helpers stay inside
+// their section.
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -163,10 +183,13 @@ func TestD002_StreamingDecoder_EnforcesMaxBytes(t *testing.T) {
 	}
 }
 
-// M1: cache Get must agree with Set on long (>MaxCacheKeyLength) keys.
+// M1: cache Get must agree with Set on long keys. Struct keys (P-001) carry
+// the path as a plain field, so a >MaxCacheKeyLength path round-trips exactly —
+// the pre-struct string-key bug (Set and Get truncating/sharding differently)
+// is now structurally impossible, and this test pins that.
 func TestD002_Cache_LongKeyRoundTrip(t *testing.T) {
 	cm := internal.NewCacheManager(true, 10000, 0)
-	longKey := strings.Repeat("k", 2048) // > MaxCacheKeyLength (1024)
+	longKey := internal.CacheKey{Op: "get", JSONHash: 42, Path: strings.Repeat("k", 2048)} // > MaxCacheKeyLength (1024)
 	cm.Set(longKey, "hit")
 	v, ok := cm.Get(longKey)
 	if !ok {
@@ -1113,14 +1136,15 @@ func TestD002Round7_MutationOpsCounted(t *testing.T) {
 	}
 }
 
-// TestD002Round7_CacheDeleteLongKey pins the CacheManager.Delete fix: keys
-// longer than MaxCacheKeyLength are stored by Set under a truncated key, so
-// Delete must apply the same truncation or the entry survives invalidation.
+// TestD002Round7_CacheDeleteLongKey pins the long-key Delete contract. With
+// struct keys (P-001) there is no truncation, so Set/Get/Delete share one
+// exact key and the pre-fix truncation-mismatch leak is structurally gone;
+// this test pins the invariant the original fix established.
 func TestD002Round7_CacheDeleteLongKey(t *testing.T) {
 	cm := internal.NewCacheManager(true, 16, 0)
 	defer cm.Close()
 
-	longKey := strings.Repeat("k", 2048) // > MaxCacheKeyLength (1024)
+	longKey := internal.CacheKey{Op: "get", JSONHash: 42, Path: strings.Repeat("k", 2048)} // > MaxCacheKeyLength (1024)
 	cm.Set(longKey, "v")
 	if v, ok := cm.Get(longKey); !ok || v != "v" {
 		t.Fatal("setup: long-key Set/Get round trip failed")
@@ -1128,7 +1152,7 @@ func TestD002Round7_CacheDeleteLongKey(t *testing.T) {
 
 	cm.Delete(longKey)
 	if v, ok := cm.Get(longKey); ok {
-		t.Fatalf("entry survived Delete: value = %v (long-key Delete must hit the truncated stored key)", v)
+		t.Fatalf("entry survived Delete: value = %v", v)
 	}
 	if n := cm.EntryCount(); n != 0 {
 		t.Fatalf("EntryCount after Delete = %d, want 0", n)
@@ -1467,8 +1491,22 @@ func TestD002Round7_MarshalRespectsSizeLimit(t *testing.T) {
 	if _, err := p.Marshal(long); err == nil {
 		t.Fatal("Marshal without cfg: expected ErrSizeLimit for oversized output")
 	}
-	if _, err := p.Marshal(long, DefaultConfig()); err == nil {
-		t.Fatal("Marshal with cfg: expected ErrSizeLimit for oversized output")
+	// D-002/R8 (M1): a per-call cfg's MaxJSONSize REPLACES the baked limit on
+	// encoded output (doc.go contract, mirroring the read side's
+	// effectiveReadMaxSize): a loosening cfg (DefaultConfig = 100MB) accepts the
+	// 52-byte output; a tightening cfg still rejects. The Round 7 form asserted
+	// the pre-M1 behavior where the baked limit always bound.
+	loose, err := p.Marshal(long, DefaultConfig())
+	if err != nil {
+		t.Fatalf("Marshal with loosening cfg: %v", err)
+	}
+	if len(loose) != 52 {
+		t.Fatalf("Marshal with loosening cfg len = %d, want 52", len(loose))
+	}
+	tight := DefaultConfig()
+	tight.MaxJSONSize = 10
+	if _, err := p.Marshal(long, tight); !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("Marshal with tightening cfg: err = %v, want ErrSizeLimit", err)
 	}
 }
 
@@ -1678,5 +1716,1007 @@ func TestA2EncoderEquivalence(t *testing.T) {
 		if err3 == nil && string(gotP) != string(wantP) {
 			t.Errorf("pretty[%d]: EncodeWithConfig=%s | MarshalIndent=%s", i, gotP, wantP)
 		}
+	}
+}
+
+// ===========================================================================
+// Round 8 — [D-002 第八轮] 回归测试:锁定本轮 C1/C2/M1/M3/M4/m2 修复。
+// 移除任一修复,对应用例应失败。m1(Number 免拷贝)由 Round 8 C1 用例的
+// 缓存命中路径隐式覆盖(类型保真即所守卫的行为)。
+// ===========================================================================
+
+// TestD002Round8_NoCfgPreserveNumbers pins C1: with no per-call cfg, the
+// processor's baked PreserveNumbers must govern parsing (D-006 rule). Before
+// the fix the default singleton's PreserveNumbers=false won every no-cfg
+// call: Get/ParseAny returned float64, and Set rewrote untouched big integers
+// as floats.
+func TestD002Round8_NoCfgPreserveNumbers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.PreserveNumbers = true
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	in := `{"big":12345678901234567890123,"other":1.5}`
+	wantBig := "12345678901234567890123"
+
+	// Get (no cfg, cache on — hit AND miss paths must both see Number).
+	v, err := p.Get(in, "big")
+	if err != nil {
+		t.Fatalf("C1 Get: %v", err)
+	}
+	num, ok := v.(Number)
+	if !ok {
+		t.Fatalf("C1 Get(big) = %T (%v), want Number", v, v)
+	}
+	if string(num) != wantBig {
+		t.Fatalf("C1 Get(big) = %s, want literal %s", num, wantBig)
+	}
+	v2, err := p.Get(in, "big") // cache hit
+	if err != nil {
+		t.Fatalf("C1 Get(hit): %v", err)
+	}
+	if hn, ok := v2.(Number); !ok || string(hn) != wantBig {
+		t.Fatalf("C1 Get(big) cache-hit = %T (%v), want Number %s", v2, v2, wantBig)
+	}
+
+	// Set (no cfg): the untouched big integer must survive byte-for-byte.
+	out, err := p.Set(in, "other", 2)
+	if err != nil {
+		t.Fatalf("C1 Set: %v", err)
+	}
+	if want := `{"big":12345678901234567890123,"other":2}`; out != want {
+		t.Fatalf("C1 Set = %s, want %s (untouched integer rewritten as float)", out, want)
+	}
+
+	// ParseAny (no cfg).
+	anyv, err := p.ParseAny(in)
+	if err != nil {
+		t.Fatalf("C1 ParseAny: %v", err)
+	}
+	if _, ok := anyv.(map[string]any)["big"].(Number); !ok {
+		t.Fatalf("C1 ParseAny(big) = %T, want Number", anyv.(map[string]any)["big"])
+	}
+
+	// Replace semantics preserved: a per-call cfg with PreserveNumbers=false on
+	// the SAME processor must parse to float64 (cfg wins, D-006).
+	noPreserve := DefaultConfig()
+	rv, err := p.Get(in, "big", noPreserve)
+	if err != nil {
+		t.Fatalf("C1 Get(replace cfg): %v", err)
+	}
+	if _, ok := rv.(float64); !ok {
+		t.Fatalf("C1 replace-cfg Get(big) = %T, want float64", rv)
+	}
+}
+
+// TestD002Round8_DeleteFastPathPreserveNumbers pins C2: the simple-property
+// Delete fast path must opt out under PreserveNumbers (EnableCache=false),
+// mirroring Get's guard — the fast path re-marshals a stdlib (float64) parse
+// of the whole document, rewriting untouched big integers as floats.
+func TestD002Round8_DeleteFastPathPreserveNumbers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.EnableCache = false
+	cfg.PreserveNumbers = true
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	in := `{"big":12345678901234567890123,"name":"x"}`
+	out, err := p.Delete(in, "name")
+	if err != nil {
+		t.Fatalf("C2 Delete: %v", err)
+	}
+	if want := `{"big":12345678901234567890123}`; out != want {
+		t.Fatalf("C2 Delete = %s, want %s (fast path rewrote untouched integer as float)", out, want)
+	}
+}
+
+// TestD002Round8_MarshalPerCallMaxJSONSize pins M1: a per-call cfg's
+// MaxJSONSize caps encoded OUTPUT (doc.go contract), at both the package
+// level and the Processor method; no-cfg keeps the processor's baked limit.
+func TestD002Round8_MarshalPerCallMaxJSONSize(t *testing.T) {
+	big := make([]string, 40000) // encoded length ≈ 520KB
+	for i := range big {
+		big[i] = "abcdefghij"
+	}
+
+	cfg := DefaultConfig()
+	cfg.MaxJSONSize = 1024
+
+	if _, err := Marshal(big, cfg); !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("M1 json.Marshal(big, cfg MaxJSONSize=1KB) err = %v, want ErrSizeLimit", err)
+	}
+
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if _, err := p.Marshal(big, cfg); !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("M1 p.Marshal(big, cfg) err = %v, want ErrSizeLimit", err)
+	}
+	if _, err := p.Marshal(big, cfg); !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("M1 p.MarshalIndent path err = %v, want ErrSizeLimit", err)
+	}
+
+	// No-cfg: the processor's baked limit (100MB default) applies — accepted.
+	if _, err := p.Marshal(big); err != nil {
+		t.Fatalf("M1 p.Marshal no-cfg err = %v, want nil", err)
+	}
+}
+
+// TestD002Round8_JSONLMemLimitSentinel pins m2: the JSONL engines'
+// memory-limit errors carry the ErrSizeLimit sentinel (errors.Is), matching
+// NDJSONProcessor — previously bare fmt.Errorf on StreamJSONL /
+// StreamJSONLChunked / StreamLinesInto.
+func TestD002Round8_JSONLMemLimitSentinel(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	cfg := DefaultConfig()
+	cfg.JSONLMaxMemory = 10 // trips on the second 7-byte line
+	data := `{"a":1}
+{"b":2}
+{"c":3}
+`
+
+	err = p.StreamJSONL(strings.NewReader(data), func(int, *IterableValue) error { return nil }, cfg)
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("m2 StreamJSONL err = %v, want ErrSizeLimit", err)
+	}
+
+	err = p.StreamJSONLChunked(strings.NewReader(data), 2, func([]*IterableValue) error { return nil }, cfg)
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("m2 StreamJSONLChunked err = %v, want ErrSizeLimit", err)
+	}
+
+	_, err = StreamLinesInto[any](strings.NewReader(data), func(int, any) error { return nil }, cfg)
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("m2 StreamLinesInto err = %v, want ErrSizeLimit", err)
+	}
+}
+
+// TestD002Round8_MaxOperationsPerSecond pins M3 wiring: the rate limiter is
+// reachable via Config.MaxOperationsPerSecond — the second back-to-back op is
+// rejected — while 0 (the default) keeps it disabled.
+func TestD002Round8_MaxOperationsPerSecond(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxOperationsPerSecond = 1 // max 1 op/sec
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	doc := `{"a":1}`
+	if _, err := p.Get(doc, "a"); err != nil {
+		t.Fatalf("M3 first Get: %v", err)
+	}
+	if _, err := p.Get(doc, "a"); err == nil {
+		t.Fatal("M3 second immediate Get = nil error, want rate-limit rejection")
+	}
+
+	// Default (0) disables the limiter entirely.
+	p2, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p2.Close()
+	for range 3 {
+		if _, err := p2.Get(doc, "a"); err != nil {
+			t.Fatalf("M3 default-config Get: %v", err)
+		}
+	}
+}
+
+// TestD002Round8_MaxConcurrencyZeroUsesDefault pins M4: a zero/negative
+// MaxConcurrency resolves to the default (50), not the minimum (1) — a
+// partially-filled Config must not serialize concurrent operations.
+func TestD002Round8_MaxConcurrencyZeroUsesDefault(t *testing.T) {
+	cfg := Config{} // zero value: only the clamps fill it in
+	cfg.ValidateWithWarnings()
+	if cfg.MaxConcurrency != DefaultMaxConcurrency {
+		t.Fatalf("M4 MaxConcurrency = %d, want default %d", cfg.MaxConcurrency, DefaultMaxConcurrency)
+	}
+
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	const goroutines = 8
+	var wg sync.WaitGroup
+	errCh := make(chan error, goroutines)
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := p.Get(`{"a":1}`, "a")
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("M4 concurrent Get under zero-value MaxConcurrency: %v (want all admitted)", err)
+		}
+	}
+}
+
+// ===========================================================================
+// Round 9 — [D-002 第九轮] 回归测试:锁定 m3/m4/m10/m12 修复。m9 为竞态窗口
+// 修复(读侧 CAS 的写侧镜像),无法确定性复现,由 internal 包测试与注释锚定;
+// m11 为签名收敛,由既有缓存行为测试覆盖。
+// ===========================================================================
+
+// TestD002Round9_GovernedOpsNoSelfReject pins m3: the newly governed ops
+// (Parse/Valid/PreParse/GetFromParsed/SetFromParsed/Prettify/Compact/
+// ValidateSchema, plus CompareJSON via the p.Marshal encode funnel) must not
+// nest their beginGovernedOp acquisition — under MaxConcurrency=1 a nested
+// acquire would self-reject with ErrConcurrencyLimit.
+func TestD002Round9_GovernedOpsNoSelfReject(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxConcurrency = 1 // tightest legal limit: any nested acquire fails
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	doc := `{"a":1}`
+	schema := &Schema{Type: "object"}
+
+	if err := p.Parse(doc, &map[string]any{}); err != nil {
+		t.Fatalf("m3 Parse: %v", err)
+	}
+	if _, err := p.ParseAny(doc); err != nil {
+		t.Fatalf("m3 ParseAny: %v", err)
+	}
+	if _, err := p.Valid(doc); err != nil {
+		t.Fatalf("m3 Valid: %v", err)
+	}
+	pp, err := p.PreParse(doc)
+	if err != nil {
+		t.Fatalf("m3 PreParse: %v", err)
+	}
+	if _, err := p.GetFromParsed(pp, "a"); err != nil {
+		t.Fatalf("m3 GetFromParsed: %v", err)
+	}
+	if _, err := p.SetFromParsed(pp, "a", 2); err != nil {
+		t.Fatalf("m3 SetFromParsed: %v", err)
+	}
+	pp.Release()
+	if _, err := p.Prettify(doc); err != nil {
+		t.Fatalf("m3 Prettify: %v", err)
+	}
+	if _, err := p.Compact(doc); err != nil {
+		t.Fatalf("m3 Compact: %v", err)
+	}
+	if _, err := p.ValidateSchema(doc, schema); err != nil {
+		t.Fatalf("m3 ValidateSchema: %v", err)
+	}
+	cp, err := p.CompilePath("a")
+	if err != nil {
+		t.Fatalf("m3 CompilePath: %v", err)
+	}
+	if _, err := p.GetCompiled(doc, cp); err != nil {
+		t.Fatalf("m3 GetCompiled: %v", err)
+	}
+	cp.Release()
+	eq, err := p.CompareJSON(`{"a":1}`, `{"a":1.0}`)
+	if err != nil {
+		t.Fatalf("m3 CompareJSON: %v", err)
+	}
+	if !eq {
+		t.Fatal("m3 CompareJSON: 1 and 1.0 must compare equal")
+	}
+}
+
+// TestD002Round9_JSONLPreserveNumbers pins m4: the JSONL engines honor the
+// effective PreserveNumbers setting (Number literals survive) while the
+// default keeps stdlib float64 semantics.
+func TestD002Round9_JSONLPreserveNumbers(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	data := `{"big":12345678901234567890123}
+{"b":2}
+`
+	want := "12345678901234567890123"
+
+	pres := DefaultConfig()
+	pres.PreserveNumbers = true
+
+	// StreamJSONL, per-call cfg: Number with the exact literal (line 1 carries
+	// "big"; line 2 is {"b":2} and only proves the stream continues).
+	err = p.StreamJSONL(strings.NewReader(data), func(lineNum int, item *IterableValue) error {
+		m, ok := item.GetData().(map[string]any)
+		if !ok {
+			t.Fatalf("m4 StreamJSONL item = %T, want map", item.GetData())
+		}
+		if lineNum == 1 {
+			if n, ok := m["big"].(Number); !ok || string(n) != want {
+				t.Fatalf("m4 StreamJSONL big = %T (%v), want Number %s", m["big"], m["big"], want)
+			}
+		}
+		return nil
+	}, pres)
+	if err != nil {
+		t.Fatalf("m4 StreamJSONL: %v", err)
+	}
+
+	// StreamJSONL, default cfg: float64 (unchanged stdlib semantics).
+	err = p.StreamJSONL(strings.NewReader(data), func(lineNum int, item *IterableValue) error {
+		m := item.GetData().(map[string]any)
+		if lineNum == 1 {
+			if _, ok := m["big"].(float64); !ok {
+				t.Fatalf("m4 default StreamJSONL big = %T, want float64", m["big"])
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("m4 default StreamJSONL: %v", err)
+	}
+
+	// Deprecated NDJSONProcessor: same honoring via its baked config.
+	npPres := NewNDJSONProcessor(pres)
+	if err := npPres.ProcessReader(strings.NewReader(data), func(lineNum int, obj map[string]any) error {
+		if lineNum == 1 {
+			if n, ok := obj["big"].(Number); !ok || string(n) != want {
+				t.Fatalf("m4 NDJSON big = %T (%v), want Number %s", obj["big"], obj["big"], want)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("m4 NDJSON: %v", err)
+	}
+
+	// StreamLinesInto with PreserveNumbers cfg: typed T=any sees Number.
+	results, err := StreamLinesInto[any](strings.NewReader(data), nil, pres)
+	if err != nil {
+		t.Fatalf("m4 StreamLinesInto: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("m4 StreamLinesInto len = %d, want 2", len(results))
+	}
+	if _, ok := results[0].(map[string]any)["big"].(Number); !ok {
+		t.Fatalf("m4 StreamLinesInto big = %T, want Number", results[0].(map[string]any)["big"])
+	}
+}
+
+// TestD002Round9_RootArraySetExtensionExplicitError pins m12: root-level
+// slice/index extension fails explicitly instead of silently extending
+// root[0] (the previous zero-value arrayContainerSegment mis-navigation),
+// while in-bounds root slice/index writes keep working.
+func TestD002Round9_RootArraySetExtensionExplicitError(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	// Out-of-bounds root slice: previously extended root[0] (the WRONG array)
+	// and returned success; must now error.
+	if out, err := p.Set(`[[9,9],3]`, "[5:8]", "x"); err == nil {
+		t.Fatalf("m12 root slice extension = %q, nil error (previously mutated root[0])", out)
+	}
+	// Out-of-bounds root index: previously a misleading "nested array" error;
+	// now the explicit root-extension error.
+	if _, err := p.Set(`[1,2,3]`, "[5]", "x"); err == nil {
+		t.Fatal("m12 root index extension: nil error, want rejection")
+	}
+	// In-bounds root slice write still works.
+	out, err := p.Set(`[1,2,3]`, "[0:2]", 9)
+	if err != nil {
+		t.Fatalf("m12 in-bounds root slice: %v", err)
+	}
+	if out != `[9,9,3]` {
+		t.Fatalf("m12 in-bounds root slice = %s, want [9,9,3]", out)
+	}
+	// In-bounds root index write still works.
+	out, err = p.Set(`[1,2,3]`, "[1]", 9)
+	if err != nil {
+		t.Fatalf("m12 in-bounds root index: %v", err)
+	}
+	if out != `[1,9,3]` {
+		t.Fatalf("m12 in-bounds root index = %s, want [1,9,3]", out)
+	}
+}
+
+// TestD002Round9_JSONLWriterSingleWrite pins m10: JSONLWriter.Write emits the
+// exact same bytes and accounting after combining data+newline into one Write.
+func TestD002Round9_JSONLWriterSingleWrite(t *testing.T) {
+	var buf strings.Builder
+	w := NewJSONLWriter(&buf)
+	if err := w.Write(map[string]any{"a": 1}); err != nil {
+		t.Fatalf("m10 Write: %v", err)
+	}
+	if err := w.Write(map[string]any{"b": "x"}); err != nil {
+		t.Fatalf("m10 Write: %v", err)
+	}
+	want := "{\"a\":1}\n{\"b\":\"x\"}\n"
+	if buf.String() != want {
+		t.Fatalf("m10 output = %q, want %q", buf.String(), want)
+	}
+	stats := w.Stats()
+	if stats.LinesProcessed != 2 || stats.BytesWritten != int64(len(want)) {
+		t.Fatalf("m10 stats = %+v, want 2 lines / %d bytes", stats, len(want))
+	}
+}
+
+// ===========================================================================
+// Round 10 — D-002 第十轮·回查 (consolidated from regression_round10_test.go)
+// ===========================================================================
+
+// TestD002Round10_NoCfgBakedEncodeLimits pins the R10 fix of the M1 regression:
+// MarshalIndent / SaveToWriter / CompareJSON no longer fabricate a
+// DefaultConfig-valued cfg for no-cfg calls (which routed M1's
+// effectiveEncodeMaxSize to the 100MB default and bypassed the processor's
+// baked MaxJSONSize). No-cfg now resolves the baked configuration (D-006).
+func TestD002Round10_NoCfgBakedEncodeLimits(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxJSONSize = 1024 // baked cap well below the ~2.6KB encoded output
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	big := map[string]any{"pad": strings.Repeat("x", 2500)}
+
+	if _, err := p.MarshalIndent(big, "", "  "); !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("R10 MarshalIndent no-cfg err = %v, want ErrSizeLimit (baked 1KB cap bypassed)", err)
+	}
+
+	var buf strings.Builder
+	if err := p.SaveToWriter(&buf, big); !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("R10 SaveToWriter no-cfg err = %v, want ErrSizeLimit", err)
+	}
+
+	a := `{"pad":"` + strings.Repeat("x", 2500) + `"}`
+	if _, err := p.CompareJSON(a, a); !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("R10 CompareJSON no-cfg err = %v, want ErrSizeLimit (singleton dereference overrode baked cap)", err)
+	}
+
+	// Control: a default processor (100MB baked) accepts the same payload.
+	def, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer def.Close()
+	if _, err := def.MarshalIndent(big, "", "  "); err != nil {
+		t.Fatalf("R10 control MarshalIndent: %v", err)
+	}
+	var buf2 strings.Builder
+	if err := def.SaveToWriter(&buf2, big); err != nil {
+		t.Fatalf("R10 control SaveToWriter: %v", err)
+	}
+}
+
+// TestD002Round10_NumberConversions pins the R10 conversion fix: the
+// convertTo* family handles the library's Number like json.Number. Before the
+// fix, PreserveNumbers JSONL made item.GetInt return 0 for every number.
+func TestD002Round10_NumberConversions(t *testing.T) {
+	if n, ok := convertToInt(Number("42")); !ok || n != 42 {
+		t.Fatalf("R10 convertToInt(Number) = %d,%v want 42,true", n, ok)
+	}
+	if n, ok := convertToInt64(Number("9223372036854775807")); !ok || n != 9223372036854775807 {
+		t.Fatalf("R10 convertToInt64(Number) = %d,%v", n, ok)
+	}
+	if u, ok := convertToUint64(Number("18446744073709551615")); !ok || u != 18446744073709551615 {
+		t.Fatalf("R10 convertToUint64(Number) = %d,%v", u, ok)
+	}
+	if f, ok := convertToFloat64(Number("1.5")); !ok || f != 1.5 {
+		t.Fatalf("R10 convertToFloat64(Number) = %v,%v", f, ok)
+	}
+	if b, ok := convertToBool(Number("1")); !ok || !b {
+		t.Fatalf("R10 convertToBool(Number(1)) = %v,%v", b, ok)
+	}
+	if b, ok := convertToBool(Number("0")); !ok || b {
+		t.Fatalf("R10 convertToBool(Number(0)) = %v,%v", b, ok)
+	}
+	if s := convertToString(Number("42")); s != "42" {
+		t.Fatalf("R10 convertToString(Number) = %q", s)
+	}
+	// Non-integral Number behaves like non-integral json.Number (Int64
+	// refuses; GetInt falls back to its default).
+	if _, ok := convertToInt(Number("1.5")); ok {
+		t.Fatal("R10 convertToInt(Number(1.5)) = true, want false (mirror json.Number)")
+	}
+
+	// Behavior level: IterableValue getters on a PreserveNumbers JSONL stream.
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	pres := DefaultConfig()
+	pres.PreserveNumbers = true
+	err = p.StreamJSONL(strings.NewReader("{\"age\":42,\"score\":1.5,\"ok\":1}\n"), func(_ int, item *IterableValue) error {
+		if got := item.GetInt("age"); got != 42 {
+			t.Errorf("R10 item.GetInt(age) = %d, want 42", got)
+		}
+		if got := item.GetFloat64("score"); got != 1.5 {
+			t.Errorf("R10 item.GetFloat64(score) = %v, want 1.5", got)
+		}
+		if got := item.GetBool("ok"); !got {
+			t.Errorf("R10 item.GetBool(ok) = false, want true")
+		}
+		if got := item.GetString("age"); got != "42" {
+			t.Errorf("R10 item.GetString(age) = %q, want \"42\"", got)
+		}
+		return nil
+	}, pres)
+	if err != nil {
+		t.Fatalf("R10 StreamJSONL: %v", err)
+	}
+}
+
+// TestD002Round10_JSONLParallelChunkedPreserveAndMemCap pins two R10 items:
+// the parallel and chunked engines honor PreserveNumbers (extending R9's
+// serial-only coverage), and the parallel engine enforces JSONLMaxMemory
+// (previously the only JSONL reader without the total-bytes cap).
+func TestD002Round10_JSONLParallelChunkedPreserveAndMemCap(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	pres := DefaultConfig()
+	pres.PreserveNumbers = true
+	data := "{\"big\":12345678901234567890123}\n{\"b\":2}\n"
+	want := "12345678901234567890123"
+
+	// Chunked engine: preserved literal visible to the batch callback.
+	err = p.StreamJSONLChunked(strings.NewReader(data), 10, func(chunk []*IterableValue) error {
+		for _, item := range chunk {
+			if m, ok := item.GetData().(map[string]any); ok {
+				if n, ok := m["big"].(Number); ok && string(n) != want {
+					t.Errorf("R10 chunked big = %s, want %s", n, want)
+				}
+			}
+		}
+		return nil
+	}, pres)
+	if err != nil {
+		t.Fatalf("R10 StreamJSONLChunked: %v", err)
+	}
+
+	// Parallel engine: preserved literal visible to the worker callback
+	// (concurrent — guard the shared flag with a mutex).
+	var mu sync.Mutex
+	sawNumber := false
+	err = p.StreamJSONLParallelWithContext(context.Background(), strings.NewReader(data), 2,
+		func(_ int, item *IterableValue) error {
+			if _, ok := item.GetData().(map[string]any)["big"].(Number); ok {
+				mu.Lock()
+				sawNumber = true
+				mu.Unlock()
+			}
+			return nil
+		}, pres)
+	if err != nil {
+		t.Fatalf("R10 StreamJSONLParallel: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !sawNumber {
+		t.Fatal("R10 StreamJSONLParallel: big not a Number under PreserveNumbers")
+	}
+
+	// Parallel engine: total-bytes cap with the ErrSizeLimit sentinel.
+	capCfg := DefaultConfig()
+	capCfg.JSONLMaxMemory = 10 // trips on the second 7-byte line
+	err = p.StreamJSONLParallelWithContext(context.Background(), strings.NewReader(data), 2,
+		func(int, *IterableValue) error { return nil }, capCfg)
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("R10 parallel mem cap err = %v, want ErrSizeLimit", err)
+	}
+}
+
+// TestD002Round10_SetMultipleRateLimit pins the R10 gate: SetMultiple now
+// honors MaxOperationsPerSecond like Get/Set/Delete (previously the one
+// governed mutation without the rate-limit check).
+func TestD002Round10_SetMultipleRateLimit(t *testing.T) {
+	rl := DefaultConfig()
+	rl.MaxOperationsPerSecond = 1
+	p, err := New(rl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	if _, err := p.SetMultiple(`{"a":1}`, map[string]any{"a": 2}); err != nil {
+		t.Fatalf("R10 first SetMultiple: %v", err)
+	}
+	if _, err := p.SetMultiple(`{"a":1}`, map[string]any{"a": 3}); err == nil {
+		t.Fatal("R10 second immediate SetMultiple = nil error, want rate-limit rejection")
+	}
+}
+
+// TestD002Round10_SetFromParsedBakedCreatePaths pins the R10 D-006 fix:
+// SetFromParsed no-cfg resolves CreatePaths from the baked config — the
+// singleton's true previously re-enabled path creation on a processor built
+// with CreatePaths=false.
+func TestD002Round10_SetFromParsedBakedCreatePaths(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.CreatePaths = false
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	pp, err := p.PreParse(`{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pp.Release()
+
+	// No-cfg: baked CreatePaths=false must refuse to create the path.
+	if _, err := p.SetFromParsed(pp, "a.b", 1); err == nil {
+		t.Fatal("R10 SetFromParsed no-cfg created path despite baked CreatePaths=false")
+	}
+
+	// With-cfg REPLACES: CreatePaths=true creates it.
+	onCfg := DefaultConfig()
+	onCfg.CreatePaths = true
+	pp2, err := p.SetFromParsed(pp, "a.b", 1, onCfg)
+	if err != nil {
+		t.Fatalf("R10 SetFromParsed with-cfg: %v", err)
+	}
+	defer pp2.Release()
+	if v, err := p.GetFromParsed(pp2, "a.b"); err != nil || v != 1 {
+		t.Fatalf("R10 GetFromParsed(a.b) = %v,%v want 1,nil", v, err)
+	}
+}
+
+// TestD002Round10_BakedCacheResults pins the R10 D-006 fix: with no cfg, the
+// processor's baked CacheResults governs result caching (previously the
+// singleton's true cached anyway). The parse cache (setCachedResultInternal)
+// is intentionally unaffected.
+func TestD002Round10_BakedCacheResults(t *testing.T) {
+	off := DefaultConfig()
+	off.EnableCache = true
+	off.CacheResults = false
+	pOff, err := New(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pOff.Close()
+
+	doc := `{"a":1,"b":2}`
+	_, _ = pOff.Get(doc, "a")
+	_, _ = pOff.Get(doc, "a")
+	// Exactly one entry: the parse cache; the get: entry must be suppressed.
+	if n := pOff.GetStats().CacheSize; n != 1 {
+		t.Fatalf("R10 CacheResults=false cache size = %d, want 1 (parse only)", n)
+	}
+
+	on := DefaultConfig() // CacheResults=true by default
+	pOn, err := New(on)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pOn.Close()
+	_, _ = pOn.Get(doc, "a")
+	if n := pOn.GetStats().CacheSize; n != 2 {
+		t.Fatalf("R10 CacheResults=true cache size = %d, want 2 (parse + get)", n)
+	}
+}
+
+// ===========================================================================
+// Round 11 — D-002 第十一轮 (consolidated from regression_round11_test.go)
+// ===========================================================================
+
+// ============================================================================
+// D-002 Round 11 regression tests (2026-10-04)
+//
+//   C1  decoder-based (number-preserving) paths reject trailing garbage
+//   M1  GetMultiple concurrency governance (Close-drain + MaxConcurrency)
+//   M2  mutation output honors the effective MaxJSONSize (option A)
+//   M3  FastEncoder.EncodeTime year-range guard
+//   m4  FastEncoder.EncodeFloat rejects NaN/Inf
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// C1: trailing garbage
+// ---------------------------------------------------------------------------
+
+// compareJSONCore decodes with the preserving decoder unconditionally; before
+// C1 the Decoder-based single-value read silently ignored the trailing "zzz"
+// and reported the two different documents EQUAL.
+func TestD002Round11_TrailingGarbage_CompareJSON(t *testing.T) {
+	equal, err := CompareJSON(`{"a":1}`, `{"a":1}zzz`)
+	if err == nil || equal {
+		t.Fatalf("CompareJSON accepted trailing garbage (second arg): equal=%v err=%v", equal, err)
+	}
+	equal, err = CompareJSON(`{"a":1}zzz`, `{"a":1}`)
+	if err == nil || equal {
+		t.Fatalf("CompareJSON accepted trailing garbage (first arg): equal=%v err=%v", equal, err)
+	}
+}
+
+func TestD002Round11_TrailingGarbage_MergeJSON(t *testing.T) {
+	if out, err := MergeJSON(`{"a":1}zzz`, `{"c":2}`); err == nil {
+		t.Fatalf("MergeJSON accepted trailing garbage: out=%q err=%v", out, err)
+	}
+}
+
+func TestD002Round11_TrailingGarbage_PreserveNumbers(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.PreserveNumbers = true
+	// Trailing content that ends with '}' bypasses the first/last-character
+	// structure heuristic — this exact shape reached the decoder before the fix.
+	bad := `{"a":1}{"b":2}`
+
+	if _, err := Get(bad, "a", cfg); err == nil {
+		t.Error("Get with PreserveNumbers accepted a trailing JSON document")
+	}
+	var v any
+	if err := Parse(bad, &v, cfg); err == nil {
+		t.Error("Parse with PreserveNumbers accepted a trailing JSON document")
+	}
+	if out, err := Prettify(bad, cfg); err == nil {
+		t.Errorf("Prettify with PreserveNumbers accepted a trailing document: out=%q", out)
+	}
+	if ok, err := ValidWithConfig(bad, cfg); err == nil || ok {
+		t.Errorf("Valid with PreserveNumbers accepted a trailing document: ok=%v err=%v", ok, err)
+	}
+
+	// Baseline: the no-config path must keep rejecting the same input.
+	if _, err := Get(bad, "a"); err == nil {
+		t.Error("no-config Get accepted a trailing JSON document")
+	}
+}
+
+func TestD002Round11_TrailingGarbage_WhitespaceStillFine(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.PreserveNumbers = true
+	// Trailing whitespace is insignificant — both decode paths accept it.
+	if _, err := Get("{\"a\":1}\n\t ", "a", cfg); err != nil {
+		t.Fatalf("trailing whitespace wrongly rejected: %v", err)
+	}
+}
+
+func TestD002Round11_TrailingGarbage_PreservingUnmarshal(t *testing.T) {
+	type obj struct {
+		A int `json:"a"`
+	}
+
+	// Preserve branch with a struct target (preservingUnmarshal, non-*any path).
+	pcfg := DefaultConfig()
+	pcfg.PreserveNumbers = true
+	var o obj
+	if err := Parse(`{"a":1}{"b":2}`, &o, pcfg); err == nil {
+		t.Error("preservingUnmarshal (struct target) accepted a trailing document")
+	}
+
+	// DisallowUnknown non-preserve branch also uses a Decoder (C1 companion fix).
+	dcfg := DefaultConfig()
+	dcfg.DisallowUnknown = true
+	var o2 obj
+	if err := Parse(`{"a":1}{"b":2}`, &o2, dcfg); err == nil {
+		t.Error("DisallowUnknown decoder branch accepted a trailing document")
+	}
+}
+
+func TestD002Round11_TrailingGarbage_JSONLLine(t *testing.T) {
+	pcfg := DefaultConfig()
+	pcfg.PreserveNumbers = true
+	p, err := New(pcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	err = p.StreamJSONL(strings.NewReader(`{"a":1} junk`+"\n"), func(_ int, _ *IterableValue) error {
+		return nil
+	}, pcfg)
+	if err == nil {
+		t.Error("StreamJSONL with PreserveNumbers accepted a garbage line")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M1: GetMultiple governance
+// ---------------------------------------------------------------------------
+
+func TestD002Round11_GetMultipleGovernance_MaxConcurrency(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxConcurrency = 1
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	cfg.AddHook(&HookFunc{
+		BeforeFn: func(HookContext) error {
+			select {
+			case <-entered:
+			default:
+				close(entered)
+			}
+			<-release
+			return nil
+		},
+	})
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = p.GetMultiple(`{"a":1,"b":2}`, []string{"a", "b"})
+	}()
+
+	<-entered // the first GetMultiple is inside its Before hook => governance slot held
+
+	// A second GetMultiple on the same MaxConcurrency=1 processor must be
+	// rejected with ErrConcurrencyLimit — exactly like a second Get (M1).
+	_, err = p.GetMultiple(`{"a":1}`, []string{"a"})
+	if !errors.Is(err, ErrConcurrencyLimit) {
+		t.Fatalf("second GetMultiple was not concurrency-limited: %v", err)
+	}
+
+	close(release)
+	wg.Wait()
+}
+
+func TestD002Round11_GetMultipleGovernance_ClosedProcessor(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.GetMultiple(`{"a":1}`, []string{"a"}); !errors.Is(err, ErrProcessorClosed) {
+		t.Fatalf("closed processor must reject GetMultiple: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M2: mutation output size limit
+// ---------------------------------------------------------------------------
+
+func TestD002Round11_MutationOutputSizeLimit_Set(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxJSONSize = 64
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	big := strings.Repeat("x", 100)
+
+	out, err := p.Set(`{"a":""}`, "a", big)
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("Set output not size-limited: err=%v", err)
+	}
+	if out != `{"a":""}` {
+		t.Fatalf("Set must return the original document on size failure, got %q", out)
+	}
+
+	// Baseline: a mutation whose output fits is unaffected (byte-identical).
+	out, err = p.Set(`{"a":""}`, "a", "ok")
+	if err != nil || out != `{"a":"ok"}` {
+		t.Fatalf("in-limit Set broken: out=%q err=%v", out, err)
+	}
+
+	// A per-call cfg REPLACES the cap (same rule as CreatePaths, D-006).
+	wide := DefaultConfig()
+	wide.MaxJSONSize = DefaultMaxJSONSize
+	if _, err := p.Set(`{"a":""}`, "a", big, wide); err != nil {
+		t.Fatalf("per-call cfg loosening failed: %v", err)
+	}
+}
+
+func TestD002Round11_MutationOutputSizeLimit_SetMultiple(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxJSONSize = 64
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	big := strings.Repeat("x", 100)
+	out, err := p.SetMultiple(`{"a":"","b":""}`, map[string]any{"a": big, "b": big})
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("SetMultiple output not size-limited: err=%v", err)
+	}
+	if out != `{"a":"","b":""}` {
+		t.Fatalf("SetMultiple must return the original document, got %q", out)
+	}
+}
+
+func TestD002Round11_MutationOutputSizeLimit_ForeachReturn(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxJSONSize = 64
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	// The callback grows the document past the limit via the shared reference.
+	out, err := p.ForeachReturn(`{"a":{"pad":""}}`, func(_ any, item *IterableValue) {
+		if m, ok := item.GetData().(map[string]any); ok {
+			m["pad"] = strings.Repeat("x", 100)
+		}
+	})
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("ForeachReturn output not size-limited: err=%v out=%q", err, out)
+	}
+
+	// Baseline: unchanged-size iteration still succeeds.
+	out, err = p.ForeachReturn(`{"a":1}`, func(_ any, _ *IterableValue) {})
+	if err != nil || out != `{"a":1}` {
+		t.Fatalf("in-limit ForeachReturn broken: out=%q err=%v", out, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M3: EncodeTime year range (root-level surface)
+// ---------------------------------------------------------------------------
+
+func TestD002Round11_EncodeTimeYearRange(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+
+	far := map[string]any{"t": time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if _, err := p.Encode(far); err == nil {
+		t.Error("Encode accepted year 10000 (invalid RFC3339) with a nil error")
+	}
+	neg := map[string]any{"t": time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)}
+	if _, err := p.Encode(neg); err == nil {
+		t.Error("Encode accepted a negative year with a nil error")
+	}
+	okOut, err := p.Encode(map[string]any{"t": time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil || !strings.Contains(okOut, "2026-01-01T00:00:00Z") {
+		t.Fatalf("normal time broken: out=%q err=%v", okOut, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// m4: EncodeFloat non-finite rejection (root-level view of the internal API)
+// ---------------------------------------------------------------------------
+
+func TestD002Round11_FastEncoderFloatRejectsNonFinite(t *testing.T) {
+	e := internal.GetEncoder()
+	defer internal.PutEncoder(e)
+
+	if err := e.EncodeFloat(math.NaN(), 64); err == nil {
+		t.Error("EncodeFloat(NaN) returned a nil error")
+	}
+	if err := e.EncodeFloat(math.Inf(1), 64); err == nil {
+		t.Error("EncodeFloat(+Inf) returned a nil error")
+	}
+	if err := e.EncodeFloat(float64(float32(math.Inf(-1))), 32); err == nil {
+		t.Error("EncodeFloat(-Inf, 32 bits) returned a nil error")
+	}
+	if err := e.EncodeFloat(1.5, 64); err != nil {
+		t.Errorf("EncodeFloat(1.5) errored: %v", err)
 	}
 }

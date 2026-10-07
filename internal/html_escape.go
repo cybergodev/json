@@ -86,7 +86,7 @@ func HTMLEscapeBytesTo(dst *bytes.Buffer, data []byte) {
 }
 
 // NeedsHTMLEscapeBytes checks if a byte slice needs HTML escaping.
-// PERFORMANCE v3: Uses lookup table for single table-access per byte instead of 24 comparisons.
+// PERFORMANCE: Uses lookup table for single table-access per byte instead of 24 comparisons.
 // The table checks for '<', '>', '&', and 0xE2 (start of U+2028/U+2029).
 func NeedsHTMLEscapeBytes(data []byte) bool {
 	n := len(data)
@@ -121,7 +121,7 @@ var htmlEscapeBytesPool = sync.Pool{
 }
 
 // HTMLEscapeBytes performs HTML escaping on a byte slice and returns the escaped result.
-// PERFORMANCE v2: Works directly on byte slices to avoid string conversion.
+// PERFORMANCE: Works directly on byte slices to avoid string conversion.
 // This is the most efficient path for encoder output.
 func HTMLEscapeBytes(data []byte) []byte {
 	n := len(data)

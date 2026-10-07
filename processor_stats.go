@@ -150,17 +150,26 @@ func (p *Processor) WarmupCache(jsonStr string, paths []string, cfg ...Config) (
 			continue
 		}
 
-		// Try to get the value (this will cache it if successful)
-		// options is guaranteed non-nil after prepareOptions()
-		_, err := p.Get(jsonStr, path, *options)
-		if err != nil {
+		// Try to get the value (this will cache it if successful).
+		// D-002/R8 (C1): forward the caller's cfg ONLY when one was supplied.
+		// Dereferencing the no-cfg singleton into Get parses under DefaultConfig
+		// values, warming the shared parse cache with float64 data on a
+		// PreserveNumbers processor (the cache key cannot distinguish a
+		// default-valued cfg from "no cfg").
+		var getErr error
+		if len(cfg) > 0 {
+			_, getErr = p.Get(jsonStr, path, *options)
+		} else {
+			_, getErr = p.Get(jsonStr, path)
+		}
+		if getErr != nil {
 			errorCount++
 			failedPaths = append(failedPaths, path)
 			lastError = &JsonsError{
 				Op:      "warmup_cache",
 				Path:    path,
-				Message: fmt.Sprintf("failed to warmup path '%s': %v", path, err),
-				Err:     err,
+				Message: fmt.Sprintf("failed to warmup path '%s': %v", path, getErr),
+				Err:     getErr,
 			}
 		} else {
 			successCount++
@@ -371,7 +380,7 @@ func (p *Processor) logOperation(ctx context.Context, operation, path string, du
 }
 
 // getProcessorID returns a unique identifier for this processor instance
-// PERFORMANCE v2: Returns pre-cached ID to avoid fmt.Sprintf per log call
+// PERFORMANCE: Returns pre-cached ID to avoid fmt.Sprintf per log call
 func (p *Processor) getProcessorID() string {
 	return p.processorID
 }
@@ -391,6 +400,9 @@ func (p *Processor) putPathSegments(segments *[]internal.PathSegment) {
 }
 
 // getStringBuilder gets a string builder from the pool
+//
+// NOTE (P-001): no production caller — the composed-string cache keys that
+// used it are gone (CacheKey structs); retained for tests.
 func (p *Processor) getStringBuilder() *strings.Builder {
 	return internal.GetStringBuilder()
 }
@@ -432,12 +444,38 @@ func (p *Processor) validateInputForOptions(jsonStr string, options *Config) err
 		options.MaxNestingDepthSecurity,
 		options.FullSecurityScan,
 		options.DisableDefaultPatterns,
+		options.DetectDuplicateKeys,
 		toInternalPatterns(options.AdditionalDangerousPatterns),
 		options.MaxObjectKeys,
 		options.MaxArrayElements,
 	)
 	sv.cacheDisabled = true // transient one-shot validator: skip cache machinery
 	return sv.ValidateJSONInput(jsonStr)
+}
+
+// validateInputForOptionsHashed is validateInputForOptions for callers that
+// already hold the document's FNV-1a hash (P-001): the hash feeds the
+// validation-cache lookup on BOTH branches — the processor's cached validator
+// and the per-call-cfg transient validator (whose cache is disabled anyway, so
+// the shared hash only replaces its internal computation).
+// jsonHash MUST equal hashStringToUint64(jsonStr).
+func (p *Processor) validateInputForOptionsHashed(jsonStr string, options *Config, jsonHash uint64) error {
+	if options == &defaultConfigSingleton {
+		return p.securityValidator.ValidateJSONInputPrehashed(jsonStr, jsonHash)
+	}
+	sv := newSecurityValidator(
+		options.MaxJSONSize,
+		maxPathLength,
+		options.MaxNestingDepthSecurity,
+		options.FullSecurityScan,
+		options.DisableDefaultPatterns,
+		options.DetectDuplicateKeys,
+		toInternalPatterns(options.AdditionalDangerousPatterns),
+		options.MaxObjectKeys,
+		options.MaxArrayElements,
+	)
+	sv.cacheDisabled = true // transient one-shot validator: skip cache machinery
+	return sv.ValidateJSONInputPrehashed(jsonStr, jsonHash)
 }
 
 // validateInputEssential performs only essential safety checks (size + depth).
@@ -472,15 +510,97 @@ func sanitizePath(path string) string {
 }
 
 // sanitizeError removes potentially sensitive information from error messages
+// before they are written to logs (GEN-001 must-fix #3). Two layers, mirroring
+// sanitizePath:
+//
+//  1. Any sensitive keyword (the shared sensitivePatterns list) anywhere in the
+//     message redacts the WHOLE message — a fragment of the surrounding
+//     sentence could still reveal the value's context.
+//  2. Otherwise, quoted spans longer than sanitizeQuoteKeepLen bytes are
+//     replaced with [REDACTED]: this library's error convention embeds
+//     caller-supplied data (values, pattern mismatches, paths) inside '...' or
+//     "..." (e.g. "string 'x' does not match pattern 'y'"). Short spans
+//     (typical identifiers like 'a' or 'user.name') are kept for debuggability;
+//     longer spans are assumed to be payloads (tokens, cards, free text) and
+//     masked whole.
+//
+// The returned error's errors.Is/As chain is unaffected — only the logged text
+// is sanitized.
 func sanitizeError(err error) string {
 	if err == nil {
 		return ""
 	}
 	errMsg := err.Error()
+
+	lowerMsg := strings.ToLower(errMsg)
+	for _, pattern := range sensitivePatterns {
+		if strings.Contains(lowerMsg, pattern) {
+			return "[REDACTED_ERROR]"
+		}
+	}
+
+	errMsg = maskQuotedSpans(errMsg)
 	if len(errMsg) > 200 {
 		return truncateString(errMsg, 200)
 	}
 	return errMsg
+}
+
+// sanitizeQuoteKeepLen is the maximum quoted-span length sanitizeError keeps
+// verbatim; longer spans are masked whole.
+const sanitizeQuoteKeepLen = 8
+
+// maskQuotedSpans replaces the content of '...' and "..." spans longer than
+// sanitizeQuoteKeepLen bytes with [REDACTED]. Escapes are not interpreted: an
+// unterminated quote masks the remainder of the string (fail-closed — a
+// truncated message must not leak its tail verbatim).
+func maskQuotedSpans(s string) string {
+	// Fast path: nothing to mask unless a quote byte is present.
+	hasQuote := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\'' || s[i] == '"' {
+			hasQuote = true
+			break
+		}
+	}
+	if !hasQuote {
+		return s
+	}
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c != '\'' && c != '"' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		// Find the closing quote of the same kind (no escape handling —
+		// masking farther than strictly needed is the safe direction).
+		end := -1
+		for j := i + 1; j < len(s); j++ {
+			if s[j] == c {
+				end = j
+				break
+			}
+		}
+		if end == -1 {
+			// Unterminated: mask the remainder and stop.
+			b.WriteByte(c)
+			b.WriteString("[REDACTED]")
+			return b.String()
+		}
+		if end-i-1 > sanitizeQuoteKeepLen {
+			b.WriteByte(c)
+			b.WriteString("[REDACTED]")
+			b.WriteByte(c)
+		} else {
+			b.WriteString(s[i : end+1])
+		}
+		i = end + 1
+	}
+	return b.String()
 }
 
 // truncateString efficiently truncates a string with ellipsis

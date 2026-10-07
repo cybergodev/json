@@ -24,7 +24,7 @@ import (
 // - ParallelIterator for concurrent processing
 // - NewIterator for in-memory data (works on any parsed value)
 //
-// Run: go run -tags=example examples/14_streaming_iterators.go
+// Run: go run -tags=example ./examples/14_streaming_iterators
 
 func main() {
 	fmt.Println("JSON Library - Streaming Iterators")

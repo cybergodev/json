@@ -23,7 +23,7 @@ import (
 // - DeleteClean for automatic cleanup after deletion
 // - Package-level convenience functions (no Processor needed)
 //
-// Run: go run -tags=example examples/17_advanced_patterns.go
+// Run: go run -tags=example ./examples/17_advanced_patterns
 
 func main() {
 	fmt.Println("JSON Library - Advanced Patterns")

@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+// testKey builds a CacheKey from a plain string, hashing the string into
+// JSONHash so distinct strings stay distinct keys (the shape the previous
+// string-key API gave tests for free).
+func testKey(s string) CacheKey {
+	return CacheKey{JSONHash: HashStringFNV1a(s), Path: s}
+}
+
 func TestCacheManager(t *testing.T) {
 	t.Run("Creation", func(t *testing.T) {
 		cm := NewCacheManager(true, 100, 0)
@@ -22,7 +29,7 @@ func TestCacheManager(t *testing.T) {
 	t.Run("BasicSetGet", func(t *testing.T) {
 		cm := NewCacheManager(true, 100, 0)
 
-		key := "test_key"
+		key := testKey("test_key")
 		value := "test_value"
 
 		cm.Set(key, value)
@@ -39,7 +46,7 @@ func TestCacheManager(t *testing.T) {
 	t.Run("CacheMiss", func(t *testing.T) {
 		cm := NewCacheManager(true, 100, 0)
 
-		_, found := cm.Get("nonexistent_key")
+		_, found := cm.Get(testKey("nonexistent_key"))
 		if found {
 			t.Error("Should not find nonexistent key")
 		}
@@ -53,8 +60,8 @@ func TestCacheManager(t *testing.T) {
 	t.Run("CacheHit", func(t *testing.T) {
 		cm := NewCacheManager(true, 100, 0)
 
-		cm.Set("key", "value")
-		cm.Get("key")
+		cm.Set(testKey("key"), "value")
+		cm.Get(testKey("key"))
 
 		hitCount := atomic.LoadInt64(&cm.hitCount)
 		if hitCount == 0 {
@@ -65,10 +72,10 @@ func TestCacheManager(t *testing.T) {
 	t.Run("TTLExpiration", func(t *testing.T) {
 		cm := NewCacheManager(true, 100, 50*time.Millisecond)
 
-		cm.Set("key", "value")
+		cm.Set(testKey("key"), "value")
 
 		// Should be found immediately
-		_, found := cm.Get("key")
+		_, found := cm.Get(testKey("key"))
 		if !found {
 			t.Error("Value should be found before TTL expires")
 		}
@@ -77,7 +84,7 @@ func TestCacheManager(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Should not be found after TTL
-		_, found = cm.Get("key")
+		_, found = cm.Get(testKey("key"))
 		if found {
 			t.Error("Value should not be found after TTL expires")
 		}
@@ -96,7 +103,7 @@ func TestCacheManager(t *testing.T) {
 			go func(workerID int) {
 				defer wg.Done()
 				for j := 0; j < operations; j++ {
-					key := "key_" + string(rune(workerID*operations+j))
+					key := testKey(fmt.Sprintf("key_%d", workerID*operations+j))
 					cm.Set(key, workerID*operations+j)
 				}
 			}(i)
@@ -109,7 +116,7 @@ func TestCacheManager(t *testing.T) {
 			go func(workerID int) {
 				defer wg.Done()
 				for j := 0; j < operations; j++ {
-					key := "key_" + string(rune(workerID*operations+j))
+					key := testKey(fmt.Sprintf("key_%d", workerID*operations+j))
 					cm.Get(key)
 				}
 			}(i)
@@ -129,8 +136,8 @@ func TestCacheManager(t *testing.T) {
 	t.Run("DisabledCache", func(t *testing.T) {
 		cm := NewCacheManager(false, 100, 0)
 
-		cm.Set("key", "value")
-		_, found := cm.Get("key")
+		cm.Set(testKey("key"), "value")
+		_, found := cm.Get(testKey("key"))
 
 		if found {
 			t.Error("Disabled cache should not store values")
@@ -140,12 +147,12 @@ func TestCacheManager(t *testing.T) {
 	t.Run("MultipleValues", func(t *testing.T) {
 		cm := NewCacheManager(true, 100, 0)
 
-		testData := map[string]any{
-			"string": "test",
-			"int":    42,
-			"float":  3.14,
-			"bool":   true,
-			"nil":    nil,
+		testData := map[CacheKey]any{
+			testKey("string"): "test",
+			testKey("int"):    42,
+			testKey("float"):  3.14,
+			testKey("bool"):   true,
+			testKey("nil"):    nil,
 		}
 
 		for k, v := range testData {
@@ -155,10 +162,10 @@ func TestCacheManager(t *testing.T) {
 		for k, expected := range testData {
 			retrieved, found := cm.Get(k)
 			if !found {
-				t.Errorf("Key %s should be found", k)
+				t.Errorf("Key %s should be found", k.Path)
 			}
 			if retrieved != expected {
-				t.Errorf("Key %s: expected %v, got %v", k, expected, retrieved)
+				t.Errorf("Key %s: expected %v, got %v", k.Path, expected, retrieved)
 			}
 		}
 	})
@@ -170,12 +177,9 @@ func TestCacheManager(t *testing.T) {
 			t.Error("Large cache should use multiple shards")
 		}
 
-		// Verify different keys go to different shards
-		key1 := "key1"
-		key2 := "key2"
-
-		shard1 := cm.getShard(key1)
-		shard2 := cm.getShard(key2)
+		// Verify different keys CAN go to different shards
+		shard1 := cm.getShard(testKey("key1"))
+		shard2 := cm.getShard(testKey("key2"))
 
 		// Not guaranteed to be different, but with enough shards likely
 		if shard1 == shard2 {
@@ -189,8 +193,8 @@ func TestCacheManager(t *testing.T) {
 			t.Fatal("Should handle nil config")
 		}
 
-		cm.Set("key", "value")
-		_, found := cm.Get("key")
+		cm.Set(testKey("key"), "value")
+		_, found := cm.Get(testKey("key"))
 		if found {
 			t.Error("Nil config should disable caching")
 		}
@@ -201,11 +205,12 @@ func TestCacheEntry(t *testing.T) {
 	t.Run("AccessTracking", func(t *testing.T) {
 		cm := NewCacheManager(true, 100, 0)
 
-		cm.Set("key", "value")
+		key := testKey("key")
+		cm.Set(key, "value")
 
 		// Access multiple times
 		for i := 0; i < 5; i++ {
-			cm.Get("key")
+			cm.Get(key)
 		}
 
 		// Verify hit count increased
@@ -219,7 +224,7 @@ func TestCacheEntry(t *testing.T) {
 // TestCacheEntryCountAccuracy verifies the atomic entryCount maintained in
 // CacheManager stays in lock-step with the authoritative per-shard size sum
 // (GetStats().Entries) across every mutation path. entryCount drives the
-// empty-cache fast-exit in DeleteByPrefix, so a drift here would either miss
+// empty-cache fast-exit in DeleteByJSONHash, so a drift here would either miss
 // the optimization (over-count) or, worse, skip invalidation of live entries
 // (under-count → stale reads). Cross-checking against GetStats().Entries, which
 // sums shard.size under read locks, catches any missed ++/-- site.
@@ -242,32 +247,39 @@ func TestCacheEntryCountAccuracy(t *testing.T) {
 
 	// Set new entries.
 	for i := 0; i < 5; i++ {
-		cm.Set(fmt.Sprintf("k%d", i), i)
+		cm.Set(testKey(fmt.Sprintf("k%d", i)), i)
 	}
 	assertCount("after 5 inserts")
 
 	// Updating an existing key must NOT change the count.
-	cm.Set("k0", "updated")
+	cm.Set(testKey("k0"), "updated")
 	assertCount("after in-place update")
 
 	// Inserting past maxSize triggers LRU eviction — count must still match.
 	for i := 5; i < 20; i++ {
-		cm.Set(fmt.Sprintf("k%d", i), i)
+		cm.Set(testKey(fmt.Sprintf("k%d", i)), i)
 	}
 	assertCount("after eviction-inducing inserts")
 
-	// DeleteByPrefix on a populated cache removes matching entries.
-	cm.Set("get:deadbeef:user", 1)
-	cm.Set("parse:deadbeef:", 2)
+	// DeleteByJSONHash on a populated cache removes every entry of that document.
+	const docHash = uint64(0xdeadbeef)
+	cm.Set(CacheKey{Op: "get", JSONHash: docHash, Path: "user"}, 1)
+	cm.Set(CacheKey{Op: "parse", JSONHash: docHash}, 2)
 	before := cm.EntryCount()
-	cm.DeleteByPrefix("deadbeef")
+	cm.DeleteByJSONHash(docHash)
 	if cm.EntryCount() >= before {
-		t.Errorf("DeleteByPrefix did not reduce count: before=%d after=%d", before, cm.EntryCount())
+		t.Errorf("DeleteByJSONHash did not reduce count: before=%d after=%d", before, cm.EntryCount())
 	}
-	assertCount("after DeleteByPrefix (populated)")
+	if _, ok := cm.Get(CacheKey{Op: "get", JSONHash: docHash, Path: "user"}); ok {
+		t.Error("get entry of invalidated document survived")
+	}
+	if _, ok := cm.Get(CacheKey{Op: "parse", JSONHash: docHash}); ok {
+		t.Error("parse entry of invalidated document survived")
+	}
+	assertCount("after DeleteByJSONHash (populated)")
 
 	// Explicit Delete.
-	cm.Delete("k0")
+	cm.Delete(testKey("k0"))
 	assertCount("after Delete")
 
 	// Clear resets to zero.
@@ -276,11 +288,11 @@ func TestCacheEntryCountAccuracy(t *testing.T) {
 		t.Errorf("after Clear EntryCount=%d, want 0", cm.EntryCount())
 	}
 
-	// DeleteByPrefix on an empty cache must be a no-op (the fast-exit path)
+	// DeleteByJSONHash on an empty cache must be a no-op (the fast-exit path)
 	// and must not panic or alter the count.
-	cm.DeleteByPrefix("deadbeef")
+	cm.DeleteByJSONHash(docHash)
 	if cm.EntryCount() != 0 {
-		t.Errorf("DeleteByPrefix on empty cache changed count to %d", cm.EntryCount())
+		t.Errorf("DeleteByJSONHash on empty cache changed count to %d", cm.EntryCount())
 	}
 }
 
@@ -294,7 +306,7 @@ func TestCacheEntryCountConcurrent(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < 500; i++ {
-				key := fmt.Sprintf("g%d-k%d", g, i)
+				key := testKey(fmt.Sprintf("g%d-k%d", g, i))
 				cm.Set(key, i)
 				if i%3 == 0 {
 					cm.Delete(key)
@@ -315,37 +327,39 @@ func TestCacheEntryCountConcurrent(t *testing.T) {
 func BenchmarkCacheGet(b *testing.B) {
 	cm := NewCacheManager(true, 1000, 0)
 
-	cm.Set("benchmark_key", "benchmark_value")
+	key := testKey("benchmark_key")
+	cm.Set(key, "benchmark_value")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cm.Get("benchmark_key")
+		cm.Get(key)
 	}
 }
 
 func BenchmarkCacheSet(b *testing.B) {
 	cm := NewCacheManager(true, 10000, 0)
 
+	key := testKey("key")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cm.Set("key", i)
+		cm.Set(key, i)
 	}
 }
 
 func BenchmarkCacheConcurrent(b *testing.B) {
 	cm := NewCacheManager(true, 10000, 0)
 
-	// Pre-populate
-	for i := 0; i < 100; i++ {
-		cm.Set("key_"+string(rune(i)), i)
+	keys := make([]CacheKey, 100)
+	for i := range keys {
+		keys[i] = testKey(fmt.Sprintf("key_%d", i))
+		cm.Set(keys[i], i)
 	}
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			key := "key_" + string(rune(i%100))
-			cm.Get(key)
+			cm.Get(keys[i%100])
 			i++
 		}
 	})
@@ -359,15 +373,14 @@ func TestCacheManager_Delete(t *testing.T) {
 	t.Run("delete existing key", func(t *testing.T) {
 		cm := NewCacheManager(true, 100, 0)
 
-		cm.Set("key", "value")
-		_, found := cm.Get("key")
-		if !found {
+		key := testKey("key")
+		cm.Set(key, "value")
+		if _, found := cm.Get(key); !found {
 			t.Fatal("Value should be found before delete")
 		}
 
-		cm.Delete("key")
-		_, found = cm.Get("key")
-		if found {
+		cm.Delete(key)
+		if _, found := cm.Get(key); found {
 			t.Error("Value should not be found after delete")
 		}
 	})
@@ -376,7 +389,7 @@ func TestCacheManager_Delete(t *testing.T) {
 		cm := NewCacheManager(true, 100, 0)
 
 		// Should not panic
-		cm.Delete("nonexistent_key")
+		cm.Delete(testKey("nonexistent_key"))
 	})
 }
 
@@ -384,17 +397,17 @@ func TestCacheManager_Clear(t *testing.T) {
 	cm := NewCacheManager(true, 100, 0)
 
 	// Add multiple entries
-	cm.Set("key1", "value1")
-	cm.Set("key2", "value2")
-	cm.Set("key3", "value3")
+	cm.Set(testKey("key1"), "value1")
+	cm.Set(testKey("key2"), "value2")
+	cm.Set(testKey("key3"), "value3")
 
 	// Clear the cache
 	cm.Clear()
 
 	// Verify all entries are gone
-	_, found1 := cm.Get("key1")
-	_, found2 := cm.Get("key2")
-	_, found3 := cm.Get("key3")
+	_, found1 := cm.Get(testKey("key1"))
+	_, found2 := cm.Get(testKey("key2"))
+	_, found3 := cm.Get(testKey("key3"))
 
 	if found1 || found2 || found3 {
 		t.Error("All entries should be cleared")
@@ -410,8 +423,8 @@ func TestCacheManager_Clear(t *testing.T) {
 func TestCacheManager_CleanExpiredCache(t *testing.T) {
 	cm := NewCacheManager(true, 100, 50*time.Millisecond)
 
-	cm.Set("key1", "value1")
-	cm.Set("key2", "value2")
+	cm.Set(testKey("key1"), "value1")
+	cm.Set(testKey("key2"), "value2")
 
 	// Wait for TTL to expire
 	time.Sleep(100 * time.Millisecond)
@@ -423,8 +436,7 @@ func TestCacheManager_CleanExpiredCache(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Entries should be expired
-	_, found := cm.Get("key1")
-	if found {
+	if _, found := cm.Get(testKey("key1")); found {
 		t.Error("Entry should be expired after CleanExpiredCache")
 	}
 }
@@ -433,11 +445,11 @@ func TestCacheManager_GetStats(t *testing.T) {
 	cm := NewCacheManager(true, 100, 0)
 
 	// Add entries and access them
-	cm.Set("key1", "value1")
-	cm.Set("key2", "value2")
-	cm.Get("key1")        // hit
-	cm.Get("key1")        // hit
-	cm.Get("nonexistent") // miss
+	cm.Set(testKey("key1"), "value1")
+	cm.Set(testKey("key2"), "value2")
+	cm.Get(testKey("key1"))            // hit
+	cm.Get(testKey("key1"))            // hit
+	cm.Get(testKey("nonexistent_key")) // miss
 
 	stats := cm.GetStats()
 
@@ -460,7 +472,7 @@ func TestCacheManager_Eviction(t *testing.T) {
 
 	// Add more entries than max size to trigger eviction
 	for i := 0; i < 10; i++ {
-		cm.Set(string(rune('a'+i)), i)
+		cm.Set(testKey(string(rune('a'+i))), i)
 	}
 
 	// Some entries should have been evicted
@@ -477,14 +489,14 @@ func TestCacheManager_VariousTypes(t *testing.T) {
 	t.Run("simple types", func(t *testing.T) {
 		tests := []struct {
 			name  string
-			key   string
+			key   CacheKey
 			value any
 		}{
-			{"string", "str_key", "test_string"},
-			{"int", "int_key", 42},
-			{"float", "float_key", 3.14159},
-			{"bool", "bool_key", true},
-			{"nil", "nil_key", nil},
+			{"string", testKey("str_key"), "test_string"},
+			{"int", testKey("int_key"), 42},
+			{"float", testKey("float_key"), 3.14159},
+			{"bool", testKey("bool_key"), true},
+			{"nil", testKey("nil_key"), nil},
 		}
 
 		for _, tt := range tests {
@@ -492,10 +504,10 @@ func TestCacheManager_VariousTypes(t *testing.T) {
 				cm.Set(tt.key, tt.value)
 				retrieved, found := cm.Get(tt.key)
 				if !found {
-					t.Errorf("Key %s should be found", tt.key)
+					t.Errorf("Key %s should be found", tt.key.Path)
 				}
 				if tt.value != nil && retrieved != tt.value {
-					t.Errorf("Value mismatch for %s", tt.key)
+					t.Errorf("Value mismatch for %s", tt.key.Path)
 				}
 			})
 		}
@@ -504,8 +516,8 @@ func TestCacheManager_VariousTypes(t *testing.T) {
 	// Test complex types (just verify they can be stored and retrieved)
 	t.Run("complex types", func(t *testing.T) {
 		// Slice
-		cm.Set("slice_key", []any{1, 2, 3})
-		retrieved, found := cm.Get("slice_key")
+		cm.Set(testKey("slice_key"), []any{1, 2, 3})
+		retrieved, found := cm.Get(testKey("slice_key"))
 		if !found {
 			t.Error("slice_key should be found")
 		}
@@ -514,8 +526,8 @@ func TestCacheManager_VariousTypes(t *testing.T) {
 		}
 
 		// Map
-		cm.Set("map_key", map[string]any{"a": 1})
-		retrieved, found = cm.Get("map_key")
+		cm.Set(testKey("map_key"), map[string]any{"a": 1})
+		retrieved, found = cm.Get(testKey("map_key"))
 		if !found {
 			t.Error("map_key should be found")
 		}
@@ -524,8 +536,8 @@ func TestCacheManager_VariousTypes(t *testing.T) {
 		}
 
 		// Bytes
-		cm.Set("bytes_key", []byte("test"))
-		retrieved, found = cm.Get("bytes_key")
+		cm.Set(testKey("bytes_key"), []byte("test"))
+		retrieved, found = cm.Get(testKey("bytes_key"))
 		if !found {
 			t.Error("bytes_key should be found")
 		}
@@ -534,8 +546,8 @@ func TestCacheManager_VariousTypes(t *testing.T) {
 		}
 
 		// PathSegments
-		cm.Set("path_key", []PathSegment{NewPropertySegment("test")})
-		retrieved, found = cm.Get("path_key")
+		cm.Set(testKey("path_key"), []PathSegment{NewPropertySegment("test")})
+		retrieved, found = cm.Get(testKey("path_key"))
 		if !found {
 			t.Error("path_key should be found")
 		}
@@ -590,34 +602,4 @@ func TestNextPowerOf2(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestTruncateCacheKey(t *testing.T) {
-	t.Run("short key unchanged", func(t *testing.T) {
-		key := "short_key"
-		result := truncateCacheKey(key)
-		if result != key {
-			t.Errorf("Short key should not be truncated")
-		}
-	})
-
-	t.Run("long key truncated", func(t *testing.T) {
-		// Create a key longer than MaxCacheKeyLength
-		longKey := ""
-		for i := 0; i < 1500; i++ {
-			longKey += "a"
-		}
-
-		result := truncateCacheKey(longKey)
-		if len(result) > MaxCacheKeyLength {
-			t.Errorf("Truncated key length %d > max %d", len(result), MaxCacheKeyLength)
-		}
-		// Should contain "..." separator
-		if len(result) > 0 && len(longKey) > MaxCacheKeyLength {
-			// Verify the key was modified
-			if result == longKey {
-				t.Error("Long key should be truncated")
-			}
-		}
-	})
 }

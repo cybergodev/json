@@ -31,7 +31,11 @@ var errorSentinelsOnce sync.Once
 // The root package calls this during initialization to ensure errors.Is() works
 // correctly across package boundaries. Without this, users cannot match internal
 // errors against the public json.ErrPathNotFound, json.ErrTypeMismatch, etc.
-// Safe for concurrent use — only the first call takes effect.
+//
+// Concurrent calls are serialized (only the first takes effect, via sync.Once),
+// but a concurrent READ of the sentinel vars racing the FIRST write is still a
+// data race — call it before concurrent use begins, as the root package does
+// from its init() (P-002 note).
 func SetErrorSentinels(pathNotFound, typeMismatch, invalidPath error) {
 	errorSentinelsOnce.Do(func() {
 		if pathNotFound != nil {

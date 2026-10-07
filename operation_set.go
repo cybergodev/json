@@ -434,6 +434,20 @@ func (p *Processor) extendArrayAndSetSliceValue(rootData any, segments []interna
 		}
 	}
 
+	// D-002/R9 (m12): a single-segment slice path targets the ROOT container
+	// itself — there is no parent reference to swap an extended array into.
+	// The previous zero-value arrayContainerSegment silently targeted
+	// root[0] (extending the WRONG array whenever it happened to be []any) or
+	// errored with a misleading "nested array" message. Fail explicitly,
+	// matching handleAppendOperation's root-append rejection.
+	if len(segments) < 2 {
+		return &JsonsError{
+			Op:      "array_extension",
+			Message: "cannot extend the root array: slice/index extension requires a parent path",
+			Err:     errOperationFailed,
+		}
+	}
+
 	// For array extension, we need to navigate to the parent of the array container
 	current := rootData
 	for i := 0; i < len(segments)-2; i++ {
@@ -444,27 +458,15 @@ func (p *Processor) extendArrayAndSetSliceValue(rootData any, segments []interna
 		current = next
 	}
 
-	// Get the array container segment and the slice access segment
-	var arrayContainerSegment, sliceAccessSegment internal.PathSegment
-	if len(segments) >= 2 {
-		arrayContainerSegment = segments[len(segments)-2]
-		sliceAccessSegment = segments[len(segments)-1]
-	} else if len(segments) == 1 {
-		// Single segment case - the array is at root level
-		sliceAccessSegment = segments[0]
-	} else {
-		return fmt.Errorf("no segments provided for slice operation")
-	}
+	// Get the array container segment (the slice access segment has no role
+	// once the single-segment fallback above was removed — D-002/R9 m12)
+	arrayContainerSegment := segments[len(segments)-2]
 
 	// Handle different parent types
 	switch v := current.(type) {
 	case map[string]any:
 		// Get the property name from the array container segment
 		propertyName := arrayContainerSegment.Key
-		if propertyName == "" && len(segments) == 1 {
-			// Single segment case - extract property name from slice access segment
-			propertyName = sliceAccessSegment.Key
-		}
 
 		// Get or create the array
 		var currentArr []any
@@ -543,34 +545,27 @@ func (p *Processor) extendArrayAndSetValue(rootData any, segments []internal.Pat
 		current = next
 	}
 
-	// Get the array container segment and the array access segment
-	var arrayContainerSegment, arrayAccessSegment internal.PathSegment
-	if len(segments) >= 2 {
-		arrayContainerSegment = segments[len(segments)-2]
-		arrayAccessSegment = segments[len(segments)-1]
-	} else if len(segments) == 1 {
-		// Single segment case - the array is at root level
-		arrayAccessSegment = segments[0]
-	} else {
-		return fmt.Errorf("no segments provided for array index operation")
+	// D-002/R9 (m12): single-segment index paths target the ROOT container —
+	// no parent reference to swap an extended array into. Error explicitly
+	// (the previous zero-value arrayContainerSegment silently targeted
+	// root[0]); see extendArrayAndSetSliceValue for the full rationale.
+	if len(segments) < 2 {
+		return &JsonsError{
+			Op:      "array_extension",
+			Message: "cannot extend the root array: slice/index extension requires a parent path",
+			Err:     errOperationFailed,
+		}
 	}
+
+	// Get the array container segment (the access segment has no role once the
+	// single-segment fallback above was removed — D-002/R9 m12)
+	arrayContainerSegment := segments[len(segments)-2]
 
 	// Handle different parent types
 	switch v := current.(type) {
 	case map[string]any:
 		// Get the property name from the array container segment
 		propertyName := arrayContainerSegment.Key
-		if propertyName == "" && len(segments) == 1 {
-			// Single segment case - extract property name from array access segment
-			propertyName = arrayAccessSegment.Key
-			if propertyName == "" {
-				propertyName = arrayAccessSegment.String()
-				if strings.Contains(propertyName, "[") {
-					bracketIndex := strings.Index(propertyName, "[")
-					propertyName = propertyName[:bracketIndex]
-				}
-			}
-		}
 
 		// Get or create the array
 		var currentArr []any

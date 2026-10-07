@@ -857,28 +857,31 @@ See [Security Guide](docs/SECURITY.md) for detailed security best practices.
 
 | File | Description |
 |------|-------------|
-| [1_basic_usage.go](examples/1_basic_usage.go) | Core operations |
-| [2_advanced_features.go](examples/2_advanced_features.go) | Complex paths, nested extraction |
-| [3_production_ready.go](examples/3_production_ready.go) | Thread-safe patterns |
-| [4_error_handling.go](examples/4_error_handling.go) | Error handling patterns |
-| [5_encoding_options.go](examples/5_encoding_options.go) | Encoding configuration |
-| [6_validation.go](examples/6_validation.go) | Schema validation |
-| [7_type_conversion.go](examples/7_type_conversion.go) | Type conversion, Result[T] |
-| [8_helper_functions.go](examples/8_helper_functions.go) | Helper utilities |
-| [9_iterator_functions.go](examples/9_iterator_functions.go) | Iteration patterns |
-| [10_file_operations.go](examples/10_file_operations.go) | File I/O |
-| [11_with_defaults.go](examples/11_with_defaults.go) | Default value handling |
-| [12_advanced_delete.go](examples/12_advanced_delete.go) | Delete operations |
-| [13_batch_operations.go](examples/13_batch_operations.go) | Batch processing and caching |
-| [14_streaming_iterators.go](examples/14_streaming_iterators.go) | Streaming iterators |
-| [15_jsonl_processing.go](examples/15_jsonl_processing.go) | JSONL format processing |
-| [16_hooks_and_security.go](examples/16_hooks_and_security.go) | Hooks (AddHook + Config.Hooks), security |
-| [17_advanced_patterns.go](examples/17_advanced_patterns.go) | PreParse, CompiledPath, package-level helpers |
+| [1_basic_usage](examples/1_basic_usage/main.go) | Core operations |
+| [2_advanced_features](examples/2_advanced_features/main.go) | Complex paths, nested extraction |
+| [3_production_ready](examples/3_production_ready/main.go) | Thread-safe patterns |
+| [4_error_handling](examples/4_error_handling/main.go) | Error handling patterns |
+| [5_encoding_options](examples/5_encoding_options/main.go) | Encoding configuration |
+| [6_validation](examples/6_validation/main.go) | Schema validation |
+| [7_type_conversion](examples/7_type_conversion/main.go) | Type conversion, Result[T] |
+| [8_helper_functions](examples/8_helper_functions/main.go) | Helper utilities |
+| [9_iterator_functions](examples/9_iterator_functions/main.go) | Iteration patterns |
+| [10_file_operations](examples/10_file_operations/main.go) | File I/O |
+| [11_with_defaults](examples/11_with_defaults/main.go) | Default value handling |
+| [12_advanced_delete](examples/12_advanced_delete/main.go) | Delete operations |
+| [13_batch_operations](examples/13_batch_operations/main.go) | Batch processing and caching |
+| [14_streaming_iterators](examples/14_streaming_iterators/main.go) | Streaming iterators |
+| [15_jsonl_processing](examples/15_jsonl_processing/main.go) | JSONL format processing |
+| [16_hooks_and_security](examples/16_hooks_and_security/main.go) | Hooks (AddHook + Config.Hooks), security |
+| [17_advanced_patterns](examples/17_advanced_patterns/main.go) | PreParse, CompiledPath, package-level helpers |
 
 ```bash
 # Run individual examples (build tag required)
-go run -tags=example examples/1_basic_usage.go
-go run -tags=example examples/2_advanced_features.go
+go run -tags=example ./examples/1_basic_usage
+go run -tags=example ./examples/2_advanced_features
+
+# Compile-check all examples at once (same gate CI runs)
+go vet -tags example ./examples/...
 ```
 
 ---

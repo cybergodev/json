@@ -20,7 +20,7 @@ import (
 // - Deep copy via marshal/unmarshal cycle
 // - Result[T] — type-safe result wrapper (Ok / Unwrap / UnwrapOr)
 //
-// Run: go run -tags=example examples/7_type_conversion.go
+// Run: go run -tags=example ./examples/7_type_conversion
 
 func main() {
 	fmt.Println("JSON Library - Type Conversion")

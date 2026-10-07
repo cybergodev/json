@@ -206,6 +206,9 @@ func (mc *MetricsCollector) Reset() {
 }
 
 // GetSummary returns a formatted summary of metrics
+//
+// NOTE (D-002/R8 M5): no production caller — the root package renders its own
+// Stats; retained for tests/future use.
 func (mc *MetricsCollector) GetSummary() string {
 	metrics := mc.GetMetrics()
 

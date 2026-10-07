@@ -155,6 +155,9 @@ func getPathType(path string) pathType {
 }
 
 // safeTypeAssert performs a safe type assertion with generics
+//
+// NOTE (D-002/R8 M5): no production caller — unifiedTypeConversion
+// (helpers.go) is the live conversion path; retained for tests/future use.
 func safeTypeAssert[T any](value any) (T, bool) {
 	var zero T
 

@@ -58,14 +58,16 @@ type processorMetrics struct {
 	operationCount    int64
 	errorCount        int64
 	lastOperationTime int64
-	operationWindow   int64
+	// operationWindow is the ops-per-second rate cap from
+	// Config.MaxOperationsPerSecond (D-002/R8 M3 wiring); 0 = disabled.
+	operationWindow int64
 	// concurrencyLimit/concurrentOps form an atomic counting semaphore that
 	// caps in-flight operations at MaxConcurrency. Replacing the previous
 	// buffered-channel semaphore removes the channel's internal mutex from the
 	// hot path — under high parallelism that lock dominated CPU. This is a SOFT
 	// limit: acquire rejects when full (never blocks), matching the channel's
 	// non-blocking select semantics.
-	concurrencyLimit int64 // immutable after construction; 0 = unlimited
+	concurrencyLimit int64 // immutable after construction; 0 = unlimited (defensive only — Config validation maps non-positive MaxConcurrency to the default, so New never produces 0)
 	concurrentOps    int64 // atomic: current in-flight (semaphore-acquired) ops
 	collector        *internal.MetricsCollector
 	enabled          bool // Flag to enable/disable metrics collection
@@ -116,6 +118,7 @@ func New(cfg ...Config) (*Processor, error) {
 			config.MaxNestingDepthSecurity,
 			config.FullSecurityScan,
 			config.DisableDefaultPatterns,
+			config.DetectDuplicateKeys,
 			toInternalPatterns(config.AdditionalDangerousPatterns),
 			config.MaxObjectKeys,
 			config.MaxArrayElements,
@@ -126,7 +129,7 @@ func New(cfg ...Config) (*Processor, error) {
 			memoryPressure:  0,
 		},
 		metrics: &processorMetrics{
-			operationWindow:  0, // Disabled by default for better performance
+			operationWindow:  int64(config.MaxOperationsPerSecond), // 0 = disabled (D-002/R8 M3)
 			concurrencyLimit: int64(config.MaxConcurrency),
 			enabled:          config.EnableMetrics,
 		},
@@ -179,7 +182,7 @@ var defaultConfigSingleton = cachedDefaultConfigValue
 // releaseConfig returns a pooled Config, clearing all reference-type fields first
 // to prevent data leaks back into the pool.
 // SECURITY: Must clear all map/slice/interface fields to avoid cross-request contamination.
-// PERFORMANCE v3: Only nil out reference-type fields instead of full DefaultConfig() copy.
+// PERFORMANCE: Only nil out reference-type fields instead of full DefaultConfig() copy.
 func releaseConfig(cfg *Config) {
 	if cfg == nil || cfg == &defaultConfigSingleton {
 		// nil, or the shared immutable default — never pool/mutate the singleton.
@@ -193,6 +196,7 @@ func releaseConfig(cfg *Config) {
 	cfg.CustomTypeEncoders = nil
 	cfg.CustomValidators = nil
 	cfg.AdditionalDangerousPatterns = nil
+	cfg.AllowedFileDirs = nil
 	cfg.Hooks = nil
 	cfg.CustomPathParser = nil
 	cfg.Indent = ""
@@ -330,39 +334,64 @@ func (p *Processor) endGovernedOp() {
 // beginGovernedOp), prepares and validates options, then validates input and
 // path via the shared helper (handles SkipValidation).
 //
-// On success it returns the prepared options; the caller MUST defer
-// releaseConfig(options) and p.endGovernedOp() — in that registration order, so
-// they unwind in the correct reverse-acquire sequence (options first, then the
-// governance slot). On failure every acquired resource is released here and a
-// non-nil error is returned. Replaces the previous closure-returning form so no
-// cleanup closure escapes to the heap.
-func (p *Processor) prepareOperation(jsonStr, path string, cfg ...Config) (*Config, error) {
+// On success it returns the prepared options and the document's FNV-1a hash
+// when the result cache is enabled (P-003: computed ONCE here, shared with
+// the validation prehash — validation skips its internal full-document scan —
+// and reused by the mutation callers for cache invalidation instead of
+// re-hashing there). The hash is 0 when EnableCache is off; callers must not
+// use it in that case. The caller MUST defer releaseConfig(options) and
+// p.endGovernedOp() — in that registration order, so they unwind in the
+// correct reverse-acquire sequence (options first, then the governance slot).
+// On failure every acquired resource is released here and a non-nil error is
+// returned. Replaces the previous closure-returning form so no cleanup
+// closure escapes to the heap.
+func (p *Processor) prepareOperation(jsonStr, path string, cfg ...Config) (*Config, uint64, error) {
 	if err := p.beginGovernedOp(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
 		p.endGovernedOp()
-		return nil, err
+		return nil, 0, err
+	}
+
+	// P-003: hash the document once when the result cache is enabled and feed
+	// it to validation (mirrors Get's P-001 pattern). The mutation callers
+	// (Set/Delete) reuse the same hash for invalidateJSONCacheHashed — one
+	// full-document scan per mutation instead of two (validation + invalidation).
+	jsonHash := uint64(0)
+	if p.config.EnableCache {
+		jsonHash = hashStringToUint64(jsonStr)
 	}
 
 	// Validate input and path via the shared helper (handles SkipValidation).
 	// This is the same logic Get uses, keeping all operations consistent.
-	if err := p.validateOperationInput(jsonStr, path, options); err != nil {
+	if err := p.validateOperationInputHashed(jsonStr, path, options, jsonHash, p.config.EnableCache); err != nil {
 		releaseConfig(options)
 		p.endGovernedOp()
-		return nil, err
+		return nil, 0, err
 	}
 
-	return options, nil
+	return options, jsonHash, nil
 }
 
-// validateOperationInput validates JSON input and path for an operation.
-// Handles the SkipValidation flag: when true, only essential size/depth checks run.
-func (p *Processor) validateOperationInput(jsonStr, path string, options *Config) error {
+// validateOperationInputHashed validates JSON input and path for an operation.
+// Handles the SkipValidation flag: when true, only essential size/depth checks
+// run. It reuses a caller-held document hash (P-001): callers that already
+// computed hashStringToUint64(jsonStr) for cache keys hand it here so the
+// input is FNV-scanned once instead of twice per operation. hasHash reports
+// whether jsonHash was computed — with false the validation paths hash
+// internally.
+func (p *Processor) validateOperationInputHashed(jsonStr, path string, options *Config, jsonHash uint64, hasHash bool) error {
 	if !options.SkipValidation {
-		if err := p.validateInputForOptions(jsonStr, options); err != nil {
+		var err error
+		if hasHash {
+			err = p.validateInputForOptionsHashed(jsonStr, options, jsonHash)
+		} else {
+			err = p.validateInputForOptions(jsonStr, options)
+		}
+		if err != nil {
 			return err
 		}
 		if !isSimplePropertyAccess(path) {
@@ -392,12 +421,25 @@ func (p *Processor) validateOperationInput(jsonStr, path string, options *Config
 // The fast json.Unmarshal path keys off pointer-identity with the shared default
 // singleton: when `options == &defaultConfigSingleton` the caller passed no
 // per-call config (prepareOptions/prepareOperation return the singleton exactly
-// when len(cfg)==0), so we can skip the option-aware p.Parse path. The
-// `!p.config.PreserveNumbers` guard keeps number preservation on the p.Parse path
-// where UseNumber is honored.
+// when len(cfg)==0).
+//
+// D-002/R8 (C1): number preservation follows the D-006 rule — a per-call cfg
+// REPLACES the setting, and with no cfg the processor's baked configuration
+// applies. Previously the default singleton's PreserveNumbers=false won on
+// every no-cfg call, so a PreserveNumbers processor returned float64 from
+// Get/ParseAny and rewrote untouched big integers as floats on
+// Set/SetMultiple/Delete. All callers validate input first
+// (validateOperationInput), so the preserving branch decodes directly instead
+// of re-validating through p.Parse (which would also route every call through
+// a transient securityValidator — see P-001).
 func (p *Processor) parseJSON(jsonStr, op, path string, options *Config) (any, error) {
+	preserveNumbers := p.config.PreserveNumbers
+	if options != nil && options != &defaultConfigSingleton {
+		preserveNumbers = options.PreserveNumbers
+	}
+
 	var data any
-	if options == &defaultConfigSingleton && !p.config.PreserveNumbers {
+	if !preserveNumbers {
 		if err := json.Unmarshal(internal.StringToBytes(jsonStr), &data); err != nil {
 			return nil, &JsonsError{
 				Op:      op,
@@ -408,8 +450,14 @@ func (p *Processor) parseJSON(jsonStr, op, path string, options *Config) (any, e
 		}
 		return data, nil
 	}
-	if err := p.Parse(jsonStr, &data, *options); err != nil {
-		return nil, err
+	data, err := newNumberPreservingDecoder(true).DecodeToAny(jsonStr)
+	if err != nil {
+		return nil, &JsonsError{
+			Op:      op,
+			Path:    path,
+			Message: fmt.Sprintf("failed to parse JSON: %v", err),
+			Err:     ErrInvalidJSON,
+		}
 	}
 	return data, nil
 }

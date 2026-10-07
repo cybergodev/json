@@ -29,7 +29,7 @@ import (
 //   StreamLinesInto[T], and the JSONL mirror family (FilterJSONL, MapJSONL,
 //   ReduceJSONL, FirstJSONL, CollectJSONL)
 //
-// Run: go run -tags=example examples/15_jsonl_processing.go
+// Run: go run -tags=example ./examples/15_jsonl_processing
 
 func main() {
 	fmt.Println("JSON Library - JSONL Processing")

@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/cybergodev/json/internal"
 )
 
 // -----------------------------------------------------------------------------
@@ -436,6 +438,15 @@ func TestUnicodeEscapeDecoding(t *testing.T) {
 		{"invalid hex kept verbatim", bs + "uzzzz", bs + "uzzzz"},
 		{"truncated escape kept verbatim", "a" + bs + "u12", "a" + bs + "u12"},
 		{"backslash without u", bs + "n", bs + "n"},
+		// P-003 block-copy path: greedy left-to-right discipline must survive
+		// segment-wise copying. An escaped backslash writes the first '\',
+		// then the u0041-looking text IS decoded (same as the per-byte loop).
+		{"escaped backslash then u-hex", bs + bs + "u0041", bs + "A"},
+		{"segments between escapes", "aaa" + bs + "u0041" + "bbb" + bs + "u0042" + "ccc", "aaaAbbbBccc"},
+		{"long escape-free tail", strings.Repeat("x", 1000) + bs + "u0041" + strings.Repeat("y", 1000),
+			strings.Repeat("x", 1000) + "A" + strings.Repeat("y", 1000)},
+		{"trailing backslash", "abc" + bs, "abc" + bs},
+		{"only a backslash", bs, bs},
 	}
 	for _, tc := range cases {
 		if got := normalizeJSONEscapes(tc.input); got != tc.want {
@@ -457,7 +468,7 @@ func TestValidationCacheLRUEviction(t *testing.T) {
 	}
 
 	// Distinct valid inputs, each small enough to qualify for caching
-	// (validationCacheMaxInputSize = 256KB).
+	// (validationCacheMaxInputSize = 2MB).
 	const inserts = securityCacheHighWatermark + 300
 	for i := range inserts {
 		input := fmt.Sprintf(`{"evict":%d,"pad":"%06d"}`, i, i)
@@ -478,6 +489,232 @@ func TestValidationCacheLRUEviction(t *testing.T) {
 	}
 	if size < securityCacheHighWatermark/2 {
 		t.Errorf("cache size %d collapsed below half the watermark; eviction too aggressive", size)
+	}
+}
+
+// TestValidationCacheLargeInputCached (P-003): inputs between the historical
+// 256KB cutoff and the current per-entry cap are cached, so the full security
+// scan no longer re-runs on every operation for mid-sized documents.
+// cachedBytes must track the pinned input exactly after the first insert.
+func TestValidationCacheLargeInputCached(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	sv := p.securityValidator
+
+	// 300KB document: above the old 256KB cutoff, below the 2MB per-entry cap.
+	input := `{"pad":"` + strings.Repeat("a", 300*1024) + `"}`
+	if err := sv.ValidateJSONInput(input); err != nil {
+		t.Fatalf("valid input rejected: %v", err)
+	}
+
+	sv.cacheMutex.RLock()
+	entry, ok := sv.validationCache[sv.getValidationCacheKey(input)]
+	pinned := sv.cachedBytes
+	sv.cacheMutex.RUnlock()
+
+	if !ok || !entry.validated {
+		t.Fatal("300KB input not cached after successful validation (P-003 regression)")
+	}
+	if pinned != len(input) {
+		t.Errorf("cachedBytes = %d, want %d (len of pinned input)", pinned, len(input))
+	}
+}
+
+// TestValidationCacheInputSizeCutoff: inputs above validationCacheMaxInputSize
+// are never cached (revalidated on every use) and never counted in cachedBytes.
+func TestValidationCacheInputSizeCutoff(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	sv := p.securityValidator
+
+	tooBig := `{"pad":"` + strings.Repeat("a", validationCacheMaxInputSize+1024) + `"}`
+	if err := sv.ValidateJSONInput(tooBig); err != nil {
+		t.Fatalf("valid input rejected: %v", err)
+	}
+
+	sv.cacheMutex.RLock()
+	n, pinned := len(sv.validationCache), sv.cachedBytes
+	sv.cacheMutex.RUnlock()
+
+	if n != 0 || pinned != 0 {
+		t.Errorf("oversized input cached: entries=%d cachedBytes=%d, want 0/0", n, pinned)
+	}
+}
+
+// TestValidationCacheByteBudget (P-003): pinned bytes stay within
+// validationCacheBytesBudget (plus one in-flight insert), and cachedBytes
+// always equals the sum of live entry input lengths (no accounting drift).
+// Drives cacheValidationWithKey directly so 40 inserts of 1MB inputs skip the
+// O(size) validation scan.
+func TestValidationCacheByteBudget(t *testing.T) {
+	sv := newSecurityValidator(
+		100*1024*1024, // maxJSONSize
+		internal.MaxPathLength,
+		200,    // maxNestingDepth
+		false,  // fullSecurityScan
+		false,  // disableDefaultPatterns
+		false,  // detectDuplicateKeys
+		nil,    // additionalPatterns
+		100000, // maxObjectKeys
+		100000, // maxArrayElements
+	)
+	defer sv.Close()
+
+	input := strings.Repeat("x", 1024*1024)
+	for i := range 40 {
+		sv.cacheValidationWithKey(validationKey{length: len(input), h1: uint64(i + 1)}, input)
+	}
+
+	sv.cacheMutex.RLock()
+	defer sv.cacheMutex.RUnlock()
+
+	if sv.cachedBytes > validationCacheBytesBudget+validationCacheMaxInputSize {
+		t.Errorf("cachedBytes %d exceeds budget %d (+ one in-flight entry %d)",
+			sv.cachedBytes, validationCacheBytesBudget, validationCacheMaxInputSize)
+	}
+	sum := 0
+	for _, e := range sv.validationCache {
+		sum += len(e.input)
+	}
+	if sum != sv.cachedBytes {
+		t.Errorf("cachedBytes %d != sum of entry sizes %d (accounting drift)", sv.cachedBytes, sum)
+	}
+	if len(sv.validationCache) >= 40 {
+		t.Error("no entries evicted despite exceeding the byte budget")
+	}
+}
+
+// TestP003InvalidateJSONCacheHashed (P-003 round 4): the hash-threaded
+// invalidation used by Set/Delete/SetMultiple must remove the mutated
+// document's cache entries exactly like the former re-hashing path — a
+// subsequent Get re-parses rather than serving the stale tree — and a
+// cache-disabled processor must be unaffected.
+func TestP003InvalidateJSONCacheHashed(t *testing.T) {
+	// >256KB so the document also exercises the P-003 validation cache path.
+	doc := `{"a":1,"pad":"` + strings.Repeat("x", 300*1024) + `"}`
+
+	mutate := []struct {
+		name string
+		run  func(p *Processor) (string, error)
+	}{
+		{"Set", func(p *Processor) (string, error) {
+			return p.Set(doc, "a", 2)
+		}},
+		{"Delete", func(p *Processor) (string, error) {
+			return p.Delete(doc, "a")
+		}},
+		{"SetMultiple", func(p *Processor) (string, error) {
+			return p.SetMultiple(doc, map[string]any{"a": 3})
+		}},
+	}
+
+	for _, m := range mutate {
+		t.Run(m.name, func(t *testing.T) {
+			p, err := New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer p.Close()
+
+			// Populate parse + result entries for the document.
+			if _, err := p.Get(doc, "."); err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if n := p.cache.EntryCount(); n == 0 {
+				t.Fatal("no cache entries after Get; cannot test invalidation")
+			}
+
+			mutated, err := m.run(p)
+			if err != nil {
+				t.Fatalf("%s: %v", m.name, err)
+			}
+			if n := p.cache.EntryCount(); n != 0 {
+				t.Errorf("%s left %d cache entries; invalidation via shared hash failed", m.name, n)
+			}
+
+			// Post-invalidation Get on the ORIGINAL string must re-parse it
+			// and answer from the true content (a==1: mutations return a new
+			// string; the input string itself never changes), proving no stale
+			// tree is served through the invalidated keys.
+			v, err := p.Get(doc, "a")
+			if err != nil {
+				t.Fatalf("Get after %s: %v", m.name, err)
+			}
+			if v != float64(1) {
+				t.Errorf("Get(a) on original doc after %s = %v, want 1 (re-parsed original content)", m.name, v)
+			}
+
+			// The mutation's RETURNED string carries the new value (and its
+			// own distinct cache identity must not collide with the original's
+			// invalidated entries).
+			if m.name != "Delete" {
+				want := float64(2)
+				if m.name == "SetMultiple" {
+					want = 3
+				}
+				v2, err := p.Get(mutated, "a")
+				if err != nil {
+					t.Fatalf("Get(mutated) after %s: %v", m.name, err)
+				}
+				if v2 != want {
+					t.Errorf("Get(a) on mutated doc after %s = %v, want %v", m.name, v2, want)
+				}
+			}
+		})
+	}
+
+	t.Run("cache-disabled", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.EnableCache = false
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+		if _, err := p.Set(doc, "a", 9); err != nil {
+			t.Fatalf("Set with cache disabled: %v", err)
+		}
+		if _, err := p.Delete(doc, "a"); err != nil {
+			t.Fatalf("Delete with cache disabled: %v", err)
+		}
+	})
+}
+
+// TestValidationCacheReplacementAccounting (P-003): re-inserting an existing
+// key with a different input (the hash-collision path) releases the old
+// entry's bytes, so cachedBytes cannot drift upward across replacements.
+func TestValidationCacheReplacementAccounting(t *testing.T) {
+	sv := newSecurityValidator(
+		100*1024*1024,
+		internal.MaxPathLength,
+		200,
+		false,
+		false,
+		false,
+		nil,
+		100000,
+		100000,
+	)
+	defer sv.Close()
+
+	key := validationKey{length: 8, h1: 42}
+	sv.cacheValidationWithKey(key, "12345678")
+	sv.cacheValidationWithKey(key, "1234567890") // same key, longer input
+
+	sv.cacheMutex.RLock()
+	defer sv.cacheMutex.RUnlock()
+
+	if n := len(sv.validationCache); n != 1 {
+		t.Fatalf("replacement produced %d entries, want 1", n)
+	}
+	if sv.cachedBytes != 10 {
+		t.Errorf("cachedBytes = %d after replacement, want 10 (new input only)", sv.cachedBytes)
 	}
 }
 
@@ -519,13 +756,14 @@ func TestInvalidateCachedResult(t *testing.T) {
 	}
 	defer p.Close()
 
-	p.setCachedResultInternal("invalidate/me", "v")
-	if v, ok := p.getCachedResult("invalidate/me"); !ok || v != "v" {
+	seedKey := internal.CacheKey{Op: "get", JSONHash: 0xC0FFEE, Path: "invalidate/me"}
+	p.setCachedResultInternal(seedKey, "v")
+	if v, ok := p.getCachedResult(seedKey); !ok || v != "v" {
 		t.Fatalf("seed failed: got (%v, %v)", v, ok)
 	}
 
-	p.invalidateCachedResult("invalidate/me")
-	if _, ok := p.getCachedResult("invalidate/me"); ok {
+	p.invalidateCachedResult(seedKey)
+	if _, ok := p.getCachedResult(seedKey); ok {
 		t.Error("entry survived invalidateCachedResult")
 	}
 
@@ -537,9 +775,10 @@ func TestInvalidateCachedResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p2.Close()
-	p2.setCachedResultInternal("k", "v") // must be dropped
-	p2.invalidateCachedResult("k")       // must not panic
-	if _, ok := p2.getCachedResult("k"); ok {
+	disabledKey := internal.CacheKey{Op: "get", JSONHash: 0xC0FFEE, Path: "k"}
+	p2.setCachedResultInternal(disabledKey, "v") // must be dropped
+	p2.invalidateCachedResult(disabledKey)       // must not panic
+	if _, ok := p2.getCachedResult(disabledKey); ok {
 		t.Error("disabled cache returned an entry")
 	}
 }

@@ -20,7 +20,7 @@ import (
 // - DeleteClean — delete plus a sweep of null/empty values (no Config needed)
 // - Batch deletion and sanitization patterns
 //
-// Run: go run -tags=example examples/12_advanced_delete.go
+// Run: go run -tags=example ./examples/12_advanced_delete
 
 // deleteAndShow deletes path from data and prints the before→after result.
 // The demo operates on author-controlled valid data, so an error is reported

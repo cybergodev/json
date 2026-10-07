@@ -22,7 +22,7 @@ import (
 // - Security validation
 // - Processor-level validation
 //
-// Run: go run -tags=example examples/6_validation.go
+// Run: go run -tags=example ./examples/6_validation
 
 func main() {
 	fmt.Println("JSON Library - Validation")
@@ -275,9 +275,10 @@ func demonstrateProcessorValidation() {
 	fmt.Println("\n5. Validation with Processor")
 	fmt.Println("------------------------------")
 
-	// Create processor with validation enabled
+	// Create processor with a tightened size limit (validation always runs;
+	// EnableValidation was removed here: deprecated and never consulted —
+	// D-002/R10)
 	config := json.DefaultConfig()
-	config.EnableValidation = true
 	config.MaxJSONSize = 1024 * 1024 // 1MB
 
 	processor, _ := json.New(config) // OK: DefaultConfig-derived, always valid

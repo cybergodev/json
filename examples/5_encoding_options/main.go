@@ -24,7 +24,7 @@ import (
 // - Pretty vs compact formatting
 // - encoding/json parity helpers (HTMLEscape, Indent)
 //
-// Run: go run -tags=example examples/5_encoding_options.go
+// Run: go run -tags=example ./examples/5_encoding_options
 
 func main() {
 	fmt.Println("JSON Library - Encoding Options")

@@ -46,7 +46,11 @@ func (urp *recursiveProcessor) ProcessRecursivelyWithOptions(data any, path stri
 		case opGet:
 			return data, nil
 		case opSet:
-			return nil, fmt.Errorf("cannot set root value")
+			// GEN-001: an empty path replaces the whole document with value —
+			// previously an error. Processor.Set handles root replacement
+			// before reaching this engine; kept consistent here for direct
+			// callers of the recursive engine.
+			return value, nil
 		case opDelete:
 			return nil, fmt.Errorf("cannot delete root value")
 		}

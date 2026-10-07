@@ -1,8 +1,9 @@
 package json
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -108,45 +109,113 @@ var criticalPatterns = []dangerousPattern{
 	{"prototype.", "prototype manipulation"},
 }
 
+// prefilteredPattern pairs a dangerous pattern with its case-folded second
+// byte so the single-pass scanner can reject first-byte coincidences with a
+// single compare before paying for the slice construction and the full
+// case-insensitive comparison. patternIndex maps back into dangerousPatterns
+// so the recording mode of scanWindowPatterns can file matches by pattern
+// (P-003).
+type prefilteredPattern struct {
+	pattern      string
+	secondByte   byte // case-folded pattern[1]
+	patternIndex int  // index into dangerousPatterns
+}
+
 // dangerousPatternGroups buckets dangerousPatterns by their case-folded first
 // byte. Computed once at init: dangerousPatterns is never mutated after
-// declaration. Drives windowContainsDangerousMatch's single-pass prefilter.
-var dangerousPatternGroups [256][]dangerousPattern
+// declaration. Drives scanWindowPatterns' single pass.
+var dangerousPatternGroups [256][]prefilteredPattern
 
 func init() {
-	for _, dp := range dangerousPatterns {
-		if len(dp.pattern) == 0 {
+	for i, dp := range dangerousPatterns {
+		// Patterns shorter than 2 bytes cannot use the second-byte check and
+		// have no slot in this prefilter (none exist in the built-in set).
+		if len(dp.pattern) < 2 {
 			continue
 		}
 		c := internal.FoldLowerASCII(dp.pattern[0])
-		dangerousPatternGroups[c] = append(dangerousPatternGroups[c], dp)
+		dangerousPatternGroups[c] = append(dangerousPatternGroups[c], prefilteredPattern{
+			pattern:      dp.pattern,
+			secondByte:   internal.FoldLowerASCII(dp.pattern[1]),
+			patternIndex: i,
+		})
 	}
-}
-
-// windowContainsDangerousMatch reports whether any built-in dangerous pattern
-// occurs (case-insensitively) anywhere in window.
-//
-// It is a conservative EXISTENCE prefilter for scanWindowForPatterns: the
-// word-context refinement is deliberately ignored, so whenever it returns
-// false, no built-in pattern can trigger an error and the per-pattern loop can
-// be skipped entirely. One pass over the window replaces one full
-// fastIndexIgnoreCase scan per pattern (~27 on the default set) — profiling
-// (P-001) attributed a large share of first-time validation cost to those
-// repeated scans on every input that was not yet in the validation cache.
-//
-// Custom and globally-registered patterns are NOT covered here; they keep
-// their own per-window scan.
-func windowContainsDangerousMatch(window string) bool {
-	for i := 0; i < len(window); i++ {
-		group := dangerousPatternGroups[internal.FoldLowerASCII(window[i])]
-		for _, dp := range group {
-			end := i + len(dp.pattern)
-			if end <= len(window) && internal.IsMatchPatternIgnoreCase(window[i:end], dp.pattern) {
-				return true
+	if len(sensitivePatterns) > 0 {
+		minSensitivePatternLen = len(sensitivePatterns[0])
+		for _, p := range sensitivePatterns[1:] {
+			if len(p) < minSensitivePatternLen {
+				minSensitivePatternLen = len(p)
 			}
 		}
 	}
-	return false
+	// P-003: first-byte buckets for the sensitive-pattern single-pass scan.
+	// Patterns shorter than 2 bytes cannot use the second-byte check and have
+	// no slot here (none exist in the built-in set; the shortest is 3).
+	for _, p := range sensitivePatterns {
+		if len(p) < 2 {
+			continue
+		}
+		sensitivePatternGroups[p[0]] = append(sensitivePatternGroups[p[0]], sensitivePrefiltered{
+			pattern:    p,
+			secondByte: p[1],
+		})
+	}
+}
+
+// scanWindowPatterns is the single-pass built-in-pattern scanner behind
+// scanWindowForPatterns, in two modes:
+//
+//   - first == nil: pure EXISTENCE check that returns true at the first hit
+//     (the shape of the former windowContainsDangerousMatch prefilter);
+//   - first != nil (len == len(dangerousPatterns), every entry initialized
+//     to -1): scans the whole window recording, for each pattern, the index
+//     of its FIRST case-insensitive occurrence, and reports whether any
+//     pattern occurred at all.
+//
+// Recording the first occurrence per pattern is equivalent to calling
+// fastIndexIgnoreCase once per pattern: the group bucket (folded first byte),
+// the inline second-byte check, and IsMatchPatternIgnoreCase together accept
+// exactly the positions a case-insensitive substring search would report,
+// and ascending iteration keeps the smallest one. The ordered reporting loop
+// in scanWindowForPatterns then fires on those positions — same pattern
+// order, same word-context checks — so the error is byte-for-byte identical
+// to the previous prefilter + per-pattern rescan shape while scanning the
+// window once instead of once per pattern (P-003; profiling attributed ~41%
+// of cold-validation CPU to those rescans).
+//
+// P-001: common letters ('e', 'o', 's', ...) head several patterns each, so
+// most candidates die inside IsMatchPatternIgnoreCase on the second byte.
+// The inline second-byte compare rejects them without the call and slice;
+// candidates surviving both bytes fall through to the exact comparison, so
+// the accepted set is exact.
+//
+// Custom and globally-registered patterns are NOT covered here; they keep
+// their own per-window scan.
+func scanWindowPatterns(window string, first []int32) bool {
+	found := false
+	for i := 0; i < len(window); i++ {
+		group := dangerousPatternGroups[internal.FoldLowerASCII(window[i])]
+		for j := range group {
+			pp := &group[j]
+			end := i + len(pp.pattern)
+			if end > len(window) {
+				continue
+			}
+			if internal.FoldLowerASCII(window[i+1]) != pp.secondByte {
+				continue
+			}
+			if internal.IsMatchPatternIgnoreCase(window[i:end], pp.pattern) {
+				if first == nil {
+					return true
+				}
+				if first[pp.patternIndex] < 0 {
+					first[pp.patternIndex] = int32(i)
+					found = true
+				}
+			}
+		}
+	}
+	return found
 }
 
 // =============================================================================
@@ -254,9 +323,23 @@ func ListDangerousPatterns() []DangerousPattern {
 
 // indicatorChars is a pre-computed lookup table for indicator characters.
 // PERFORMANCE: O(1) lookup per character during security scanning.
+//
+// INVARIANT (GEN-001): pattern matching is case-insensitive (fastIndexIgnoreCase),
+// so for every letter appearing in a built-in pattern, BOTH its lowercase and
+// uppercase forms must be indicator bytes. Otherwise an attacker can render a
+// pattern entirely in the non-indicator casing, producing an input with zero
+// indicator bytes that the scan-skip shortcut in validateJSONSecurityOptimized
+// would silently never scan. The lowercase set covers the built-in pattern
+// alphabet; the uppercase set is its exact case-symmetric counterpart
+// (A B C D E F I J N O P R S V W). TestIndicatorCaseInvariant enforces this
+// over dangerousPatterns/criticalPatterns so a future pattern cannot
+// reintroduce the gap. Custom patterns are covered separately: any configured
+// pattern (per-call or global) disables the shortcut entirely.
 var indicatorChars = [256]bool{
 	'<': true, '(': true, ':': true, '.': true, '_': true,
-	'O': true, 'R': true, 'P': true, 'S': true,
+	'A': true, 'B': true, 'C': true, 'D': true, 'E': true, 'F': true,
+	'I': true, 'J': true, 'N': true, 'O': true, 'P': true, 'R': true,
+	'S': true, 'V': true, 'W': true,
 	'a': true, 'b': true, 'c': true, 'd': true, 'e': true, 'f': true,
 	'i': true, 'j': true, 'n': true, 'o': true, 'p': true, 'r': true,
 	's': true, 'v': true, 'w': true,
@@ -340,6 +423,26 @@ var sensitivePatterns = []string{
 	"azure_key", "gcp_key", "gcp_credentials",
 }
 
+// minSensitivePatternLen is the length of the shortest sensitivePattern,
+// computed at init so containsSensitivePatterns can skip strings too short to
+// contain any pattern without duplicating the list's minimum here.
+var minSensitivePatternLen int
+
+// sensitivePrefiltered pairs a sensitive pattern with its second byte for the
+// first-byte-bucketed single-pass scan in containsSensitivePatterns (P-003).
+type sensitivePrefiltered struct {
+	pattern    string
+	secondByte byte // pattern[1]; patterns are lowercase ASCII
+}
+
+// sensitivePatternGroups buckets sensitivePatterns by first byte, the same
+// prefilter shape as dangerousPatternGroups. Patterns are all lowercase ASCII
+// (an uppercase pattern could never match the lowercased input under the
+// previous per-pattern Contains loop either), and containsSensitivePatterns
+// lowercases its input before scanning, so bucket lookups need no case
+// folding. Computed once at init: sensitivePatterns is never mutated.
+var sensitivePatternGroups [256][]sensitivePrefiltered
+
 // =============================================================================
 // Security Validator Components
 // These types separate concerns for better maintainability and testability
@@ -388,11 +491,24 @@ type securityValidator struct {
 	// be contained in no window, and evade detection entirely (regression
 	// test: TestD002Round6_CustomPatternStraddlesWindowBoundary).
 	maxCustomPatternLen int
+	// detectDuplicateKeys enables duplicate-object-key detection in
+	// validateContainerCounts (Config.DetectDuplicateKeys, GEN-001). Opt-in:
+	// the default preserves encoding/json last-wins semantics. Rejection
+	// surfaces as ErrDuplicateKey.
+	detectDuplicateKeys bool
 	// Composed validators for separation of concerns
 	// Cache for validation results — created lazily on the first successfully
 	// validated input (P-001) so transient one-shot validators and validators
 	// that never cache (cacheDisabled) do not allocate the map.
 	validationCache map[validationKey]*validationCacheEntry
+	// evictBuf is the reusable candidate buffer for evictLRUEntries. Only
+	// read/written while holding cacheMutex (see evictLRUEntries).
+	evictBuf []evictEntry
+	// cachedBytes is the sum of len(entry.input) across validationCache
+	// entries — the caller-string memory pinned by the collision-defense
+	// inputs. Guarded by cacheMutex (like the map) and bounded by
+	// validationCacheBytesBudget via evictLRUEntries (P-003).
+	cachedBytes int
 	// cacheDisabled permanently disables caching: set by Close() and on
 	// transient one-shot validators (validateInputForOptions' per-call cfg
 	// path). Distinguished from a merely not-yet-created (nil) cache so lazy
@@ -403,8 +519,9 @@ type securityValidator struct {
 
 // newSecurityValidator creates a new security validator with the given limits.
 // additionalPatterns are config-supplied patterns scanned in addition to the
-// built-in defaults (see Config.AdditionalDangerousPatterns).
-func newSecurityValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int, fullSecurityScan, disableDefaultPatterns bool, additionalPatterns []dangerousPattern, maxObjectKeys, maxArrayElements int) *securityValidator {
+// built-in defaults (see Config.AdditionalDangerousPatterns). detectDuplicateKeys
+// enables duplicate-object-key rejection (see Config.DetectDuplicateKeys).
+func newSecurityValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int, fullSecurityScan, disableDefaultPatterns, detectDuplicateKeys bool, additionalPatterns []dangerousPattern, maxObjectKeys, maxArrayElements int) *securityValidator {
 	sv := &securityValidator{
 		maxJSONSize:            maxJSONSize,
 		maxPathLength:          maxPathLength,
@@ -413,6 +530,7 @@ func newSecurityValidator(maxJSONSize int64, maxPathLength, maxNestingDepth int,
 		maxArrayElements:       maxArrayElements,
 		fullSecurityScan:       fullSecurityScan,
 		disableDefaultPatterns: disableDefaultPatterns,
+		detectDuplicateKeys:    detectDuplicateKeys,
 		additionalPatterns:     additionalPatterns,
 	}
 	for _, dp := range additionalPatterns {
@@ -446,6 +564,7 @@ func (sv *securityValidator) Close() {
 	// Permanently disable caching and clear the cache to release memory.
 	sv.cacheDisabled = true
 	sv.validationCache = nil
+	sv.cachedBytes = 0
 }
 
 // ValidateJSONInputEssential performs only essential safety checks that must
@@ -461,15 +580,11 @@ func (sv *securityValidator) ValidateJSONInputEssential(jsonStr string) error {
 		return newOperationError("validate_json_input", "JSON string cannot be empty", ErrInvalidJSON)
 	}
 
-	// Always enforce nesting depth — prevents stack overflow during parsing
-	if err := sv.validateNestingDepth(jsonStr); err != nil {
-		return err
-	}
-
-	// Always enforce per-container size — prevents memory-exhaustion DoS from
-	// flat-but-wide structures (e.g. an object with millions of keys at depth 1)
-	// that bypass the nesting-depth and total-bracket checks.
-	if err := sv.validateContainerCounts(jsonStr); err != nil {
+	// Always enforce nesting depth and per-container size in one pass — depth
+	// prevents stack overflow during parsing, container caps prevent
+	// memory-exhaustion DoS from flat-but-wide structures (e.g. an object with
+	// millions of keys at depth 1) that bypass the depth/total-bracket checks.
+	if err := sv.validateStructureLimits(jsonStr); err != nil {
 		return err
 	}
 
@@ -479,6 +594,20 @@ func (sv *securityValidator) ValidateJSONInputEssential(jsonStr string) error {
 // ValidateJSONInput performs comprehensive JSON input validation with enhanced security.
 // PERFORMANCE: Uses caching to avoid repeated validation of the same JSON string.
 func (sv *securityValidator) ValidateJSONInput(jsonStr string) error {
+	return sv.validateJSONInputWithKey(jsonStr, sv.getValidationCacheKey(jsonStr))
+}
+
+// ValidateJSONInputPrehashed is ValidateJSONInput for callers that already
+// computed the document's FNV-1a hash (P-001): Get needs the identical hash
+// for its result-cache keys, so sharing it here saves one full scan of the
+// input per operation. h1 MUST equal internal.HashStringFNV1a(jsonStr).
+func (sv *securityValidator) ValidateJSONInputPrehashed(jsonStr string, h1 uint64) error {
+	return sv.validateJSONInputWithKey(jsonStr, validationKey{length: len(jsonStr), h1: h1})
+}
+
+// validateJSONInputWithKey is the ValidateJSONInput body with a caller-supplied
+// cache key (either freshly computed or shared from Get's prehash).
+func (sv *securityValidator) validateJSONInputWithKey(jsonStr string, cacheKey validationKey) error {
 	if int64(len(jsonStr)) > sv.maxJSONSize {
 		return newSizeLimitError("validate_json_input", int64(len(jsonStr)), sv.maxJSONSize)
 	}
@@ -490,9 +619,7 @@ func (sv *securityValidator) ValidateJSONInput(jsonStr string) error {
 	// PERFORMANCE: Check cache for previously validated JSON strings
 	// This is especially effective for repeated Get operations on the same JSON
 	// Skip all expensive validations for cached strings
-	// PERFORMANCE: Get cache key for reuse in cacheValidationWithKey
-	cacheKey, cached := sv.isValidationCached(jsonStr)
-	if cached {
+	if sv.isValidationCachedWithKey(jsonStr, cacheKey) {
 		return nil
 	}
 
@@ -517,14 +644,13 @@ func (sv *securityValidator) ValidateJSONInput(jsonStr string) error {
 		return err
 	}
 
-	// Validate nesting depth
-	if err := sv.validateNestingDepth(jsonStr); err != nil {
-		return err
-	}
-
-	// Validate per-container sizes (MaxObjectKeys / MaxArrayElements). Runs
-	// before caching so the result — including these checks — is reused.
-	if err := sv.validateContainerCounts(jsonStr); err != nil {
+	// Validate nesting depth and per-container sizes (MaxObjectKeys /
+	// MaxArrayElements) in one byte-level pass (P-003: the two scans shared
+	// the same string/escape discipline, so walking the text once halves the
+	// structural-scan cost; error selection is identical to the former
+	// nesting-then-container sequence). Runs before caching so the result —
+	// including these checks — is reused.
+	if err := sv.validateStructureLimits(jsonStr); err != nil {
 		return err
 	}
 
@@ -542,8 +668,8 @@ func (sv *securityValidator) ValidateJSONInput(jsonStr string) error {
 // SECURITY: h1 is the same hash value Processor cache keys use
 // (internal.HashStringFNV1a, see hashStringToUint64). A single hash is enough
 // here because a cache hit is NEVER trusted on the key alone —
-// isValidationCached compares the exact stored input before skipping any
-// security check, so a collision merely causes one redundant revalidation,
+// isValidationCachedWithKey compares the exact stored input before skipping
+// any security check, so a collision merely causes one redundant revalidation,
 // never a false "already validated". The former second independent hash
 // (HashBytesFNV1aOffset) only reduced the frequency of that harmless event,
 // at the cost of a second full scan of every input on every operation
@@ -558,20 +684,18 @@ func (sv *securityValidator) getValidationCacheKey(jsonStr string) validationKey
 	}
 }
 
-// isValidationCached checks if JSON string was previously validated successfully
-// PERFORMANCE: Returns the cache key for reuse in cacheValidation to avoid double hash computation
+// isValidationCachedWithKey checks if the input stored under cacheKey was
+// previously validated successfully. The key is computed (or shared from Get's
+// prehash, P-001) by the caller — see getValidationCacheKey.
 // RACE-FIX: Access time is not updated in read lock to avoid data race.
 // The LRU eviction still works correctly with occasional access time updates during Set operations.
-func (sv *securityValidator) isValidationCached(jsonStr string) (validationKey, bool) {
-	// Compute cache key once
-	cacheKey := sv.getValidationCacheKey(jsonStr)
-
+func (sv *securityValidator) isValidationCachedWithKey(jsonStr string, cacheKey validationKey) bool {
 	// Use read lock for fast lookup
 	sv.cacheMutex.RLock()
 	// SAFETY: Check for nil cache (can happen after Close())
 	if sv.validationCache == nil {
 		sv.cacheMutex.RUnlock()
-		return cacheKey, false
+		return false
 	}
 	entry, cached := sv.validationCache[cacheKey]
 	// RACE-FIX: Do NOT update entry.lastAccess here with read lock
@@ -579,12 +703,12 @@ func (sv *securityValidator) isValidationCached(jsonStr string) (validationKey, 
 	sv.cacheMutex.RUnlock()
 
 	if !cached || !entry.validated {
-		return cacheKey, false
+		return false
 	}
 	// SECURITY: the cache key is a non-cryptographic FNV hash pair and is therefore
 	// collision-constructible. A hash collision must NOT be trusted as "already
 	// validated" — compare the exact input before skipping any security checks.
-	return cacheKey, entry.input == jsonStr
+	return entry.input == jsonStr
 }
 
 // cacheValidationWithKey marks a JSON string as successfully validated using a pre-computed key
@@ -592,14 +716,30 @@ func (sv *securityValidator) isValidationCached(jsonStr string) (validationKey, 
 // SECURITY FIX: Uses LRU-style eviction at 80% capacity to prevent memory spikes
 // SECURITY: Stores the exact validated input so isValidationCached can reject hash
 // collisions instead of trusting a non-cryptographic FNV key as identity.
-// validationCacheMaxInputSize caps the size of inputs retained in the
-// validation cache. The cache holds the exact input string as its collision
-// defense, but eviction is by ENTRY COUNT (securityCacheHighWatermark) — with
-// the default MaxJSONSize of 100MB, count-only bounds let 8,000 distinct 1MB
-// documents pin ~8GB per Processor inside the security layer itself, a memory
-// amplification the layer exists to prevent. Inputs above this threshold are
-// simply not cached: the cost is revalidation on every use (D-002).
-const validationCacheMaxInputSize = 256 * 1024
+// validationCacheMaxInputSize caps the size of a SINGLE input retained in the
+// validation cache. Inputs above it are not cached; the cost is revalidation
+// on every use. Deliberately 1/16 of validationCacheBytesBudget so one large
+// document cannot evict the rest of the cache.
+//
+// validationCacheBytesBudget caps the TOTAL bytes pinned by cached inputs.
+// The cache holds each entry's exact input string as its collision defense,
+// which pins that memory for the entry's lifetime: with count-only eviction
+// (securityCacheHighWatermark), 8,000 distinct 1MB documents would pin ~8GB
+// per Processor inside the security layer itself — a memory amplification
+// the layer exists to prevent (D-002). The byte budget bounds that total
+// regardless of input sizes; eviction frees oldest entries until it is
+// respected (8,000 entries × 256KB also pinned ~2GB under the old cutoff, so
+// the budget is a strictly tighter bound).
+//
+// P-003: the per-entry cap rose from 256KB so mid-sized documents (hundreds
+// of KB to a few MB) reuse validation results. Under the old cutoff they
+// re-ran the full security scan on EVERY operation, which dominated CPU for
+// repeated Get/Set on such inputs (profiling on 300-690KB documents: ~74% of
+// CPU in validation, 5x overall speedup once cached).
+const (
+	validationCacheMaxInputSize = 2 * 1024 * 1024
+	validationCacheBytesBudget  = 32 * 1024 * 1024
+)
 
 func (sv *securityValidator) cacheValidationWithKey(cacheKey validationKey, jsonStr string) {
 	// MEMORY BOUND (D-002): see validationCacheMaxInputSize. Checked before
@@ -623,12 +763,22 @@ func (sv *securityValidator) cacheValidationWithKey(cacheKey validationKey, json
 		sv.validationCache = make(map[validationKey]*validationCacheEntry, 256)
 	}
 
-	// SECURITY FIX: Proactive cleanup at 80% capacity instead of 100%
+	// SECURITY FIX: Proactive cleanup at 80% capacity instead of 100%.
+	// Also evict when this insert would push pinned bytes past the budget —
+	// the entry-count bound alone cannot cap memory when inputs are large
+	// (see validationCacheBytesBudget, P-003).
 	const cacheHighWatermark = securityCacheHighWatermark
-	if len(sv.validationCache) >= cacheHighWatermark {
+	if len(sv.validationCache) >= cacheHighWatermark || sv.cachedBytes+len(jsonStr) > validationCacheBytesBudget {
 		sv.evictLRUEntries()
 	}
 
+	// A replacement (hash collision storing a different input, or re-caching
+	// after an entry-level invalidation) releases the old entry's bytes
+	// before the new one is counted, so cachedBytes cannot drift upward.
+	if old, ok := sv.validationCache[cacheKey]; ok {
+		sv.cachedBytes -= len(old.input)
+	}
+	sv.cachedBytes += len(jsonStr)
 	sv.validationCache[cacheKey] = &validationCacheEntry{
 		validated:  true,
 		lastAccess: time.Now().Unix(),
@@ -636,35 +786,63 @@ func (sv *securityValidator) cacheValidationWithKey(cacheKey validationKey, json
 	}
 }
 
-// evictLRUEntries removes oldest 25% of entries using LRU strategy
+// evictEntry is one validation-cache eviction candidate: the map key plus the
+// entry's lastAccess stamp, collected for age-order selection.
+type evictEntry struct {
+	key        validationKey
+	lastAccess int64
+}
+
+// evictLRUEntries removes oldest entries using LRU strategy.
 // SECURITY: Intelligent LRU eviction for validation cache
+//
+// One age-ordered pass serves both triggers (P-003):
+//   - entry count at securityCacheHighWatermark: remove the oldest 25%
+//     (batch removal reduces re-trigger thrashing — evicting one entry at a
+//     time would re-qualify on nearly every insert);
+//   - pinned bytes above validationCacheBytesBudget: keep removing the oldest
+//     until the budget is respected (stopping earlier would re-qualify on
+//     the next insert).
+//
+// PERFORMANCE (P-001): reuses sv.evictBuf across evictions. Past the 8000-entry
+// high watermark the collect step allocated a ~128KB slice on every qualifying
+// insert; the buffer is only touched while cacheMutex (held by the caller,
+// cacheValidationWithKey) is locked, so reuse is race-free. sort.Slice is
+// replaced by the reflection-free slices.SortFunc.
 func (sv *securityValidator) evictLRUEntries() {
-	if len(sv.validationCache) == 0 {
+	n := len(sv.validationCache)
+	if n == 0 {
 		return
 	}
 
-	// Collect all entries with their access times
-	type entryWithTime struct {
-		key        validationKey
-		lastAccess int64
+	if cap(sv.evictBuf) < n {
+		sv.evictBuf = make([]evictEntry, 0, n+n/4)
 	}
-
-	entries := make([]entryWithTime, 0, len(sv.validationCache))
+	entries := sv.evictBuf[:0]
 	for k, v := range sv.validationCache {
-		entries = append(entries, entryWithTime{key: k, lastAccess: v.lastAccess})
+		entries = append(entries, evictEntry{key: k, lastAccess: v.lastAccess})
 	}
 
 	// Sort by access time (oldest first)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].lastAccess < entries[j].lastAccess
+	slices.SortFunc(entries, func(a, b evictEntry) int {
+		return cmp.Compare(a.lastAccess, b.lastAccess)
 	})
 
 	// Remove oldest 25% instead of 50% to reduce cache thrashing
 	toRemove := max(len(entries)/4, 1)
 
-	for i := 0; i < toRemove && i < len(entries); i++ {
-		delete(sv.validationCache, entries[i].key)
+	// Phase 1 removes the batch above unconditionally; phase 2 keeps removing
+	// the oldest while pinned bytes still exceed the budget.
+	for i := 0; i < len(entries); i++ {
+		if i >= toRemove && sv.cachedBytes <= validationCacheBytesBudget {
+			break
+		}
+		if v, ok := sv.validationCache[entries[i].key]; ok {
+			sv.cachedBytes -= len(v.input)
+			delete(sv.validationCache, entries[i].key)
+		}
 	}
+	sv.evictBuf = entries[:0]
 }
 
 // ValidatePathInput performs comprehensive path validation with enhanced security.
@@ -710,16 +888,33 @@ func (sv *securityValidator) ValidatePathInput(path string) error {
 func normalizeJSONEscapes(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
-	for i := 0; i < len(s); {
-		if s[i] == '\\' && i+5 < len(s) && s[i+1] == 'u' {
-			if r, width, ok := decodeJSONUnicodeEscape(s[i:]); ok {
+	i := 0
+	for i < len(s) {
+		// Bulk-copy the run before the next backslash (P-003): between escape
+		// sites the document is copied in whole segments — one vectorized
+		// IndexByte scan plus one WriteString memmove per segment — instead of
+		// one WriteByte call per byte. Scan discipline is unchanged: the same
+		// left-to-right greedy walk, so an escaped backslash before a uXXXX
+		// run still behaves exactly as the per-byte loop did.
+		next := strings.IndexByte(s[i:], '\\')
+		if next < 0 {
+			b.WriteString(s[i:])
+			return b.String()
+		}
+		next += i
+		b.WriteString(s[i:next])
+		// At the backslash: decode a \uXXXX escape, else copy the byte and
+		// step past it (the following byte is then re-examined on its own
+		// merits, as in the original loop).
+		if next+5 < len(s) && s[next+1] == 'u' {
+			if r, width, ok := decodeJSONUnicodeEscape(s[next:]); ok {
 				b.WriteRune(r)
-				i += width
+				i = next + width
 				continue
 			}
 		}
-		b.WriteByte(s[i])
-		i++
+		b.WriteByte(s[next])
+		i = next + 1
 	}
 	return b.String()
 }
@@ -981,17 +1176,25 @@ func (sv *securityValidator) scanWindowForPatterns(window string) error {
 		return sv.scanCustomPatterns(window)
 	}
 
-	// Single-pass existence prefilter (see windowContainsDangerousMatch): a
-	// window where no built-in pattern occurs at all skips the ~27-pattern
-	// scan loop. On a hit, the ordered loop below still selects the exact
-	// same error as before — same pattern order, same context check.
-	if windowContainsDangerousMatch(window) {
-		for _, dp := range dangerousPatterns {
-			if idx := fastIndexIgnoreCase(window, dp.pattern); idx != -1 {
-				if sv.isDangerousContextIgnoreCase(window, idx, len(dp.pattern)) {
-					return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
-				}
-			}
+	// Single-pass scan (P-003): record each pattern's FIRST case-insensitive
+	// occurrence in one pass over the window (scanWindowPatterns), then run
+	// the ordered reporting loop over the recorded positions. Behaviorally
+	// identical to the previous prefilter + per-pattern fastIndexIgnoreCase
+	// rescan — same first-occurrence-per-pattern semantics, same pattern
+	// order, same context checks — but the window is scanned once instead of
+	// once per pattern (~29 rescans whenever the old prefilter hit).
+	first := make([]int32, len(dangerousPatterns))
+	for i := range first {
+		first[i] = -1
+	}
+	scanWindowPatterns(window, first)
+	for i, dp := range dangerousPatterns {
+		idx := int(first[i])
+		if idx < 0 {
+			continue
+		}
+		if sv.isDangerousContextIgnoreCase(window, idx, len(dp.pattern)) {
+			return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
 		}
 	}
 	return sv.scanCustomPatterns(window)
@@ -1389,77 +1592,63 @@ func (sv *securityValidator) validateJSONStructure(jsonStr string) error {
 	return nil
 }
 
-func (sv *securityValidator) validateNestingDepth(jsonStr string) error {
-	// SECURITY: Validate nesting depth for all inputs regardless of size.
-	// Use a faster scan for small JSON (< 64KB) by only checking depth,
-	// and full scan for larger inputs that also track total brackets.
-	// Small but deeply nested JSON can still cause stack overflow during processing.
-	if len(jsonStr) < securityNestingValidationThreshold {
-		// Fast path for small JSON: only check max depth, no bracket counting
-		depth := 0
-		inString := false
-		escaped := false
-		maxCheckDepth := sv.maxNestingDepth
-		if maxCheckDepth <= 0 {
-			maxCheckDepth = 100
-		}
-		for i := 0; i < len(jsonStr); i++ {
-			c := jsonStr[i]
-			if escaped {
-				escaped = false
-				continue
-			}
-			if inString {
-				if c == byte(0x5c) {
-					escaped = true
-				} else if c == '"' {
-					inString = false
-				}
-				continue
-			}
-			switch c {
-			case '"':
-				inString = true
-			case '{', '[':
-				depth++
-				if depth > maxCheckDepth {
-					return newOperationError("validate_nesting_depth",
-						fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, maxCheckDepth), ErrDepthLimit)
-				}
-			case '}', ']':
-				depth--
-			}
-			// A backslash outside a string (unreachable as an escape marker) is
-			// simply ignored, matching the parser's tolerance for stray bytes —
-			// malformed JSON is rejected downstream by encoding/json anyway.
-		}
-		if depth != 0 {
-			return newOperationError("validate_nesting_depth",
-				"unbalanced brackets in JSON structure", ErrInvalidJSON)
-		}
-		return nil
+// validateStructureLimits (P-003) enforces, in ONE byte-level pass, both the
+// nesting-depth invariants of the former validateNestingDepth and the
+// per-container limits (MaxObjectKeys / MaxArrayElements, duplicate keys) of
+// the former validateContainerCounts.
+//
+// EQUIVALENCE CONTRACT: it must behave exactly like running the former
+// nesting scan to completion and, only when that returned nil, the former
+// container scan:
+//   - a nesting violation ALWAYS wins, even when a container violation
+//     occurs earlier in the text (the walk records the first error of each
+//     class and resolves nesting-first at the end; it aborts early only on a
+//     nesting violation, since after one the container scan would never have
+//     run);
+//   - within each class the FIRST textual violation wins;
+//   - the end-of-scan unbalanced-bracket check belongs to the nesting class
+//     and precedes any container error;
+//   - inputs below securityNestingValidationThreshold keep the historical
+//     lighter nesting discipline (no total-bracket / consecutive-open anomaly
+//     checks), and container counting is skipped entirely when no container
+//     limit is configured and duplicate-key detection is off.
+//
+// The two former functions live on in security_test.go as the reference
+// implementation this contract is tested against (TestP003StructureLimits).
+//
+// SECURITY: Together the two check families close the gap on
+// memory-exhaustion DoS — depth/bracket anomalies for nested bombs,
+// container caps for flat-but-wide structures ({"k1":1,...,"kN":1} at depth 1
+// sails past every bracket check). Always enforced (including under
+// SkipValidation) because they protect the process itself.
+//
+// PERFORMANCE: one pass instead of two over the input (P-003 profiling: the
+// two scans were ~13% of cold-validation CPU on large documents); the string/
+// escape discipline and container bookkeeping are byte-for-byte those of the
+// former scans.
+func (sv *securityValidator) validateStructureLimits(jsonStr string) error {
+	maxCheckDepth := sv.maxNestingDepth
+	if maxCheckDepth <= 0 {
+		maxCheckDepth = 100
 	}
+	large := len(jsonStr) >= securityNestingValidationThreshold
+	checkContainers := sv.maxObjectKeys > 0 || sv.maxArrayElements > 0 || sv.detectDuplicateKeys
+	detectDup := sv.detectDuplicateKeys
 
 	depth := 0
 	inString := false
 	escaped := false
-	maxCheckDepth := sv.maxNestingDepth
-	if maxCheckDepth <= 0 {
-		maxCheckDepth = 100 // Default max depth
-	}
-
-	// SECURITY: Track total bracket count to prevent DoS attacks
-	// Attackers can create shallow but massive bracket structures
-	// Set limit high enough for normal use but prevent excessive structures
 	totalBrackets := 0
-	maxTotalBrackets := securityMaxTotalBrackets
-
-	// SECURITY: Track consecutive opening brackets for anomaly detection
 	consecutiveOpens := 0
-	maxConsecutiveOpens := securityMaxConsecutiveOpens
+	var stack []containerFrame
+	if checkContainers {
+		stack = make([]containerFrame, 0, 32)
+	}
+	// First container-class violation (kept when no nesting violation
+	// shadows it). Nesting-class violations return immediately, mirroring the
+	// former nesting scan's abort.
+	var containerErr error
 
-	// Use byte-level iteration for better performance
-	// Check all JSON regardless of size to prevent depth-based attacks
 	for i := 0; i < len(jsonStr); i++ {
 		c := jsonStr[i]
 
@@ -1468,54 +1657,155 @@ func (sv *securityValidator) validateNestingDepth(jsonStr string) error {
 			continue
 		}
 
-		switch c {
-		case '\\':
-			if inString {
+		if inString {
+			switch c {
+			case '\\':
 				escaped = true
+			case '"':
+				inString = false
+				// Duplicate-key check (GEN-001): a string just closed in key
+				// position of an object frame. Containers cannot open inside
+				// a string, so the frame seen here is the one that was on top
+				// when the key opened. Keys are compared as raw bytes: two
+				// spellings that differ only by escape encoding are treated
+				// as distinct — the underlying parse is still last-wins for
+				// such pairs.
+				if detectDup && len(stack) > 0 {
+					top := &stack[len(stack)-1]
+					if !top.isArray && top.keyStart >= 0 {
+						key := jsonStr[top.keyStart:i]
+						top.keyStart = -1
+						if top.keySet == nil {
+							top.keySet = make(map[string]struct{}, 8)
+						}
+						if _, dup := top.keySet[key]; dup {
+							if containerErr == nil {
+								containerErr = newOperationError("validate_container_counts",
+									fmt.Sprintf("duplicate object key %q", key), ErrDuplicateKey)
+							}
+						} else {
+							top.keySet[key] = struct{}{}
+						}
+					}
+				}
+			default:
+				if large {
+					consecutiveOpens = 0 // mirrors the nesting scan's default case
+				}
 			}
+			continue
+		}
+
+		switch c {
 		case '"':
-			inString = !inString
+			inString = true
+			if checkContainers {
+				if detectDup && len(stack) > 0 {
+					top := &stack[len(stack)-1]
+					// In an object, a string opening while expecting a child is a
+					// KEY (a value string only follows ':', which clears
+					// expectingChild). Array strings are values — not tracked.
+					if !top.isArray && top.expectingChild {
+						top.keyStart = i + 1
+					}
+				}
+				noteValueStart(stack)
+			}
 		case '{', '[':
-			if !inString {
-				depth++
+			depth++
+			if large {
 				totalBrackets++
 				consecutiveOpens++
-
-				// SECURITY: Check for too many consecutive opens (potential attack)
-				if consecutiveOpens > maxConsecutiveOpens {
+				// SECURITY: too many consecutive opens (potential attack) —
+				// checked before depth, matching the former scan's order.
+				if consecutiveOpens > securityMaxConsecutiveOpens {
 					return newOperationError("validate_nesting_depth",
 						fmt.Sprintf("too many consecutive opening brackets at position %d", i), ErrDepthLimit)
 				}
-
-				if depth > maxCheckDepth {
-					return newOperationError("validate_nesting_depth",
-						fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, maxCheckDepth), ErrDepthLimit)
-				}
-
-				// SECURITY: Check total bracket count
-				if totalBrackets > maxTotalBrackets {
-					return newOperationError("validate_nesting_depth",
-						fmt.Sprintf("total bracket count %d exceeds maximum %d", totalBrackets, maxTotalBrackets), ErrDepthLimit)
-				}
+			}
+			if depth > maxCheckDepth {
+				return newOperationError("validate_nesting_depth",
+					fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, maxCheckDepth), ErrDepthLimit)
+			}
+			if large && totalBrackets > securityMaxTotalBrackets {
+				return newOperationError("validate_nesting_depth",
+					fmt.Sprintf("total bracket count %d exceeds maximum %d", totalBrackets, securityMaxTotalBrackets), ErrDepthLimit)
+			}
+			if checkContainers {
+				// A container open is itself a value start in its parent...
+				noteValueStart(stack)
+				// ...then descend into the new container.
+				stack = append(stack, containerFrame{
+					isArray:        c == '[',
+					expectingChild: true,
+					keyStart:       -1,
+				})
 			}
 		case '}', ']':
-			if !inString {
-				depth--
+			depth--
+			if large {
 				totalBrackets++
 				consecutiveOpens = 0 // Reset on closing bracket
 			}
+			if checkContainers && len(stack) > 0 {
+				frame := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if containerErr == nil {
+					if frame.isArray {
+						if sv.maxArrayElements > 0 && frame.count > sv.maxArrayElements {
+							containerErr = newOperationError("validate_container_counts",
+								fmt.Sprintf("array has %d elements, exceeds maximum %d", frame.count, sv.maxArrayElements),
+								ErrSizeLimit)
+						}
+					} else if sv.maxObjectKeys > 0 && frame.count > sv.maxObjectKeys {
+						containerErr = newOperationError("validate_container_counts",
+							fmt.Sprintf("object has %d keys, exceeds maximum %d", frame.count, sv.maxObjectKeys),
+							ErrSizeLimit)
+					}
+				}
+			}
+		case '\\':
+			// Outside a string a backslash is meaningless to the nesting scan
+			// (and never resets consecutiveOpens — it was a matched case there,
+			// not the default), but the container scan counts it as the leading
+			// byte of a primitive value.
+			if checkContainers {
+				noteValueStart(stack)
+			}
+		case ',':
+			if large {
+				consecutiveOpens = 0 // default case of the former nesting scan
+			}
+			if checkContainers && len(stack) > 0 {
+				stack[len(stack)-1].expectingChild = true
+			}
+		case ':':
+			// Object key/value separator. The key was already counted as a
+			// value start; nothing to do. (A ':' outside an object is malformed
+			// JSON and is rejected by the parser downstream.)
+			if large {
+				consecutiveOpens = 0 // default case of the former nesting scan
+			}
 		default:
-			consecutiveOpens = 0 // Reset on non-bracket character
+			if large {
+				consecutiveOpens = 0 // Reset on non-bracket character
+			}
+			// Whitespace is structural; any other byte is the leading byte of
+			// a primitive value (digit, '-', 't'/'f'/'n', etc.).
+			if checkContainers && !isSpace(c) {
+				noteValueStart(stack)
+			}
 		}
 	}
 
-	// SECURITY: Check for unbalanced brackets
+	// SECURITY: unbalanced brackets — end-of-scan check of the nesting class;
+	// precedes any container error (the container scan never ran when nesting
+	// failed).
 	if depth != 0 {
 		return newOperationError("validate_nesting_depth",
 			"unbalanced brackets in JSON structure", ErrInvalidJSON)
 	}
-
-	return nil
+	return containerErr
 }
 
 // containerFrame tracks one open container (object or array) during the
@@ -1524,6 +1814,13 @@ type containerFrame struct {
 	isArray        bool
 	count          int  // direct children (keys or elements) seen so far
 	expectingChild bool // true after '{', '[', or ',': the next value is a new child
+	// Duplicate-key detection (Config.DetectDuplicateKeys, GEN-001): for an
+	// object frame, keyStart >= 0 marks a key string currently being scanned
+	// (set when '"' opens a string in key position, i.e. while expectingChild)
+	// and keySet holds the keys already closed in this object. Unused for
+	// array frames and when detection is off.
+	keyStart int
+	keySet   map[string]struct{}
 }
 
 // noteValueStart records a direct child in the innermost open container when it
@@ -1537,110 +1834,6 @@ func noteValueStart(stack []containerFrame) {
 		top.count++
 		top.expectingChild = false
 	}
-}
-
-// validateContainerCounts enforces sv.maxObjectKeys and sv.maxArrayElements by
-// scanning the JSON structure. It rejects any object whose key count exceeds the
-// limit, or any array whose element count exceeds the limit.
-//
-// SECURITY: Together with validateNestingDepth, this closes the gap on
-// memory-exhaustion DoS. A flat object {"k1":1,...,"kN":1} at depth 1 has only
-// two brackets, so it sails past the nesting-depth and total-bracket checks;
-// this scan caps its width. It is always enforced (including under SkipValidation)
-// because, like nesting depth, it protects the process itself from denial of
-// service.
-//
-// ALGORITHM: A single byte-level pass — reusing the same in-string/escape
-// discipline as validateNestingDepth — walks the structure with a stack of
-// container frames. Each frame counts its direct children by detecting value
-// starts: the first value byte ('{', '[', '"', or a primitive/number byte)
-// observed after an opening bracket or comma. For an object the value start is
-// the key, so child count == key count; for an array it == element count. The
-// stack depth is bounded by the nesting-depth limit already enforced upstream.
-//
-// PERFORMANCE: O(n), the same cost class as the existing nesting-depth pass.
-// The scan always runs (counts cannot be known without scanning), which is the
-// cost of the security guarantee; it stays on the byte level and allocates only
-// the small depth-bounded stack.
-func (sv *securityValidator) validateContainerCounts(jsonStr string) error {
-	maxKeys := sv.maxObjectKeys
-	maxElements := sv.maxArrayElements
-	// Both unlimited — nothing to enforce. (Config validation clamps these to
-	// >=100, so this is a defensive guard for the unlimited sentinel.)
-	if maxKeys <= 0 && maxElements <= 0 {
-		return nil
-	}
-
-	stack := make([]containerFrame, 0, 32)
-
-	inString := false
-	escaped := false
-
-	for i := 0; i < len(jsonStr); i++ {
-		c := jsonStr[i]
-
-		if escaped {
-			escaped = false
-			continue
-		}
-		if inString {
-			switch c {
-			case '\\':
-				escaped = true
-			case '"':
-				inString = false
-			}
-			continue
-		}
-
-		switch c {
-		case '"':
-			inString = true
-			noteValueStart(stack)
-		case '{', '[':
-			// A container open is itself a value start in its parent...
-			noteValueStart(stack)
-			// ...then descend into the new container.
-			stack = append(stack, containerFrame{
-				isArray:        c == '[',
-				expectingChild: true,
-			})
-		case '}', ']':
-			if len(stack) > 0 {
-				frame := stack[len(stack)-1]
-				stack = stack[:len(stack)-1]
-				if frame.isArray {
-					if maxElements > 0 && frame.count > maxElements {
-						return newOperationError("validate_container_counts",
-							fmt.Sprintf("array has %d elements, exceeds maximum %d", frame.count, maxElements),
-							ErrSizeLimit)
-					}
-				} else {
-					if maxKeys > 0 && frame.count > maxKeys {
-						return newOperationError("validate_container_counts",
-							fmt.Sprintf("object has %d keys, exceeds maximum %d", frame.count, maxKeys),
-							ErrSizeLimit)
-					}
-				}
-			}
-		case ',':
-			if len(stack) > 0 {
-				stack[len(stack)-1].expectingChild = true
-			}
-		case ':':
-			// Object key/value separator. The key was already counted as a value
-			// start; nothing to do. (A ':' outside an object is malformed JSON
-			// and is rejected by the parser downstream.)
-		default:
-			// Whitespace is structural; any other byte is the leading byte of a
-			// primitive value (digit, '-', 't'/'f'/'n', etc.).
-			if !isSpace(c) {
-				noteValueStart(stack)
-			}
-		}
-	}
-
-	return nil
 }
 
 func isValidJSONPrimitive(s string) bool {
@@ -1741,13 +1934,55 @@ func (sv *securityValidator) containsSensitiveDataRecursive(data any, depth, max
 // containsSensitivePatterns checks if a string contains sensitive patterns
 // SECURITY: Extended pattern list for comprehensive sensitive data detection
 // PERFORMANCE: Uses package-level sensitivePatterns slice to avoid allocation
+//
+// P-001: skips the strings.ToLower copy — and its heap allocation — when the
+// input is already all-lowercase ASCII (the dominant shape of JSON keys and
+// values). Any uppercase or non-ASCII byte takes the ToLower path so the
+// match set is byte-identical to the previous implementation (ToLower maps a
+// few non-ASCII runes to ASCII letters, so non-ASCII cannot use the fast path).
 func (sv *securityValidator) containsSensitivePatterns(s string) bool {
-	// Fast lowercase conversion and check
-	s = strings.ToLower(s)
-	for _, pattern := range sensitivePatterns {
-		if strings.Contains(s, pattern) {
-			return true
+	// No pattern shorter than minSensitivePatternLen can occur in a shorter
+	// string — skip the whole scan for tiny keys/values.
+	if len(s) < minSensitivePatternLen {
+		return false
+	}
+	if !isLowercaseASCII(s) {
+		s = strings.ToLower(s)
+	}
+	// Single pass with first-byte buckets (P-003): one walk over s replaces
+	// one strings.Contains scan per pattern (~55 on the default set). The
+	// inline second-byte compare rejects first-byte coincidences before the
+	// exact comparison; candidates surviving both checks are compared
+	// verbatim against the (already lowercase) input, so the accepted set is
+	// exactly that of the previous per-pattern loop.
+	for i := 0; i < len(s); i++ {
+		group := sensitivePatternGroups[s[i]]
+		for j := range group {
+			sp := &group[j]
+			end := i + len(sp.pattern)
+			if end > len(s) {
+				continue
+			}
+			if s[i+1] != sp.secondByte {
+				continue
+			}
+			if s[i:end] == sp.pattern {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// isLowercaseASCII reports whether every byte of s is ASCII and none is an
+// uppercase letter — exactly the inputs for which ToLower(s) == s, letting
+// containsSensitivePatterns search s directly without the lowercased copy.
+func isLowercaseASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' || c >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

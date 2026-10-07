@@ -10,6 +10,12 @@ import (
 // Reduces memory allocations for frequently used strings (JSON keys, paths)
 // PERFORMANCE: Significant memory reduction for JSON with repeated keys
 // SECURITY: Fixed memory exhaustion issues with proactive eviction
+//
+// STATUS (D-002/R8 M5): this module is currently NOT wired into any production
+// path — no parser or encoder calls Intern/InternBytes (iterator.go
+// deliberately skips interning for its transient keys, see initKeysOnce). It
+// is retained, with its tests, for potential future use; treat it as
+// test-covered but dormant until a caller is added.
 // ============================================================================
 
 // maxStringCopyThreshold is the threshold below which string copies are avoided.

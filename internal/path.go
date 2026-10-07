@@ -12,7 +12,7 @@ import (
 
 // ============================================================================
 // GLOBAL PATH SEGMENT CACHE
-// PERFORMANCE v2: Uses sync.Map for lock-free reads with size limit and LRU eviction
+// PERFORMANCE: Uses sync.Map for lock-free reads with size limit and LRU eviction
 // SECURITY: Thread-safe by design using sync.Map
 // FIX: Added size limit to prevent memory leak from unbounded cache growth
 // ============================================================================
@@ -101,11 +101,21 @@ func setCachedPathSegments(path string, segments []PathSegment) {
 		lastAccess: time.Now().UnixNano(),
 	}
 
-	// Only increment counter for new entries, not overwrites
-	if _, loaded := pathSegmentCache.LoadOrStore(path, entry); !loaded {
+	// Only increment counter for new entries, not overwrites.
+	if existing, loaded := pathSegmentCache.LoadOrStore(path, entry); !loaded {
 		atomic.AddInt64(&pathCacheSize, 1)
 	} else {
-		pathSegmentCache.Store(path, entry) // Update existing entry with fresh timestamp
+		// RACE FIX (D-002/R9 m9): CAS instead of a plain Store — a concurrent
+		// eviction may have deleted the entry between LoadOrStore and this
+		// update, and Store would resurrect it WITHOUT incrementing
+		// pathCacheSize. Each such occurrence permanently under-counted by one,
+		// and once the counter drifted below pathCacheMaxSize, eviction (which
+		// only triggers at count >= max) never ran again — unbounded growth of
+		// this process-global cache. CAS replaces the entry only if it is still
+		// the one we loaded; if eviction won the race, skip the refresh
+		// entirely (the write-side mirror of the read-side CAS fix in
+		// getCachedPathSegments).
+		pathSegmentCache.CompareAndSwap(path, existing, entry)
 	}
 }
 
@@ -460,8 +470,13 @@ func NewExtractSegmentWithFlat(key string, flat bool) PathSegment {
 var emptyPathSegments = make([]PathSegment, 0)
 
 // ParsePath parses a JSON path string into segments
-// PERFORMANCE v3: Added sync.Map-based cache for lock-free reads
-// PERFORMANCE v2: Added fast path for simple single-property access
+// PERFORMANCE: Added sync.Map-based cache for lock-free reads
+// PERFORMANCE: Added fast path for simple single-property access
+//
+// CONCURRENCY (P-002): results are cached process-wide. The returned slice may
+// be shared across goroutines via that cache — callers MUST NOT modify its
+// elements. Appending is safe: cached slices are stored with cap == len, so an
+// append reallocates instead of writing into the shared backing array.
 func ParsePath(path string) ([]PathSegment, error) {
 	if path == "" {
 		return emptyPathSegments, nil
@@ -472,7 +487,7 @@ func ParsePath(path string) ([]PathSegment, error) {
 		return emptyPathSegments, nil
 	}
 
-	// PERFORMANCE v3: Check cache first (lock-free)
+	// PERFORMANCE: Check cache first (lock-free)
 	if segments, ok := getCachedPathSegments(path); ok {
 		return segments, nil
 	}
@@ -540,7 +555,7 @@ func ParseComplexSegment(part string) ([]PathSegment, error) {
 
 // parseDotNotation parses dot notation paths like "user.name" or "users[0].name"
 // PERFORMANCE: Pre-calculates segment count to avoid slice growth allocations
-// PERFORMANCE v2: Added fast paths for common simple cases (1-2 segments, no brackets)
+// PERFORMANCE: Added fast paths for common simple cases (1-2 segments, no brackets)
 // ESCAPE: Handles \. \\ \[ \] \{ \} escape sequences
 // SECURITY: Enforces MaxPathParseDepth limit to prevent stack overflow attacks
 func parseDotNotation(path string) ([]PathSegment, error) {

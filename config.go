@@ -3,6 +3,7 @@ package json
 import (
 	"errors"
 	"maps"
+	"path/filepath"
 	"reflect"
 	"time"
 
@@ -112,8 +113,9 @@ func DefaultConfig() Config {
 		FullSecurityScan:          false,
 
 		// Concurrency
-		MaxConcurrency:    DefaultMaxConcurrency,
-		ParallelThreshold: DefaultParallelThreshold,
+		MaxConcurrency:         DefaultMaxConcurrency,
+		ParallelThreshold:      DefaultParallelThreshold,
+		MaxOperationsPerSecond: 0, // rate limit disabled by default (D-002/R8 M3)
 
 		// Processing Options
 		EnableValidation: true,
@@ -331,8 +333,50 @@ func (c *Config) ValidateWithWarnings() []ConfigWarning {
 	checkInt64Clamp(&c.MaxJSONSize, 1024*1024, 100*1024*1024, "MaxJSONSize")
 	checkIntClamp(&c.MaxPathDepth, 10, 200, "MaxPathDepth")
 	checkIntClamp(&c.MaxNestingDepthSecurity, 10, 200, "MaxNestingDepthSecurity")
-	checkIntClamp(&c.MaxConcurrency, 1, 200, "MaxConcurrency")
+
+	// D-002/R8 (M4): MaxConcurrency <= 0 means "use the default (50)", not the
+	// minimum (1). The old <=0→1 clamp made any partially-filled Config
+	// (json.New(Config{...})) serialize all operations — the second concurrent
+	// op failed with ErrConcurrencyLimit. Zero is the struct zero value, so the
+	// default is the friendly interpretation; explicit [1,200] values and the
+	// >200 clamp are unchanged.
+	if c.MaxConcurrency <= 0 {
+		warnings = append(warnings, ConfigWarning{
+			Field:    "MaxConcurrency",
+			OldValue: c.MaxConcurrency,
+			NewValue: DefaultMaxConcurrency,
+			Reason:   "value was invalid, set to default",
+		})
+		c.MaxConcurrency = DefaultMaxConcurrency
+	} else if c.MaxConcurrency > 200 {
+		warnings = append(warnings, ConfigWarning{
+			Field:    "MaxConcurrency",
+			OldValue: c.MaxConcurrency,
+			NewValue: 200,
+			Reason:   "value exceeded maximum",
+		})
+		c.MaxConcurrency = 200
+	}
+
 	checkIntClamp(&c.ParallelThreshold, 1, 50, "ParallelThreshold")
+
+	// D-002/R8 (M3): rate-limit wiring. 0 (the default) stays 0 = disabled;
+	// negative is invalid → disabled; the 1,000,000 cap keeps checkRateLimit's
+	// int64(time.Second)/window divisor comfortably away from zero.
+	if c.MaxOperationsPerSecond < 0 || c.MaxOperationsPerSecond > 1000000 {
+		original := c.MaxOperationsPerSecond
+		if original < 0 {
+			c.MaxOperationsPerSecond = 0
+		} else {
+			c.MaxOperationsPerSecond = 1000000
+		}
+		warnings = append(warnings, ConfigWarning{
+			Field:    "MaxOperationsPerSecond",
+			OldValue: original,
+			NewValue: c.MaxOperationsPerSecond,
+			Reason:   "value out of valid range [0, 1000000]",
+		})
+	}
 
 	// Security limits
 	checkIntClamp(&c.MaxObjectKeys, 100, 100000, "MaxObjectKeys")
@@ -411,6 +455,54 @@ func (c *Config) ValidateWithWarnings() []ConfigWarning {
 	checkIntClamp(&c.JSONLWorkers, 1, 64, "JSONLWorkers")
 	checkIntClamp(&c.JSONLChunkSize, 100, 10000, "JSONLChunkSize")
 	checkInt64Clamp(&c.JSONLMaxMemory, 10*1024*1024, 1024*1024*1024, "JSONLMaxMemory")
+
+	// File access allowlist (GEN-001): entries must be absolute so the
+	// restriction cannot silently shift with the working directory. Relative
+	// entries are resolved to absolute (with a warning) rather than dropped —
+	// dropping would widen the allowlist. Empty entries are removed.
+	if len(c.AllowedFileDirs) > 0 {
+		cleaned := make([]string, 0, len(c.AllowedFileDirs))
+		for _, dir := range c.AllowedFileDirs {
+			if dir == "" {
+				warnings = append(warnings, ConfigWarning{
+					Field:  "AllowedFileDirs",
+					Reason: "empty entry dropped",
+				})
+				continue
+			}
+			abs, err := filepath.Abs(filepath.Clean(dir))
+			if err != nil {
+				warnings = append(warnings, ConfigWarning{
+					Field:  "AllowedFileDirs",
+					Reason: "unresolvable entry dropped",
+				})
+				continue
+			}
+			if abs != filepath.Clean(dir) {
+				warnings = append(warnings, ConfigWarning{
+					Field:    "AllowedFileDirs",
+					OldValue: dir,
+					NewValue: abs,
+					Reason:   "relative entry resolved to absolute path",
+				})
+			}
+			cleaned = append(cleaned, abs)
+		}
+		c.AllowedFileDirs = cleaned
+	}
+
+	// SaveFileMode (GEN-001): permission bits only. Masking (rather than
+	// rejecting) matches the clamp-and-warn semantics of this method; a stray
+	// os.ModeDir etc. in the value cannot alter file creation.
+	if c.SaveFileMode&^0777 != 0 {
+		warnings = append(warnings, ConfigWarning{
+			Field:    "SaveFileMode",
+			OldValue: c.SaveFileMode,
+			NewValue: c.SaveFileMode & 0777,
+			Reason:   "masked to permission bits (<= 0777)",
+		})
+		c.SaveFileMode &= 0777
+	}
 
 	return warnings
 }

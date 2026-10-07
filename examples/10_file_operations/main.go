@@ -24,7 +24,7 @@ import (
 // - Iterating JSON directly from files (ForeachFile family)
 // - Pretty vs compact file output
 //
-// Run: go run -tags=example examples/10_file_operations.go
+// Run: go run -tags=example ./examples/10_file_operations
 
 // User is the sample struct shared by the marshal/unmarshal demos below.
 type User struct {

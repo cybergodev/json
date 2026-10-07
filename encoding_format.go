@@ -162,9 +162,12 @@ func appendIndentJSON(dst, src []byte, prefix, indent string) []byte {
 //	cfg.Indent = "    " // 4 spaces
 //	pretty, err := processor.Prettify(jsonStr, cfg)
 func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance — Prettify reads/writes the result cache and
+	// the validator. Standalone op (decoder-only body): no governed callee.
+	if err := p.beginGovernedOp(); err != nil {
 		return "", err
 	}
+	defer p.endGovernedOp()
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
@@ -172,12 +175,14 @@ func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// Validate input and build the cache key in one step (P-001: one FNV scan
+	// of the document instead of two — validation self-hash + key build).
+	cacheKey, err := p.validateAndCacheKey("pretty", jsonStr, options)
+	if err != nil {
 		return "", err
 	}
 
 	// Check cache first
-	cacheKey := p.createCacheKey("pretty", jsonStr, "", options)
 	if cached, ok := p.getCachedResult(cacheKey); ok {
 		if val, typeOk := cached.(string); typeOk {
 			return val, nil
@@ -215,6 +220,8 @@ func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
 }
 
 // formatJSONString formats a JSON string or encodes a non-JSON string.
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func (p *Processor) formatJSONString(jsonStr string, pretty bool) (string, error) {
 	isValid, validErr := p.Valid(jsonStr)
 	if validErr != nil {
@@ -257,9 +264,12 @@ func (p *Processor) formatJSONString(jsonStr string, pretty bool) (string, error
 //	}`)
 //	// Output: {"name":"Alice","age":30}
 func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error) {
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance — see Prettify (same cache/validator profile;
+	// CompactString/CompactBuffer route through here).
+	if err := p.beginGovernedOp(); err != nil {
 		return "", err
 	}
+	defer p.endGovernedOp()
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
@@ -267,12 +277,14 @@ func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error) {
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// Validate input and build the cache key in one step (P-001: one FNV scan
+	// of the document instead of two — validation self-hash + key build).
+	cacheKey, err := p.validateAndCacheKey("compact", jsonStr, options)
+	if err != nil {
 		return "", err
 	}
 
 	// Check cache first
-	cacheKey := p.createCacheKey("compact", jsonStr, "", options)
 	if cached, ok := p.getCachedResult(cacheKey); ok {
 		if val, typeOk := cached.(string); typeOk {
 			return val, nil

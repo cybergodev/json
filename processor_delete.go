@@ -9,7 +9,7 @@ import (
 
 // Delete removes a value from JSON at the specified path
 func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, err error) {
-	options, err := p.prepareOperation(jsonStr, path, cfg...)
+	options, jsonHash, err := p.prepareOperation(jsonStr, path, cfg...)
 	if err != nil {
 		// Return the original input on failure, matching every other error path
 		// in this method and the contract documented by Set/SetMultiple.
@@ -97,7 +97,11 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 	// PERFORMANCE: Fast path for simple property delete without cache or cleanup.
 	// compactArrays implies cleanupNulls below (empty arrays are compacted during
 	// reconstruction), so it must also opt out of this fast path.
-	if isSimplePropertyAccess(path) && !p.config.EnableCache && len(cfg) == 0 && !cleanupNulls && !compactArrays &&
+	// D-002/R8 (C2): PreserveNumbers opts out too, mirroring Get's fast path —
+	// unmarshalRootObject parses via stdlib (float64) and the document is
+	// re-marshalled wholesale, which rewrote every untouched big integer as a
+	// float under EnableCache=false.
+	if isSimplePropertyAccess(path) && !p.config.EnableCache && !p.config.PreserveNumbers && len(cfg) == 0 && !cleanupNulls && !compactArrays &&
 		p.config.CustomPathParser == nil { // custom syntax: never simple (D-002/M33)
 		m, isObj, err := unmarshalRootObject(jsonStr)
 		if err != nil {
@@ -114,6 +118,16 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 			if err != nil {
 				p.incrementErrorCount()
 				return jsonStr, newOperationPathError("delete", path, "failed to marshal result", err)
+			}
+			// D-002/R11 (M2, option A, 回查): the slow path below gained this
+			// check but the fast path did not, breaking the "every mutation path
+			// uniform" claim. Defense-in-depth only — deletion output is at most
+			// input-sized (the no-cfg fast path implies the input was already
+			// validated against the same baked limit), so this cannot fire
+			// outside pathological float-reformat growth at the exact limit.
+			if err := p.checkMutationOutputSize(result, p.config.MaxJSONSize, "delete", path); err != nil {
+				p.incrementErrorCount()
+				return jsonStr, err
 			}
 			return result, nil
 		}
@@ -156,8 +170,10 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 		data = p.cleanupDeletedMarkers(data)
 	}
 
-	// Invalidate cached results for this JSON string since the data changed
-	p.invalidateJSONCache(jsonStr)
+	// Invalidate cached results for this JSON string since the data changed.
+	// P-003: reuses the hash prepareOperation computed for the validation
+	// prehash — no second full-document scan here.
+	p.invalidateJSONCacheHashed(jsonHash)
 
 	// Cleanup nulls if requested
 	if cleanupNulls {
@@ -174,6 +190,14 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 			Message: "failed to marshal result",
 			Err:     err,
 		}
+	}
+
+	// D-002/R11 (M2, option A): see Set — output honors the effective
+	// MaxJSONSize. Defensive here: deletion can only shrink the document, but
+	// the check keeps every mutation path uniform.
+	if err := p.checkMutationOutputSize(result, p.mutationOutputMaxSize(options, len(cfg) > 0), "delete", path); err != nil {
+		p.incrementErrorCount()
+		return jsonStr, err
 	}
 
 	return result, nil

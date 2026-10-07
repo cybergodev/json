@@ -197,6 +197,9 @@ var configFieldList = []configFieldAccessor{
 	{"MaxConcurrency",
 		func(a, b Config) bool { return a.MaxConcurrency == b.MaxConcurrency },
 		func(h uint64, c Config) uint64 { return internal.HashInt(h, c.MaxConcurrency) }},
+	{"MaxOperationsPerSecond",
+		func(a, b Config) bool { return a.MaxOperationsPerSecond == b.MaxOperationsPerSecond },
+		func(h uint64, c Config) uint64 { return internal.HashInt(h, c.MaxOperationsPerSecond) }},
 	{"ParallelThreshold",
 		func(a, b Config) bool { return a.ParallelThreshold == b.ParallelThreshold },
 		func(h uint64, c Config) uint64 { return internal.HashInt(h, c.ParallelThreshold) }},
@@ -437,6 +440,31 @@ var configFieldList = []configFieldAccessor{
 	{"DisableDefaultPatterns",
 		func(a, b Config) bool { return a.DisableDefaultPatterns == b.DisableDefaultPatterns },
 		func(h uint64, c Config) uint64 { return internal.HashBool(h, c.DisableDefaultPatterns) }},
+	{"DetectDuplicateKeys",
+		func(a, b Config) bool { return a.DetectDuplicateKeys == b.DetectDuplicateKeys },
+		func(h uint64, c Config) uint64 { return internal.HashBool(h, c.DetectDuplicateKeys) }},
+	{"SaveFileMode",
+		func(a, b Config) bool { return a.SaveFileMode == b.SaveFileMode },
+		func(h uint64, c Config) uint64 { return internal.HashInt(h, int(c.SaveFileMode)) }},
+	{"AllowedFileDirs",
+		func(a, b Config) bool {
+			if len(a.AllowedFileDirs) != len(b.AllowedFileDirs) {
+				return false
+			}
+			for i, d := range a.AllowedFileDirs {
+				if d != b.AllowedFileDirs[i] {
+					return false
+				}
+			}
+			return true
+		},
+		func(h uint64, c Config) uint64 {
+			h = internal.HashInt(h, len(c.AllowedFileDirs))
+			for _, d := range c.AllowedFileDirs {
+				h = internal.HashString(h, d)
+			}
+			return h
+		}},
 	{"Hooks",
 		func(a, b Config) bool {
 			if len(a.Hooks) != len(b.Hooks) {
@@ -654,6 +682,8 @@ func SafeGet(jsonStr, path string, cfg ...Config) AccessResult {
 
 // Set sets a value in JSON at the specified path.
 // Creates intermediate paths if Config.CreatePaths is true.
+// A root path ("", ".", or the JSON Pointer root "/") replaces the entire
+// document with value (GEN-001).
 //
 // Returns:
 //   - On success: modified JSON string and nil error

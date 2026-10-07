@@ -4,6 +4,92 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.5.2 - Config Correctness, Production Hardening & Performance (2026-10-07)
+
+> Sweep of baked-config vs per-call-cfg plumbing, `PreserveNumbers` across every path, JSONL engine unification, new hardening options (`DetectDuplicateKeys`/`AllowedFileDirs`/`SaveFileMode`), panic protection at extension points, and profiled performance work. Non-breaking.
+
+### Breaking Changes
+
+- None — no required parameter added and no public signature changed; behavioral tightening only where it aligns with documented contracts (the one removed export, `SecurityLimits`, never appeared in any public signature and was user-approved for a minor release)
+- Trailing garbage after a top-level value is now rejected in `CompareJSON`/`MergeJSON`/`PreserveNumbers`/`Prettify` (encoding/json parity; previously silently ignored — `CompareJSON` could report false equality)
+- `Set`/`SetMultiple`/`Delete`/`ForeachReturn` output is now capped by the effective `MaxJSONSize` (oversized results return `ErrSizeLimit` with the input document unchanged)
+- `SetMultiple` enforces `MaxBatchSize` and reports partial failures via `errors.Join` under `ContinueOnError` (previously returned the modified result with a nil error)
+- Fast-encoder `NaN`/`±Inf` scalars return an error instead of silently emitting `null`; `EncodeTime` rejects years outside [0,9999] (previously emitted invalid RFC3339 with nil error)
+- `MaxConcurrency ≤ 0` now clamps to the documented default of 50 (previously 1 — a partially specified config rejected the second concurrent operation)
+
+### Added
+
+- `Config.DetectDuplicateKeys` — opt-in duplicate object key detection returning the new `ErrDuplicateKey` sentinel (default off keeps stdlib last-wins semantics)
+- `Config.AllowedFileDirs` — directory allowlist enforced after symlink resolution on every file read/write API (including `StreamJSONLFile`); per-call lists override the processor's; violations return `ErrSecurityViolation`
+- `Config.SaveFileMode` — permission bits for newly created files (zero → 0644 like `os.WriteFile`; existing files keep their mode; per-call override)
+- `Config.MaxOperationsPerSecond` — per-processor rate limiting is now reachable (previously declared but never wired; 0 = disabled)
+- `NewSchema(cfg)` canonical constructor (`NewSchemaWithConfig` deprecated); `Processor.CompactString`/`ParseJSONL`/`ToJSONL`/`ToJSONLString` mirrors of the package-level functions
+- All 11 JSONL/stream `Processor` methods (`StreamJSONL*`, `ForeachJSONL`, `MapJSONL`, `ReduceJSONL`, `FilterJSONL`, `CollectJSONL`, `FirstJSONL`) accept a trailing `cfg ...Config`
+- Panic protection at extension points — a panicking `CustomPathParser`, `Validator`, or `Hook` is converted to an error instead of crashing the process
+- CI: lint + ubuntu/windows race/coverage matrix + govulncheck; `v*`-tag release workflow publishing from this file; dependabot (gomod + actions)
+
+### Fixed
+
+- No-cfg calls now honor the processor's baked config instead of silent defaults: encoding options/limits (`Marshal`/`MarshalIndent`/`Encode`/`EncodePretty`/`EncodeStream`/`EncodeBatch`/`EncodeFields`), `MergeJSON` merge mode, `ProcessBatch`/`SetMultiple` batch size, `CompareJSON` limits, `SetFromParsed` `CreatePaths`, and result caching
+- Per-call `cfg.MaxJSONSize` is enforced on encode output and mutation re-encodes (previously only the input side was checked); `Encoder.Encode`'s fast path no longer bypasses configured float precision/escapes
+- Per-call `cfg.Hooks` are merged with processor hooks (previously silently ignored while still participating in cache keys)
+- `PreserveNumbers` now applies on no-cfg paths — `Get`/`Set`/`Delete`/`SetMultiple`/`GetMultiple`/`PreParse`/`Parse`/`ParseAny`/`ValidateSchema`/`Foreach*` on a configured processor previously decoded everything as float64, and `Set`/`Delete` rewrote untouched big integers
+- JSONL engines (`StreamJSONL*`/`NDJSONProcessor`/`StreamLinesInto`) respect `PreserveNumbers`; `Number` gained `UnmarshalJSON` (decoding into it previously failed); JSONL `IterableValue.Get*` handle preserved numbers
+- `Compact`/`Indent`/`Prettify` are byte-preserving — previously they re-sorted keys, rewrote `1e3`→`1000`, and corrupted integers beyond 2^53; `Indent` output is byte-identical with `encoding/json.Indent`
+- U+2028/U+2029 are escaped unconditionally on every output path including the fast encoder (raw LS/PS previously reached `Set`/`Delete` output and JS-embedded strings)
+- Truncated streaming reads return `ErrUnexpectedEOF` instead of bare `io.EOF` (callers silently dropped the last value)
+- Schema `Type:"integer"` accepts integer values (previously rejected every input and skipped all numeric constraints)
+- `DisallowUnknown`/`Decoder.DisallowUnknownFields` are enforced on the default decode path and the `PreserveNumbers` re-encode fallback (previously ignored)
+- Escaped-dot paths behave identically across Get/Set/Delete — `Set("key\.[0]")` no longer writes a pseudo-literal key; the `Get(".a")`/`Set(".a")` empty-segment split is fixed
+- `Delete` marker cleanup fixed for bracket-free array paths (`Delete("a.0")`/`Delete("a.*")` previously serialized `{}` into the output)
+- Out-of-bounds slice extension reports an error instead of silently no-op'ing (`Set("x[0][3:6]")`); single-segment root array extension returns an explicit error
+- First `Get` on uncached input returns an independent copy under `CacheSharedResults=false` (previously a live alias — caller mutation poisoned the get/parse caches)
+- Cache entry size estimation uses bounded recursion (tree-shaped values were underestimated by 2–3 orders of magnitude, defeating the 80% memory pre-eviction)
+- Path-segment cache write-side compare-and-swap — eviction counter drift previously allowed unbounded process-level cache growth
+- Config-processor cache eviction no longer returns a processor being asynchronously closed (~25% chance under churn); `ShutdownGlobalProcessor` closes cached processors in parallel (was serial, worst case ~64×5s)
+- Resources of a `CloseTimedOut` processor are released by the last in-flight operation (previously retained until process exit)
+- Goroutine leak in `StreamJSONLParallelWithContext` — a panic in the feed loop left workers blocked on the jobs channel forever
+- JSONL engines honor `JSONLContinueOnErr`, skip blank lines uniformly, share one set of scan limits (eliminating 100MB/1MB fallback drift and an off-by-one), and wrap memory-limit errors with `ErrSizeLimit`
+- `ParseJSONL` no longer returns partial results on failure; the parallel engine enforces the total `MaxMemory` cap; `JSONLWriter.Write` emits data+newline as one write (no half-line state on error, half the syscalls on unbuffered writers)
+- Stream iterators: a stream exactly at `MaxJSONSize` is no longer falsely rejected, empty input returns nil instead of bare `io.EOF`, and non-object stream input errors explicitly
+- Governance coverage completed — `Parse`/`Valid`/`PreParse`/`GetFromParsed`/`SetFromParsed`/`Prettify`/`Compact`/`ValidateSchema`/`GetMultiple` now respect `Close()`, `MaxConcurrency`, rate limits, metrics, and slow-op logging
+
+### Security
+
+- `\uXXXX` escapes are normalized before dangerous-pattern scanning — escaped payloads (e.g. `<script>`, `__proto__`) previously bypassed detection entirely
+- File-read TOCTOU narrowed: reads open the symlink-resolved physical path, so a leaf symlink swapped between validation and open can no longer redirect the read
+- Error messages are redacted before logging: sensitive keyword hits become `[REDACTED_ERROR]` and quoted payloads over 8 bytes are masked (`errors.Is`/`As` chains unaffected)
+- Security-validation cache bounded by a hard 32MB byte budget with a 2MB per-entry cap (previously entry-count-only with a ~2GB theoretical bound)
+- Indicator-byte prefilter made case-complete for every built-in pattern letter (defensive hardening — no built-in pattern was actually escapable; a regression test pins the invariant)
+- Registered custom patterns participate in the "no-letters"/indicator gating and rolling-window sizing (pure-numeric patterns like card numbers were previously skipped; >32KB patterns could not fit any window)
+
+### Changed
+
+- Root-path `Set` (`""`, `"."`, `"/"`) replaces the whole document (previously an error); root `Delete` remains unsupported (no JSON representation of "no document")
+- `Encode` is the canonical encoder name again and carries the full documentation; `EncodeWithConfig` is a deprecated permanent alias (reverses v1.5.0's deprecation of `Encode`)
+- Deprecated: void `Foreach`/`ForeachNested` → `ForeachWithError`/`ForeachNestedWithError`; `NDJSONProcessor`/`NewNDJSONProcessor`/`ProcessFile`/`ProcessReader` → the `StreamJSONL` family; `NewSchemaWithConfig` → `NewSchema`
+- Marked deprecated as inert: `CustomEncoder`/`CustomTypeEncoders`/`CustomValidators`/`AddValidator` (never invoked by the pipeline) and the never-wired fields `AllowComments`/`ValidateInput`/`EnableValidation`/`StrictMode`/`EnableHealthCheck`/`SamplingEnabled`/`SampleSize`/`ChunkSize`
+- Shared-tree contracts documented: `ParsedJSON.Data()` returns the cached tree itself (zero-copy, must not be mutated), `ParsePath` segments are shared with the process cache, `HookContext.Config` is valid only during the operation, `JSONLWriter` is not concurrency-safe
+- `Marshal`/`Unmarshal`/`Valid` godoc now states the exact `encoding/json` differences (default size/depth/pattern/UTF-8 hardening) instead of claiming 100% compatibility
+- Examples restructured into 17 standalone `examples/<name>/main.go` packages (previously un-buildable as a set), all verified runnable with full package-level API coverage
+- Test suite deduplicated and strengthened (~1,200 lines of duplicate/assertion-less tests removed; hollow assertions replaced with pinned contracts); coverage raised to ~83% root / ~90% internal
+
+### Performance
+
+- Validation cache raised to 2MB per entry under a 32MB total budget — documents of 300KB–2MB now reuse validation results (repeated mixed read/write workload ~5.8× faster overall, error-path `Get` ~172×)
+- One full-input FNV scan per operation, shared by validation, result-cache keys, and mutation invalidation (previously up to three passes): `PreParse`/`Prettify`/`Compact`/`Valid` −47%, `SetMultiple` −77%, distinct-input `Get` −76%
+- Comparable struct cache keys (zero-alloc) with an intrusive LRU; first/second-byte pattern prefiltering and a single-pass window scan make cold validation scanning 6–9× and structure scanning 1.3–1.4× faster
+- `\u`-dense escape normalization 9.5× (segmented block copy); the sensitive-pattern scan is single-pass (cold `Get` another ~12%)
+- Tiered sorted-key collection (stack buffer ≤8 keys, pooled above): `Concurrent_Marshal` −12% time/−50% bytes; `ToJSONL` −37.5% time/−99% allocations
+- Transient per-call validators no longer allocate a 256-slot cache map (~13KB per call); file-path validation drops one `Stat` syscall; `SaveToWriter` avoids a byte-slice copy for `io.StringWriter` targets
+
+### Removed
+
+- `SecurityLimits` — exported type that never appeared in any public signature and had no production callers (user-approved for a minor release)
+- Dead internal code only (~600 lines): legacy navigation chain, `arrayExtensionSignal`, pooled iterators, `PathFlag*` alias constants, and unused navigation/compile helpers
+
+---
+
 ## v1.5.1 - Correctness, Determinism, Security & Performance (2026-08-30)
 
 > Sweep of encoding correctness (`PreserveNumbers`, streaming decoder, custom encoder), deterministic output ordering, security-scan and path-symlink hardening, plus profiled performance work. Non-breaking.

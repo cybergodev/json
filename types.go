@@ -2,6 +2,7 @@ package json
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -86,20 +87,60 @@ type Config struct {
 	MaxConcurrency    int `json:"max_concurrency"`
 	ParallelThreshold int `json:"parallel_threshold"`
 
+	// MaxOperationsPerSecond caps the rate of governed operations (Get/Set/
+	// Delete) on this processor: an operation starting less than
+	// 1/MaxOperationsPerSecond seconds after the previous one is rejected with
+	// a rate-limit error. Zero (the default) disables the cap.
+	// D-002/R8 (M3): this wires up the previously unreachable checkRateLimit —
+	// the limiter existed but no Config field could ever set it.
+	// Clamped to [0, 1000000] by Validate.
+	MaxOperationsPerSecond int `json:"max_operations_per_second"`
+
 	// ===== Processing Options =====
+	// EnableValidation was intended to toggle input validation.
+	//
+	// Deprecated: EnableValidation is not consulted by any operation —
+	// validation runs unless SkipValidation is set. Setting it has no effect
+	// (it only participates in config cache keying). Retained for v1
+	// compatibility. (D-002/R8 M2)
 	EnableValidation bool `json:"enable_validation"`
-	StrictMode       bool `json:"strict_mode"`
-	CreatePaths      bool `json:"create_paths"`
-	CleanupNulls     bool `json:"cleanup_nulls"`
-	CompactArrays    bool `json:"compact_arrays"`
-	ContinueOnError  bool `json:"continue_on_error"` // Continue on batch errors
+	// StrictMode was intended to enable stricter parsing rules.
+	//
+	// Deprecated: StrictMode is not consulted by any parser or operation —
+	// setting it has no effect (it only participates in config cache keying).
+	// Retained for v1 compatibility. (D-002/R8 M2)
+	StrictMode      bool `json:"strict_mode"`
+	CreatePaths     bool `json:"create_paths"`
+	CleanupNulls    bool `json:"cleanup_nulls"`
+	CompactArrays   bool `json:"compact_arrays"`
+	ContinueOnError bool `json:"continue_on_error"` // Continue on batch errors
 
 	// ===== Input/Output Options =====
-	AllowComments    bool `json:"allow_comments"`
-	PreserveNumbers  bool `json:"preserve_numbers"`
+	// AllowComments was intended to permit // and # comments in JSON input.
+	//
+	// Deprecated: AllowComments is not consulted by any parser — setting it has
+	// no effect (it only participates in config cache keying). Retained for v1
+	// compatibility. (D-002/R8 M2)
+	AllowComments   bool `json:"allow_comments"`
+	PreserveNumbers bool `json:"preserve_numbers"`
+	// ValidateInput was intended to toggle input validation.
+	//
+	// Deprecated: ValidateInput is not consulted by any operation — setting it
+	// has no effect (it only participates in config cache keying). Retained
+	// for v1 compatibility. (D-002/R8 M2)
 	ValidateInput    bool `json:"validate_input"`
 	ValidateFilePath bool `json:"validate_file_path"`
 	SkipValidation   bool `json:"skip_validation"` // Skip validation for trusted input
+
+	// DetectDuplicateKeys rejects JSON input in which any object contains a
+	// repeated key, returning an error wrapping ErrDuplicateKey. The default
+	// (false) preserves encoding/json semantics: duplicates are silently
+	// resolved last-wins. Applies wherever input validation runs — including
+	// per-call Configs — but note it also fires under SkipValidation, since it
+	// is an explicitly requested semantic check (GEN-001).
+	// LIMITATION: keys are compared as raw bytes, so spellings that differ
+	// only by escape encoding (e.g. "a" vs "a") are treated as distinct.
+	DetectDuplicateKeys bool `json:"detect_duplicate_keys"`
 
 	// ===== Encoding Options =====
 	Pretty          bool            `json:"pretty"`
@@ -121,12 +162,23 @@ type Config struct {
 	CustomEscapes   map[rune]string `json:"custom_escapes,omitempty"`
 
 	// ===== Observability =====
-	EnableMetrics     bool `json:"enable_metrics"`
+	EnableMetrics bool `json:"enable_metrics"`
+	// EnableHealthCheck was intended to gate health checking.
+	//
+	// Deprecated: EnableHealthCheck is not consulted — GetHealthStatus/
+	// GetStats work regardless of this flag. Setting it has no effect (it only
+	// participates in config cache keying). Retained for v1 compatibility.
+	// (D-002/R8 M2)
 	EnableHealthCheck bool `json:"enable_health_check"`
 
 	// ===== Large File Processing =====
-	// ChunkSize is the size of each chunk when processing large files.
-	// Default: 1MB (1024 * 1024 bytes)
+	// ChunkSize was intended as the chunk size for chunked large-file
+	// processing.
+	//
+	// Deprecated: ChunkSize is not read by any code path — the streaming
+	// readers use BufferSize, and no chunked file reader exists. Setting it has
+	// no effect (it only participates in config cache keying). Retained for v1
+	// compatibility. (D-002/R8 M2)
 	ChunkSize int64 `json:"chunk_size"`
 
 	// MaxMemory is the maximum memory to use for large file processing.
@@ -137,13 +189,28 @@ type Config struct {
 	// Default: 64KB (64 * 1024 bytes)
 	BufferSize int `json:"buffer_size"`
 
-	// SamplingEnabled enables sampling for very large files.
-	// When true, only a subset of data is validated for security.
-	// Default: true
+	// SaveFileMode is the permission bits used when SaveToFile / MarshalToFile
+	// create a NEW file; existing files keep their current permissions
+	// (matching os.WriteFile, which does not change them on overwrite).
+	// Zero falls back to 0644. Use 0600 when the data is sensitive and the
+	// file should not be group/world-readable (GEN-001). Validated to
+	// permission bits only (<= 0777).
+	SaveFileMode os.FileMode `json:"save_file_mode,omitempty"`
+
+	// SamplingEnabled was intended to toggle sampling for very large inputs.
+	//
+	// Deprecated: SamplingEnabled is not consulted — security scanning switches
+	// to rolling-window mode automatically above 4KB (see FullSecurityScan);
+	// this field never governed it. Setting it has no effect (it only
+	// participates in config cache keying). Retained for v1 compatibility.
+	// (D-002/R8 M2)
 	SamplingEnabled bool `json:"sampling_enabled"`
 
-	// SampleSize is the number of samples to take when sampling is enabled.
-	// Default: 1000
+	// SampleSize was intended as the sample count for sampled security scans.
+	//
+	// Deprecated: SampleSize is not consulted by any code path (see
+	// SamplingEnabled). Setting it has no effect (it only participates in
+	// config cache keying). Retained for v1 compatibility. (D-002/R8 M2)
 	SampleSize int `json:"sample_size"`
 
 	// ===== JSONL (JSON Lines) Configuration =====
@@ -185,6 +252,21 @@ type Config struct {
 	// MergeMode controls how JSON documents are merged by MergeJSON and MergeMany.
 	// Default: MergeUnion (combine all keys/elements)
 	MergeMode MergeMode `json:"merge_mode"`
+
+	// ===== File Access Security =====
+	// AllowedFileDirs restricts file operations to the listed directories
+	// (GEN-001). When non-empty, every path passed to the path-based file APIs
+	// — LoadFromFile, UnmarshalFromFile, SaveToFile, MarshalToFile, the
+	// ForeachFile* family, and StreamJSONLFile — must resolve (after symlink
+	// resolution) inside one of these directories; anything else is rejected
+	// with ErrSecurityViolation. This allowlist is stricter than (and applied
+	// in addition to) the built-in platform blocklists.
+	// Entries must be absolute (relative entries are resolved against the
+	// working directory by Validate, with a warning); matching is by path
+	// prefix on the cleaned path. Default: empty (blocklist checks only).
+	// The deprecated NDJSONProcessor entry points are not allowlist-aware.
+	// A per-call Config with a non-empty list overrides the processor's list.
+	AllowedFileDirs []string `json:"allowed_file_dirs,omitempty"`
 
 	// ===== Extension Points =====
 
@@ -275,7 +357,14 @@ type ParsedJSON struct {
 	data any
 }
 
-// Data returns the underlying parsed data
+// Data returns the underlying parsed data.
+//
+// P-002 CONTRACT: the returned tree is shared with the processor's parse cache
+// and may be read concurrently by other PreParse/GetFromParsed callers. It
+// MUST NOT be mutated — doing so poisons the cache for every reader (a data
+// race under -race, silent corruption otherwise). Copy the parts you need to
+// change, or use GetFromParsed/Get, which return safe copies of extracted
+// values by default.
 func (p *ParsedJSON) Data() any {
 	if p == nil {
 		return nil

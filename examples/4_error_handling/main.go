@@ -22,7 +22,7 @@ import (
 // - Error wrapping with context
 // - Client-safe errors (SafeError) and path redaction (RedactedPath)
 //
-// Run: go run -tags=example examples/4_error_handling.go
+// Run: go run -tags=example ./examples/4_error_handling
 
 func main() {
 	fmt.Println("JSON Library - Error Handling")

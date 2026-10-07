@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -42,13 +42,22 @@ import (
 //	var data any
 //	err := processor.Parse(`{"price":19.99}`, &data, cfg)
 func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
-	// PERFORMANCE v2: Fast path for the most common case — no config,
+	// D-002/R9 (m3): concurrency governance for the whole parse — in-flight
+	// registration (so Close() drains via waitForActiveOps) plus the
+	// MaxConcurrency slot. Parse touches the security validator and is the
+	// entry funnel for Unmarshal's cfg path, GetCompiled, and the file/reader
+	// loaders. No governed callee: the fast paths below call stdlib/decoder
+	// directly (parseJSON never routes back into a governed op), so the
+	// acquire is never nested.
+	if err := p.beginGovernedOp(); err != nil {
+		return err
+	}
+	defer p.endGovernedOp()
+
+	// PERFORMANCE: Fast path for the most common case — no config,
 	// target is *any, not preserving numbers. Avoids config allocation
 	// and uses streamlined error wrapping.
 	if len(cfg) == 0 {
-		if p == nil || atomic.LoadInt32(&p.state) != processorStateActive {
-			return &JsonsError{Op: "parse", Message: "processor is closed", Err: ErrProcessorClosed}
-		}
 		if _, ok := target.(*any); ok && !p.config.PreserveNumbers {
 			// SECURITY: Full input validation is required (size, depth, security patterns)
 			if err := p.validateInput(jsonStr); err != nil {
@@ -87,10 +96,20 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		}
 	}
 
+	// D-002/R8 (C1): no-cfg calls resolve PreserveNumbers from the processor's
+	// baked configuration — the shared singleton carries false and previously
+	// won every no-cfg call, so Parse/ParseAny silently parsed with stdlib
+	// float64 semantics on a PreserveNumbers processor. A supplied cfg still
+	// REPLACES the setting (D-006). See parseJSON for the sibling fix.
+	preserveNumbers := options.PreserveNumbers
+	if options == &defaultConfigSingleton {
+		preserveNumbers = p.config.PreserveNumbers
+	}
+
 	// PERFORMANCE: Fast path for the most common case — parsing into *any
 	// without number preservation. Avoids the fmt.Sprintf allocation for error wrapping
 	// and skips the preservingUnmarshal indirection.
-	if _, ok := target.(*any); ok && !options.PreserveNumbers {
+	if _, ok := target.(*any); ok && !preserveNumbers {
 		if err := json.Unmarshal(stringToBytes(jsonStr), target); err != nil {
 			return &JsonsError{
 				Op:      "parse",
@@ -102,7 +121,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 	}
 
 	// Parse with number preservation to maintain original format
-	if options.PreserveNumbers {
+	if preserveNumbers {
 		// Use numberPreservingDecoder to keep json.Number as-is
 		decoder := newNumberPreservingDecoder(true)
 		data, err := decoder.DecodeToAny(jsonStr)
@@ -205,9 +224,13 @@ func (p *Processor) ParseAny(jsonStr string, cfg ...Config) (any, error) {
 //	    // JSON is valid
 //	}
 func (p *Processor) Valid(jsonStr string, cfg ...Config) (bool, error) {
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance (Close-drain + MaxConcurrency) — Valid reads
+	// and writes the result cache and the security validator. Standalone op:
+	// no governed callee, so the acquire is never nested.
+	if err := p.beginGovernedOp(); err != nil {
 		return false, err
 	}
+	defer p.endGovernedOp()
 
 	// Prepare options, then validate against them so a caller-supplied Config
 	// (MaxJSONSize / FullSecurityScan / etc.) is actually enforced. When no
@@ -219,12 +242,14 @@ func (p *Processor) Valid(jsonStr string, cfg ...Config) (bool, error) {
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// Validate input and build the cache key in one step (P-001: one FNV scan
+	// of the document instead of two — validation self-hash + key build).
+	cacheKey, err := p.validateAndCacheKey("validate", jsonStr, options)
+	if err != nil {
 		return false, err
 	}
 
 	// Check cache first
-	cacheKey := p.createCacheKey("validate", jsonStr, "", options)
 	if cached, ok := p.getCachedResult(cacheKey); ok {
 		if val, typeOk := cached.(bool); typeOk {
 			return val, nil
@@ -260,10 +285,12 @@ func (p *Processor) ValidBytes(data []byte) bool {
 	return err == nil && valid
 }
 
-// stringToBytes converts string to []byte efficiently
-// Using standard conversion for safety and compatibility
-// While unsafe.StringData could provide zero-copy conversion,
-// we prioritize safety over marginal performance gains
+// stringToBytes converts string to []byte without copying. It delegates to
+// internal.StringToBytes, which reinterprets the string's backing array via
+// unsafe — see that function for the TOCTOU contract. SAFETY: the returned
+// slice MUST NOT be mutated; all callers in this package pass it to read-only
+// consumers (io.Writer.Write, json.Unmarshal, escape scanners). Prefer
+// []byte(s) when mutation is required.
 func stringToBytes(s string) []byte {
 	return internal.StringToBytes(s)
 }
@@ -418,6 +445,24 @@ func newNumberPreservingDecoder(preserveNumbers bool) *numberPreservingDecoder {
 	return decoderNoPreserve
 }
 
+// decodeSingleValue decodes exactly one JSON value from decoder into v and
+// rejects trailing content. json.Decoder.Decode consumes only the FIRST value
+// and silently ignores the rest, so a decoder-based branch without this probe
+// accepts `{"a":1}{"b":2}` where json.Unmarshal (used by every branch that can)
+// rejects it with "invalid character after top-level value" (D-002/R11 C1 —
+// CompareJSON reported false-equal on garbage-tailed input through exactly
+// this hole). A remainder of pure whitespace still succeeds — Token skips it
+// and returns io.EOF — matching stdlib whole-document semantics.
+func decodeSingleValue(decoder *json.Decoder, v any) error {
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("invalid character after top-level value")
+	}
+	return nil
+}
+
 // DecodeToAny decodes JSON string to any type with performance and number preservation
 func (d *numberPreservingDecoder) DecodeToAny(jsonStr string) (any, error) {
 	if !d.preserveNumbers {
@@ -434,7 +479,9 @@ func (d *numberPreservingDecoder) DecodeToAny(jsonStr string) (any, error) {
 	decoder.UseNumber()
 
 	var result any
-	if err := decoder.Decode(&result); err != nil {
+	// D-002/R11 (C1): decodeSingleValue enforces the same trailing-content
+	// rejection the stdlib branch above gets from json.Unmarshal.
+	if err := decodeSingleValue(decoder, &result); err != nil {
 		return nil, err
 	}
 
@@ -620,7 +667,9 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool, disallowUnkno
 		if disallowUnknown {
 			decoder := json.NewDecoder(bytes.NewReader(data))
 			decoder.DisallowUnknownFields()
-			return decoder.Decode(v)
+			// D-002/R11 (C1): decoder-based branch — enforce single-value
+			// semantics like the json.Unmarshal branches (see decodeSingleValue).
+			return decodeSingleValue(decoder, v)
 		}
 		return json.Unmarshal(data, v)
 	}
@@ -633,7 +682,8 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool, disallowUnkno
 	// OPTIMIZED: Try direct decoding for *any type to avoid double conversion
 	if anyPtr, ok := v.(*any); ok {
 		var temp any
-		if err := decoder.Decode(&temp); err != nil {
+		// D-002/R11 (C1): see decodeSingleValue — reject trailing content.
+		if err := decodeSingleValue(decoder, &temp); err != nil {
 			return err
 		}
 		// Convert json.Number to our Number type for consistency
@@ -644,7 +694,8 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool, disallowUnkno
 	// For other target types, we still need the conversion step
 	// but we optimize by reusing the decoder's buffer
 	var temp any
-	if err := decoder.Decode(&temp); err != nil {
+	// D-002/R11 (C1): see decodeSingleValue — reject trailing content.
+	if err := decodeSingleValue(decoder, &temp); err != nil {
 		return err
 	}
 

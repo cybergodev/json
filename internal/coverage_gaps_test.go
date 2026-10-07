@@ -366,9 +366,10 @@ func TestMergeModeString(t *testing.T) {
 // TestCacheManagerClose covers the cache shutdown path and its idempotency.
 func TestCacheManagerClose(t *testing.T) {
 	cm := NewCacheManager(true, 100, time.Minute)
-	cm.Set("k", "v")
+	key := CacheKey{Op: "get", JSONHash: 42, Path: "k"}
+	cm.Set(key, "v")
 
-	if v, ok := cm.Get("k"); !ok || v != "v" {
+	if v, ok := cm.Get(key); !ok || v != "v" {
 		t.Fatalf("pre-close Get = (%v, %v), want (v, true)", v, ok)
 	}
 

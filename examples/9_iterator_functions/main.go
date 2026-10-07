@@ -23,7 +23,7 @@ import (
 // - Error-returning variants (ForeachWithError, ForeachNestedWithError)
 // - Per-element paths with ForeachWithPathAndIterator
 //
-// Run: go run -tags=example examples/9_iterator_functions.go
+// Run: go run -tags=example ./examples/9_iterator_functions
 
 func main() {
 	fmt.Println("JSON Library - Iterator Functions")

@@ -23,7 +23,7 @@ import (
 // For JSON validation, see: 6_validation.go
 // For DeepCopy, see: 7_type_conversion.go
 //
-// Run: go run -tags=example examples/8_helper_functions.go
+// Run: go run -tags=example ./examples/8_helper_functions
 
 func main() {
 	fmt.Println("JSON Library - Helper Functions")

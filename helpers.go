@@ -130,6 +130,13 @@ func convertToInt(value any) (int, bool) {
 		if i, err := v.Int64(); err == nil && i >= int64(minInt) && i <= int64(maxInt) {
 			return int(i), true
 		}
+	case Number:
+		// D-002/R10: the library's Number (PreserveNumbers parsing and, since
+		// m4, the JSONL engines) must convert like json.Number — without this
+		// case IterableValue.GetInt returned 0 for every preserved number.
+		if i, err := v.Int64(); err == nil && i >= int64(minInt) && i <= int64(maxInt) {
+			return int(i), true
+		}
 	}
 	return 0, false
 }
@@ -176,6 +183,11 @@ func convertToInt64(value any) (int64, bool) {
 		}
 		return 0, true
 	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i, true
+		}
+	case Number:
+		// D-002/R10: mirror the json.Number case (see convertToInt).
 		if i, err := v.Int64(); err == nil {
 			return i, true
 		}
@@ -241,6 +253,14 @@ func convertToUint64(value any) (uint64, bool) {
 		if u, err := strconv.ParseUint(string(v), 10, 64); err == nil {
 			return u, true
 		}
+	case Number:
+		// D-002/R10: mirror the json.Number case (see convertToInt).
+		if i, err := v.Int64(); err == nil && i >= 0 {
+			return uint64(i), true
+		}
+		if u, err := strconv.ParseUint(string(v), 10, 64); err == nil {
+			return u, true
+		}
 	}
 	return 0, false
 }
@@ -302,6 +322,14 @@ func convertToFloat64(value any) (float64, bool) {
 			}
 			return f, true
 		}
+	case Number:
+		// D-002/R10: mirror the json.Number case (see convertToInt).
+		if f, err := v.Float64(); err == nil {
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return 0.0, false
+			}
+			return f, true
+		}
 	}
 	return 0.0, false
 }
@@ -354,6 +382,11 @@ func convertToBool(value any) (bool, bool) {
 			return false, true
 		}
 	case json.Number:
+		if f, err := v.Float64(); err == nil {
+			return f != 0.0, true
+		}
+	case Number:
+		// D-002/R10: mirror the json.Number case (see convertToInt).
 		if f, err := v.Float64(); err == nil {
 			return f != 0.0, true
 		}
@@ -535,7 +568,7 @@ func convertToMapWithDepth(value any, targetType reflect.Type, depth int) (any, 
 }
 
 // convertToString converts any value to its string representation.
-// Handles string, []byte, json.Number, fmt.Stringer, and falls back to fmt.Sprintf.
+// Handles string, []byte, json.Number, Number, fmt.Stringer, and falls back to fmt.Sprintf.
 func convertToString(value any) string {
 	switch v := value.(type) {
 	case string:
@@ -543,6 +576,10 @@ func convertToString(value any) string {
 	case []byte:
 		return string(v)
 	case json.Number:
+		return string(v)
+	case Number:
+		// D-002/R10: the literal, matching json.Number (Number also satisfies
+		// fmt.Stringer, so this is explicitness rather than a behavior change).
 		return string(v)
 	case fmt.Stringer:
 		return v.String()
@@ -772,7 +809,7 @@ func deepCopySliceWithDepth(s []any, depth int) ([]any, error) {
 // This is significantly faster than deepCopy for large documents where Get
 // returns a small portion, because it only copies the actual result value
 // instead of the entire cached document.
-// PERFORMANCE v3: JSON-specialized fast path avoids broad type switches.
+// PERFORMANCE: JSON-specialized fast path avoids broad type switches.
 //   - Tier 0: nil → immediate return
 //   - Tier 1: JSON primitives (bool, float64, string, json.Number) → zero allocation
 //   - Tier 2: map[string]any / []any → specialized inline copy without error wrapping
@@ -839,7 +876,7 @@ func deepCopySubtreeWithDepth(data any, depth int) (any, error) {
 }
 
 // deepCopyJSONMap copies a map[string]any that contains only JSON-compatible values.
-// PERFORMANCE v2: Inlined leaf-value copy avoids function call overhead for the
+// PERFORMANCE: Inlined leaf-value copy avoids function call overhead for the
 // common case where most values are JSON primitives (bool, float64, string).
 // No fmt.Errorf wrapping — errors propagate directly.
 func deepCopyJSONMapWithDepth(m map[string]any, depth int) (map[string]any, error) {
@@ -882,7 +919,7 @@ func deepCopyJSONMapWithDepth(m map[string]any, depth int) (map[string]any, erro
 }
 
 // deepCopyJSONSlice copies a []any that contains only JSON-compatible values.
-// PERFORMANCE v2: Same inline leaf-value optimization as deepCopyJSONMapWithDepth.
+// PERFORMANCE: Same inline leaf-value optimization as deepCopyJSONMapWithDepth.
 func deepCopyJSONSliceWithDepth(s []any, depth int) ([]any, error) {
 	if depth > deepCopyMaxDepth {
 		return nil, fmt.Errorf("deep copy depth limit exceeded: maximum depth is %d", deepCopyMaxDepth)
@@ -989,8 +1026,19 @@ func (p *Processor) CompareJSON(json1, json2 string, cfg ...Config) (bool, error
 		return false, fmt.Errorf("invalid JSON in second argument: %w", err)
 	}
 
+	// D-002/R9 (m3): marshal via THIS processor, not the package-level default
+	// — the method must honor p's own limits (MaxJSONSize/MaxDepth) instead of
+	// whichever processor getDefaultProcessor() happens to return, and gains
+	// encode-funnel governance (beginGovernedOp in encodeWithConfigToBytes)
+	// for free. Byte-identical output: Marshal forces EscapeHTML on both routes.
 	return compareJSONCore(json1, json2, func(v any) ([]byte, error) {
-		return Marshal(v, *options)
+		// D-002/R10: no-cfg must NOT dereference the singleton into Marshal —
+		// a DefaultConfig-valued cfg would override the baked MaxJSONSize with
+		// the 100MB default (same class as the WarmupCache C1 companion).
+		if options == &defaultConfigSingleton {
+			return p.Marshal(v)
+		}
+		return p.Marshal(v, *options)
 	})
 }
 
@@ -1108,11 +1156,11 @@ func (p *Processor) MergeJSON(json1, json2 string, cfg ...Config) (string, error
 	// default options, diverging from json.MergeJSON(a, b, cfg)).
 	if len(cfg) == 0 {
 		return mergeJSONWithMode(json1, json2, p.config.MergeMode, func(v any) (string, error) {
-			return p.EncodeWithConfig(v, p.config)
+			return p.Encode(v, p.config)
 		})
 	}
 	return mergeJSONWithMode(json1, json2, options.MergeMode, func(v any) (string, error) {
-		return p.EncodeWithConfig(v, *options)
+		return p.Encode(v, *options)
 	})
 }
 

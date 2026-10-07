@@ -310,3 +310,148 @@ func TestP002_PathTypeCacheEvictChurn(t *testing.T) {
 		t.Fatal("path type classification broken after churn")
 	}
 }
+
+// TestP002_PreParseSharedTreeContract documents and guards the P-002
+// resolution for PreParse/ParsedJSON.Data(): the tree behind Data() is the
+// parse-cache entry itself (zero-copy — copying it was measured at ~47x the
+// hit-path cost, BenchmarkPreParse_Large 1.3ms vs 28µs, an unacceptable
+// regression for this API's stated purpose), so its contract is DO NOT
+// MUTATE. What MUST hold — and what this test enforces — is that every
+// supported value-extraction path hands out safe copies, so callers never
+// need to touch the shared tree to get work done:
+//  1. GetFromParsed results are independent copies (default config): caller
+//     mutation of an extracted value cannot poison the cache.
+//  2. Concurrent read-only use (PreParse + GetFromParsed + Data() reads)
+//     stays race-clean under -race.
+func TestP002_PreParseSharedTreeContract(t *testing.T) {
+	const src = `{"user":{"name":"Alice","roles":["a","b"]},"n":1}`
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	parsed, err := p.PreParse(src)
+	if err != nil {
+		t.Fatalf("PreParse: %v", err)
+	}
+
+	// 1. Mutating an EXTRACTED result must not poison the shared tree.
+	extracted, err := p.GetFromParsed(parsed, "user")
+	if err != nil {
+		t.Fatalf("GetFromParsed(user): %v", err)
+	}
+	user := extracted.(map[string]any)
+	user["name"] = "MALLORY"
+	user["roles"].([]any)[0] = "pwned"
+
+	name, err := p.GetFromParsed(parsed, "user.name")
+	if err != nil {
+		t.Fatalf("GetFromParsed(name): %v", err)
+	}
+	if name != "Alice" {
+		t.Errorf("cache poisoned via mutated GetFromParsed result: got %v, want Alice", name)
+	}
+	role, err := p.GetFromParsed(parsed, "user.roles[0]")
+	if err != nil {
+		t.Fatalf("GetFromParsed(roles[0]): %v", err)
+	}
+	if role != "a" {
+		t.Errorf("nested slice poisoned via mutated result: got %v, want a", role)
+	}
+
+	// 2. Concurrent READ-ONLY use of the same shared tree is race-clean.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				pj, err := p.PreParse(src)
+				if err != nil {
+					t.Errorf("concurrent PreParse: %v", err)
+					return
+				}
+				v, err := p.GetFromParsed(pj, "user.name")
+				if err != nil {
+					t.Errorf("concurrent GetFromParsed: %v", err)
+					return
+				}
+				if v != "Alice" {
+					t.Errorf("concurrent read saw poisoned value: got %v, want Alice", v)
+					return
+				}
+				_ = pj.Data() // read-only Data() access is part of the contract
+			}
+		}()
+	}
+	wg.Wait()
+
+	// CacheSharedResults=true opts into sharing of extracted RESULTS as well;
+	// the mode must keep working (correct values).
+	cfg := DefaultConfig()
+	cfg.CacheSharedResults = true
+	ps, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New(shared): %v", err)
+	}
+	defer ps.Close()
+	sp, err := ps.PreParse(src)
+	if err != nil {
+		t.Fatalf("shared PreParse: %v", err)
+	}
+	sname, err := ps.GetFromParsed(sp, "user.name")
+	if err != nil {
+		t.Fatalf("shared GetFromParsed: %v", err)
+	}
+	if sname != "Alice" {
+		t.Errorf("shared mode returned %v, want Alice", sname)
+	}
+}
+
+// TestP002_JSONLParallelEarlyReturnsJoinWorkers guards the defer-based
+// close(jobs)+wg.Wait() restructure in StreamJSONLParallelWithContext
+// (P-002 MEDIUM): every early-return path (memory limit, nesting error, parse
+// error) must close the jobs channel and join the workers. Pre-fix, a panic in
+// the feed loop skipped close(jobs) and leaked every worker permanently; the
+// explicit close+wait pairs were also a double-close hazard waiting to happen
+// on any future refactor. A regression hangs (workers never joined → blocked
+// send) or panics (double close), failing the test either way.
+func TestP002_JSONLParallelEarlyReturnsJoinWorkers(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	lines := strings.Repeat("{\"a\":1}\n", 50)
+	noop := func(int, *IterableValue) error { return nil }
+
+	// Memory-limit early return (workers spawned, fed at least one job).
+	cfg := DefaultConfig()
+	cfg.JSONLMaxMemory = 8
+	err = p.StreamJSONLParallel(strings.NewReader(lines), 4, noop, cfg)
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("mem-limit path: got %v, want ErrSizeLimit", err)
+	}
+
+	// Parse-error early return with JSONLContinueOnErr disabled.
+	bad := "{\"a\":1}\n{not json at all}\n"
+	err = p.StreamJSONLParallel(strings.NewReader(bad), 4, noop)
+	if err == nil {
+		t.Fatal("parse-error path: expected an error, got nil")
+	}
+
+	// Nesting-error early return (one deep line beyond the default cap of 200).
+	deep := "{\"a\":1}\n" + strings.Repeat("[", 300) + strings.Repeat("]", 300) + "\n"
+	err = p.StreamJSONLParallel(strings.NewReader(deep), 4, noop)
+	if err == nil {
+		t.Fatal("nesting path: expected an error, got nil")
+	}
+
+	// Normal completion still joins and returns nil.
+	if err := p.StreamJSONLParallel(strings.NewReader(lines), 4, noop); err != nil {
+		t.Fatalf("normal path: %v", err)
+	}
+}

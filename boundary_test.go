@@ -23,7 +23,7 @@ import (
 // ValidateJSONInputEssential via a validator with tiny limits: size limit,
 // empty input, nesting depth, and per-container counts.
 func TestValidateJSONInputEssential_Boundaries(t *testing.T) {
-	sv := newSecurityValidator(32, 100, 5, false, false, nil, 3, 3)
+	sv := newSecurityValidator(32, 100, 5, false, false, false, nil, 3, 3)
 	defer sv.Close()
 
 	tests := []struct {
@@ -170,6 +170,61 @@ func TestValidateEmailFormat_Boundaries(t *testing.T) {
 			}
 			if (len(errs) > 0) != tt.wantErr {
 				t.Errorf("email %q: got %d errors (%v), wantErr %v", tt.email, len(errs), errs, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateStringFormat_Dispatch covers every Format case the
+// validateStringFormat switch routes to, plus the unknown-format default
+// (warn-and-pass), through the public ValidateSchema API.
+func TestValidateStringFormat_Dispatch(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	defer p.Close()
+
+	tests := []struct {
+		name    string
+		format  string
+		value   string
+		wantErr bool
+	}{
+		{"date valid", "date", "2024-01-15", false},
+		{"date invalid", "date", "01/15/2024", true},
+		{"date-time valid", "date-time", "2024-01-15T10:30:00Z", false},
+		{"date-time invalid", "date-time", "not-a-datetime", true},
+		{"time valid", "time", "10:30:00", false},
+		{"time invalid", "time", "10.30.00", true},
+		{"uri valid", "uri", "https://example.com", false},
+		{"uri invalid", "uri", "not-a-uri", true},
+		{"uuid valid", "uuid", "550e8400-e29b-41d4-a716-446655440000", false},
+		{"uuid invalid", "uuid", "not-a-uuid", true},
+		{"ipv4 valid", "ipv4", "192.168.1.1", false},
+		{"ipv4 invalid", "ipv4", "999.1.1.1", true},
+		{"ipv6 valid", "ipv6", "::1", false},
+		{"ipv6 invalid", "ipv6", "not-an-ip", true},
+		{"unknown format passes", "mystery-format", "anything", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := NewSchemaWithConfig(SchemaConfig{
+				Type: "object",
+				Properties: map[string]*Schema{
+					"v": NewSchemaWithConfig(SchemaConfig{Type: "string", Format: tt.format}),
+				},
+			})
+			doc, err := json.Marshal(map[string]string{"v": tt.value})
+			if err != nil {
+				t.Fatal(err)
+			}
+			errs, err := p.ValidateSchema(string(doc), schema)
+			if err != nil {
+				t.Fatalf("ValidateSchema failed: %v", err)
+			}
+			if (len(errs) > 0) != tt.wantErr {
+				t.Errorf("format %s value %q: got %d errors (%v), wantErr %v", tt.format, tt.value, len(errs), errs, tt.wantErr)
 			}
 		})
 	}
@@ -690,8 +745,11 @@ func TestJSONLWriter_WriteErrors_Boundary(t *testing.T) {
 	})
 
 	t.Run("writer error on trailing newline write", func(t *testing.T) {
-		// First Write call (data) succeeds; second (newline) fails.
-		w := NewJSONLWriter(&failAfterNWriter{limit: 2})
+		// D-002/R9 (m10): data+newline are emitted as ONE Write call, so a
+		// writer failing on its first Write fails the whole line — the old
+		// "data succeeded, newline failed" half-line state no longer exists.
+		// (The pre-m10 form used limit:2 to fail the second of two writes.)
+		w := NewJSONLWriter(&failAfterNWriter{limit: 1})
 		if err := w.Write(map[string]any{"a": 1}); err == nil {
 			t.Error("expected newline-write error")
 		}

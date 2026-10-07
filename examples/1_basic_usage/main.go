@@ -23,11 +23,11 @@ import (
 // - Parsing strings with Parse and ParseAny
 // - 100% encoding/json compatibility
 //
-// For advanced delete operations, see: 12_advanced_delete.go
-// For advanced features, see: 2_advanced_features.go
-// For production patterns, see: 3_production_ready.go
+// For advanced delete operations, see: ./examples/12_advanced_delete
+// For advanced features, see: ./examples/2_advanced_features
+// For production patterns, see: ./examples/3_production_ready
 //
-// Run: go run -tags=example examples/1_basic_usage.go
+// Run: go run -tags=example ./examples/1_basic_usage
 
 func main() {
 	fmt.Println("Basic Usage - JSON Library")

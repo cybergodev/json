@@ -1,13 +1,18 @@
 package json
 
 import (
+	"fmt"
+
 	"github.com/cybergodev/json/internal"
 )
 
 // iterRoot resolves the iteration root for the Foreach* family: closed-check,
 // Get at path, then a deep copy so mutation callbacks cannot corrupt cached
-// parse data. If the (practically unreachable) copy fails, the original data
-// is returned — matching the tolerant contract documented on Foreach.
+// parse data. If the (practically unreachable) copy fails, the error is
+// returned instead of the original data: with CacheSharedResults=true Get
+// returns the cached tree itself, and handing it to mutation callbacks would
+// poison it for concurrent readers (P-002) — mirroring safeCopyResult's
+// "return nil rather than alias" discipline.
 func (p *Processor) iterRoot(jsonStr, path string, cfg ...Config) (any, error) {
 	if err := p.checkClosed(); err != nil {
 		return nil, err
@@ -16,10 +21,11 @@ func (p *Processor) iterRoot(jsonStr, path string, cfg ...Config) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if dataCopy, copyErr := deepCopySubtree(data); copyErr == nil {
+	dataCopy, copyErr := deepCopySubtree(data)
+	if copyErr == nil {
 		return dataCopy, nil
 	}
-	return data, nil
+	return nil, fmt.Errorf("foreach: failed to isolate iteration root from cached data: %w", copyErr)
 }
 
 // Foreach iterates over JSON arrays or objects using this processor
@@ -85,6 +91,17 @@ func (p *Processor) ForeachReturn(jsonStr string, fn func(key any, item *Iterabl
 	foreachWithIterableValue(data, fn)
 	result, err := internal.FastMarshalToString(data)
 	if err != nil {
+		return jsonStr, err
+	}
+	// D-002/R11 (M2, option A): like Set/Delete, the re-encoded output honors
+	// MaxJSONSize (a mutation callback can grow the document past the limit).
+	// cfg arrives raw here (no prepareOptions validation), so only a positive
+	// per-call value overrides the baked limit.
+	maxSize := p.config.MaxJSONSize
+	if len(cfg) > 0 && cfg[0].MaxJSONSize > 0 {
+		maxSize = cfg[0].MaxJSONSize
+	}
+	if err := p.checkMutationOutputSize(result, maxSize, "foreach_return", ""); err != nil {
 		return jsonStr, err
 	}
 	return result, nil

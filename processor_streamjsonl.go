@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -61,6 +60,44 @@ func skipJSONLLine(line []byte, cfg *Config) bool {
 		return true
 	}
 	return shouldSkipJSONLLineFromConfig(line, cfg)
+}
+
+// decodeJSONLLine parses one already-depth-checked JSONL line into a fresh
+// any, honoring the engine's effective PreserveNumbers setting (D-002/R9 m4:
+// the engines previously hard-coded stdlib float64 semantics, ignoring both
+// the baked and the per-call config — the same divergence class C1 fixed for
+// the parse funnel).
+func decodeJSONLLine(line []byte, preserveNumbers bool) (any, error) {
+	if !preserveNumbers {
+		var data any
+		if err := json.Unmarshal(line, &data); err != nil {
+			return nil, err
+		}
+		return data, nil
+	}
+	return newNumberPreservingDecoder(true).DecodeToAny(string(line))
+}
+
+// decodeJSONLObject parses one JSONL line into a map[string]any, honoring
+// PreserveNumbers (see decodeJSONLLine). A valid-JSON-but-not-an-object line
+// fails with the same condition encoding/json reports for a map destination.
+func decodeJSONLObject(line []byte, preserveNumbers bool) (map[string]any, error) {
+	if !preserveNumbers {
+		var obj map[string]any
+		if err := json.Unmarshal(line, &obj); err != nil {
+			return nil, err
+		}
+		return obj, nil
+	}
+	data, err := newNumberPreservingDecoder(true).DecodeToAny(string(line))
+	if err != nil {
+		return nil, err
+	}
+	obj, ok := data.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("json: cannot unmarshal %s into Go value of type map[string]any", jsonKindOfLiteral(line))
+	}
+	return obj, nil
 }
 
 // resolveJSONLOptions returns the Config governing a JSONL/stream operation.
@@ -177,7 +214,14 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 		if memLimit > 0 {
 			totalBytes += int64(len(line))
 			if totalBytes > memLimit {
-				return fmt.Errorf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum)
+				// D-002/R8 (m2): carry the ErrSizeLimit sentinel like
+				// NDJSONProcessor (file.go) so errors.Is works uniformly across
+				// the JSONL family.
+				return &JsonsError{
+					Op:      "stream_jsonl",
+					Message: fmt.Sprintf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum),
+					Err:     ErrSizeLimit,
+				}
 			}
 		}
 
@@ -192,9 +236,9 @@ func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *Ite
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
-		// Parse JSON line
-		var data any
-		if err := json.Unmarshal(line, &data); err != nil {
+		// Parse JSON line (honors PreserveNumbers — D-002/R9 m4)
+		data, err := decodeJSONLLine(line, opts.PreserveNumbers)
+		if err != nil {
 			if opts.JSONLContinueOnErr {
 				continue
 			}
@@ -248,7 +292,7 @@ func (p *Processor) StreamJSONLParallel(reader io.Reader, workers int, fn func(l
 //
 // The optional trailing Config overrides the processor's JSONL settings for
 // this call only; omitted, the baked configuration applies.
-func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error {
+func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error, cfg ...Config) (retErr error) {
 	// Concurrency governance for the full parallel stream (see StreamJSONL for the
 	// rationale: pinning once at entry beats per-line governance, which leaves the
 	// processor unprotected between lines). The in-flight slot is held by this
@@ -332,6 +376,14 @@ func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader i
 	// Feed jobs — respect context cancellation during scan
 	lineNum := 0
 	parBufSize, parMaxToken := jsonlScanLimits(opts)
+	// Total-bytes cap, mirroring the serial/chunked engines (D-002/R10: the
+	// parallel engine was the only JSONL reader without it — JSONLMaxMemory
+	// falls back to MaxMemory; zero disables accounting).
+	memLimit := opts.JSONLMaxMemory
+	if memLimit <= 0 && opts.MaxMemory > 0 {
+		memLimit = opts.MaxMemory
+	}
+	var totalBytes int64
 	// SECURITY: per-line nesting cap to prevent stack overflow from deeply nested
 	// JSONL payloads. The feed loop parses each line before dispatching to workers,
 	// so the check belongs here (the overflow would happen in this goroutine).
@@ -341,6 +393,32 @@ func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader i
 	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, parBufSize), parMaxToken)
+
+	// P-002: close(jobs) and wg.Wait() run on EVERY exit path — including a
+	// panic in the feed loop below (it has no recover, unlike the workers).
+	// Previously the explicit close+wait pairs covered only the known returns:
+	// a feed-side panic skipped close(jobs) and left every worker blocked
+	// forever on `for job := range jobs`. The wait must also happen BEFORE
+	// firstErr is read (workers publish their error before wg.Done), so the
+	// post-loop error selection lives in this defer, preserving the original
+	// priority — worker error > scanner error > ctx cancellation — and never
+	// overriding a more specific error the body already chose to return.
+	defer func() {
+		close(jobs)
+		wg.Wait()
+		if retErr != nil {
+			return
+		}
+		if storedErr := firstErr.Load(); storedErr != nil {
+			retErr = *storedErr
+			return
+		}
+		if serr := scanner.Err(); serr != nil {
+			retErr = serr
+			return
+		}
+		retErr = ctx.Err()
+	}()
 
 feedLoop:
 	for scanner.Scan() {
@@ -360,6 +438,20 @@ feedLoop:
 			continue
 		}
 
+		// Total-bytes cap (see memLimit above; ErrSizeLimit sentinel like the
+		// serial/chunked engines — D-002/R9 m2).
+		if memLimit > 0 {
+			totalBytes += int64(len(line))
+			if totalBytes > memLimit {
+				// close(jobs)+wg.Wait() run via the defers registered above.
+				return &JsonsError{
+					Op:      "stream_jsonl_parallel",
+					Message: fmt.Sprintf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum),
+					Err:     ErrSizeLimit,
+				}
+			}
+		}
+
 		// SECURITY: per-line nesting check before unmarshaling (prevents stack overflow
 		// from deeply nested payloads). JSONLContinueOnErr downgrades depth and
 		// parse failures to skips, matching the serial/chunked engines (D-002).
@@ -367,19 +459,15 @@ feedLoop:
 			if opts.JSONLContinueOnErr {
 				continue
 			}
-			close(jobs)
-			wg.Wait()
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
-		// Parse JSON line
-		var data any
-		if err := json.Unmarshal(line, &data); err != nil {
+		// Parse JSON line (honors PreserveNumbers — D-002/R9 m4)
+		data, err := decodeJSONLLine(line, opts.PreserveNumbers)
+		if err != nil {
 			if opts.JSONLContinueOnErr {
 				continue
 			}
-			close(jobs)
-			wg.Wait()
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
@@ -397,23 +485,11 @@ feedLoop:
 		}
 	}
 
-	close(jobs)
-	wg.Wait()
-
-	// Most specific first: a genuine user-callback error must not be shadowed
-	// by a subsequent context cancellation (ctx.Err would drop the real cause).
-	if storedErr := firstErr.Load(); storedErr != nil {
-		return *storedErr
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-
+	// Feed loop complete (normal end, ctx cancellation, or worker error).
+	// close(jobs), wg.Wait(), and the error selection (firstErr > scanner
+	// error > ctx.Err) run in the defer registered above — the wait must
+	// precede reading firstErr, and the deferred form also covers a panic
+	// in this feed loop (P-002).
 	return nil
 }
 
@@ -500,7 +576,13 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 		if memLimit > 0 {
 			totalBytes += int64(len(line))
 			if totalBytes > memLimit {
-				return fmt.Errorf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum)
+				// D-002/R8 (m2): ErrSizeLimit sentinel, matching NDJSONProcessor
+				// and the serial engine above.
+				return &JsonsError{
+					Op:      "stream_jsonl_chunked",
+					Message: fmt.Sprintf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum),
+					Err:     ErrSizeLimit,
+				}
 			}
 		}
 
@@ -514,9 +596,9 @@ func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(
 			return fmt.Errorf("line %d: %w", lineNum, err)
 		}
 
-		// Parse JSON line
-		var data any
-		if err := json.Unmarshal(line, &data); err != nil {
+		// Parse JSON line (honors PreserveNumbers — D-002/R9 m4)
+		data, err := decodeJSONLLine(line, opts.PreserveNumbers)
+		if err != nil {
 			if opts.JSONLContinueOnErr {
 				continue
 			}
@@ -703,13 +785,16 @@ func (p *Processor) StreamJSONLFile(filename string, fn func(lineNum int, item *
 		return err
 	}
 
-	// SECURITY: Validate file path to prevent path traversal attacks
-	if err := p.validateFilePath(filename); err != nil {
+	// SECURITY: Validate file path to prevent path traversal attacks; cfg is
+	// forwarded so a per-call AllowedFileDirs override applies here too
+	// (GEN-001 review follow-up).
+	if err := p.validateFilePath(filename, cfg...); err != nil {
 		return err
 	}
 
-	// Use os.Open to read file
-	file, err := os.Open(filename)
+	// Open the symlink-resolved location validated above (GEN-001 TOCTOU
+	// narrowing; see openValidatedFile).
+	file, err := openValidatedFile(filename)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}

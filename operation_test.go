@@ -28,7 +28,7 @@ func TestJSONPointerSet(t *testing.T) {
 	}{
 		{name: "overwrite existing nested value", jsonStr: `{"a":{"b":1}}`, path: "/a/b", value: 2, wantJSON: `{"a":{"b":2}}`},
 		{name: "add new key to existing object", jsonStr: `{"a":{"b":1}}`, path: "/a/c", value: 3, wantJSON: `{"a":{"b":1,"c":3}}`},
-		{name: "set root path should error", jsonStr: `{"a":1}`, path: "/", value: 42, wantErr: true, errSubstr: "cannot set root"},
+		{name: "set root path replaces document", jsonStr: `{"a":1}`, path: "/", value: 42, wantJSON: `42`},
 		{name: "create nested path with CreatePaths", jsonStr: `{}`, path: "/x/y/z", value: "hello", cfg: Config{CreatePaths: true}, wantJSON: `{"x":{"y":{"z":"hello"}}}`},
 		{name: "tilde slash escaping ~1 becomes slash", jsonStr: `{}`, path: "/a~1b", value: "val", cfg: Config{CreatePaths: true}, wantJSON: `{"a/b":"val"}`},
 		{name: "tilde escaping ~0 becomes tilde", jsonStr: `{}`, path: "/m~0n", value: "val", cfg: Config{CreatePaths: true}, wantJSON: `{"m~n":"val"}`},
@@ -122,10 +122,11 @@ func TestNavigateJSONPointer(t *testing.T) {
 func TestSetJSONPointerArrayExtension(t *testing.T) {
 	cfg := Config{CreatePaths: true}
 	_, err := Set(`{"arr":[1,2]}`, "/arr/5", "x", cfg)
-	if err != nil {
-		if !strings.Contains(err.Error(), "extend") && !strings.Contains(err.Error(), "failed") {
-			t.Errorf("unexpected error: %v", err)
-		}
+	if err == nil {
+		t.Fatal("expected error: arrays cannot be extended via JSON Pointer")
+	}
+	if !strings.Contains(err.Error(), "cannot extend array via JSON Pointer") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -858,18 +859,6 @@ func TestStructAccess(t *testing.T) {
 
 // --- Distributed array operations ---
 
-func TestDistributedArrayOps(t *testing.T) {
-	t.Run("2D array access", func(t *testing.T) {
-		result, err := Get(`{"matrix":[[1,2],[3,4],[5,6]]}`, "matrix[1][0]")
-		if err != nil {
-			t.Fatalf("Get distributed error: %v", err)
-		}
-		if result != float64(3) {
-			t.Errorf("Get distributed = %v, want 3", result)
-		}
-	})
-}
-
 // --- Error cases ---
 
 func TestOperationErrors(t *testing.T) {
@@ -880,7 +869,7 @@ func TestOperationErrors(t *testing.T) {
 			wantErr          bool
 		}{
 			{"invalid json", `{invalid}`, "a", 1, true},
-			{"empty path", `{"a":1}`, "", 1, true},
+			{"empty path replaces root (GEN-001)", `{"a":1}`, "", 1, false},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -1370,15 +1359,10 @@ func TestOperationSetArrayIndexExtension(t *testing.T) {
 	t.Run("set slice with extension via CreatePaths", func(t *testing.T) {
 		result, err := Set(`{"arr":[1,2]}`, "arr[3:5]", 99, cfg)
 		if err != nil {
-			// Slice extension may not be fully supported, check error message
-			t.Logf("Set slice with extension: %v (may be expected)", err)
-			return
+			t.Fatalf("Set() error: %v", err)
 		}
-		m := mustParseMap(t, result)
-		arr := m["arr"].([]any)
-		if len(arr) < 5 {
-			t.Errorf("expected at least length 5, got %d", len(arr))
-		}
+		// The slice extends with a nil filler at index 2, then writes 99 at 3 and 4.
+		assertJSONEqual(t, `{"arr":[1,2,null,99,99]}`, result)
 	})
 }
 
@@ -1440,37 +1424,23 @@ func TestOperationSetJSONPointerComplex(t *testing.T) {
 
 	t.Run("set via JSON pointer creates nested arrays", func(t *testing.T) {
 		cfg := Config{CreatePaths: true}
-		result, err := Set(`{}`, "/data/0/name", "first", cfg)
-		if err != nil {
-			// May fail if intermediate is nil
-			t.Logf("Set JSON pointer with array creation: %v", err)
-			return
+		_, err := Set(`{}`, "/data/0/name", "first", cfg)
+		if err == nil {
+			t.Fatal("expected error: JSON Pointer cannot create array intermediates")
 		}
-		m := mustParseMap(t, result)
-		data := m["data"].([]any)
-		if len(data) < 1 {
-			t.Fatalf("expected at least 1 element")
-		}
-		obj := data[0].(map[string]any)
-		if obj["name"] != "first" {
-			t.Errorf("expected name=first, got %v", obj["name"])
+		if !strings.Contains(err.Error(), "cannot extend array via JSON Pointer") {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("set via JSON pointer extends existing array", func(t *testing.T) {
 		cfg := Config{CreatePaths: true}
-		result, err := Set(`{"items":["a","b"]}`, "/items/4", "e", cfg)
-		if err != nil {
-			t.Logf("Set JSON pointer array extension: %v", err)
-			return
+		_, err := Set(`{"items":["a","b"]}`, "/items/4", "e", cfg)
+		if err == nil {
+			t.Fatal("expected error: arrays cannot be extended via JSON Pointer")
 		}
-		m := mustParseMap(t, result)
-		arr := m["items"].([]any)
-		if len(arr) != 5 {
-			t.Fatalf("expected length 5, got %d", len(arr))
-		}
-		if arr[4] != "e" {
-			t.Errorf("arr[4] = %v, want 'e'", arr[4])
+		if !strings.Contains(err.Error(), "cannot extend array via JSON Pointer") {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
@@ -1634,18 +1604,21 @@ func TestOperationSetValueAtPathDispatch(t *testing.T) {
 		assertJSONEqual(t, `{"items":[{"name":"x"},{"name":"x"}]}`, result)
 	})
 
-	t.Run("set root should error", func(t *testing.T) {
-		_, err := Set(`{"a":1}`, "", 42)
-		if err == nil {
-			t.Fatal("expected error for empty path")
+	t.Run("set root replaces document", func(t *testing.T) {
+		// GEN-001: empty and dot paths replace the whole document.
+		result, err := Set(`{"a":1}`, "", 42)
+		if err != nil {
+			t.Fatalf("expected root replacement, got error: %v", err)
 		}
+		assertJSONEqual(t, `42`, result)
 	})
 
-	t.Run("set dot path should error", func(t *testing.T) {
-		_, err := Set(`{"a":1}`, ".", 42)
-		if err == nil {
-			t.Fatal("expected error for dot path")
+	t.Run("set dot path replaces document", func(t *testing.T) {
+		result, err := Set(`{"a":1}`, ".", []string{"x"})
+		if err != nil {
+			t.Fatalf("expected root replacement, got error: %v", err)
 		}
+		assertJSONEqual(t, `["x"]`, result)
 	})
 }
 

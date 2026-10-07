@@ -21,7 +21,7 @@ import (
 // - AddHook for registering hooks on a processor
 // - Security pattern registration and management
 //
-// Run: go run -tags=example examples/16_hooks_and_security.go
+// Run: go run -tags=example ./examples/16_hooks_and_security
 
 func main() {
 	fmt.Println("JSON Library - Hooks and Security")

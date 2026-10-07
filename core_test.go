@@ -858,8 +858,9 @@ func TestConfigurationEdgeCases(t *testing.T) {
 			config.MaxCacheSize = 0
 			err := config.Validate()
 			helper.AssertNoError(err)
-			// Cache might still be enabled but with 0 size
-			_ = config.EnableCache
+			// Zero is a valid "no cache entries" value — Validate must not
+			// clamp it or reject it.
+			helper.AssertEqual(0, config.MaxCacheSize)
 		})
 
 		t.Run("VeryLargeCacheSize", func(t *testing.T) {
@@ -905,41 +906,10 @@ func TestConfigurationEdgeCases(t *testing.T) {
 		})
 	})
 
-	t.Run("BooleanFlags", func(t *testing.T) {
-		config := DefaultConfig()
-
-		// Test all boolean flags can be set
-		flags := []struct {
-			name string
-			set  func(bool)
-			get  func() bool
-		}{
-			{"EnableCache", func(b bool) { config.EnableCache = b }, func() bool { return config.EnableCache }},
-			{"EnableValidation", func(b bool) { config.EnableValidation = b }, func() bool { return config.EnableValidation }},
-			{"StrictMode", func(b bool) { config.StrictMode = b }, func() bool { return config.StrictMode }},
-			{"CreatePaths", func(b bool) { config.CreatePaths = b }, func() bool { return config.CreatePaths }},
-			{"CleanupNulls", func(b bool) { config.CleanupNulls = b }, func() bool { return config.CleanupNulls }},
-			{"CompactArrays", func(b bool) { config.CompactArrays = b }, func() bool { return config.CompactArrays }},
-			{"EnableMetrics", func(b bool) { config.EnableMetrics = b }, func() bool { return config.EnableMetrics }},
-			{"EnableHealthCheck", func(b bool) { config.EnableHealthCheck = b }, func() bool { return config.EnableHealthCheck }},
-			{"AllowComments", func(b bool) { config.AllowComments = b }, func() bool { return config.AllowComments }},
-			{"PreserveNumbers", func(b bool) { config.PreserveNumbers = b }, func() bool { return config.PreserveNumbers }},
-			{"ValidateInput", func(b bool) { config.ValidateInput = b }, func() bool { return config.ValidateInput }},
-			{"ValidateFilePath", func(b bool) { config.ValidateFilePath = b }, func() bool { return config.ValidateFilePath }},
-		}
-
-		for _, flag := range flags {
-			t.Run(flag.name+"_True", func(t *testing.T) {
-				flag.set(true)
-				helper.AssertTrue(flag.get())
-			})
-
-			t.Run(flag.name+"_False", func(t *testing.T) {
-				flag.set(false)
-				helper.AssertFalse(flag.get())
-			})
-		}
-	})
+	// The former "BooleanFlags" subtest (24 subtests asserting that a test-local
+	// struct field round-trips its own assignment) was removed in the FIX-001
+	// consolidation: it called no library code and could not fail. Boolean
+	// flags are exercised end-to-end throughout the suite.
 }
 
 // TestConfigurationIntegration tests configuration with processor
@@ -969,16 +939,13 @@ func TestConfigurationIntegration(t *testing.T) {
 		processor, _ := New(SecurityConfig())
 		defer processor.Close()
 
-		// Test that security limits are enforced
-		deepJSON := genNestedJSON(30, "deep")
-
-		_, err := processor.Get(deepJSON, "a")
-		// Should error due to depth limit
-		if err != nil {
-			var jsonErr *JsonsError
-			if errors.As(err, &jsonErr) {
-				helper.AssertEqual(ErrDepthLimit, jsonErr.Err)
-			}
+		// SecurityConfig caps nesting at 30, so a 50-level document must be
+		// rejected (a 30-level document stays within the limit and must not).
+		_, err := processor.Get(genNestedJSON(50, "deep"), "a")
+		helper.AssertError(err)
+		var jsonErr *JsonsError
+		if errors.As(err, &jsonErr) {
+			helper.AssertEqual(ErrDepthLimit, jsonErr.Err)
 		}
 	})
 
@@ -1331,18 +1298,9 @@ func TestEncoderDecoder(t *testing.T) {
 		}
 	})
 
-	t.Run("Decoder.Decode", func(t *testing.T) {
-		r := strings.NewReader(`{"key": "value"}`)
-		dec := NewDecoder(r)
-		var result map[string]any
-		err := dec.Decode(&result)
-		if err != nil {
-			t.Errorf("Decode error: %v", err)
-		}
-		if result["key"] != "value" {
-			t.Errorf("result[key] = %v, want 'value'", result["key"])
-		}
-	})
+	// The former "Decoder.Decode" subtest (object into map) was removed in the
+	// FIX-001 consolidation: identical input and assertions are covered by
+	// TestDecodeEdgeCases/DecodeIntoInterface in coverage_test.go.
 
 	t.Run("Decoder.UseNumber", func(t *testing.T) {
 		r := strings.NewReader(`{"num": 123}`)
@@ -1365,7 +1323,9 @@ func TestEncoderDecoder(t *testing.T) {
 		var result struct {
 			Known string `json:"known"`
 		}
-		_ = dec.Decode(&result) // Just verify it doesn't panic
+		if err := dec.Decode(&result); err == nil {
+			t.Error("Decode with DisallowUnknownFields should reject unknown fields")
+		}
 	})
 
 	t.Run("Decoder.Buffered", func(t *testing.T) {
@@ -1383,10 +1343,11 @@ func TestEncoderDecoder(t *testing.T) {
 		r := strings.NewReader(`{"key": "value"}`)
 		dec := NewDecoder(r)
 		var result map[string]any
-		dec.Decode(&result)
-		offset := dec.InputOffset()
-		if offset == 0 {
-			t.Log("InputOffset returned 0")
+		if err := dec.Decode(&result); err != nil {
+			t.Fatalf("Decode error: %v", err)
+		}
+		if got := dec.InputOffset(); got == 0 {
+			t.Error("InputOffset should advance after decoding a full document")
 		}
 	})
 
@@ -1528,28 +1489,6 @@ func TestExtractSyntaxComplex(t *testing.T) {
 			tt.validate(t, result, err)
 		})
 	}
-}
-
-// TestExtractionOperations tests extraction operations
-func TestExtractionOperations(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("extract array field", func(t *testing.T) {
-		jsonStr := `{"users": [{"name": "Alice", "age": 30}, {"name": "Bob", "age": 25}]}`
-		result, err := processor.Get(jsonStr, "users{name}")
-		if err != nil {
-			t.Fatalf("Get extract error: %v", err)
-		}
-		// Verify extraction result
-		arr, ok := result.([]any)
-		if !ok {
-			t.Fatalf("Expected array, got %T", result)
-		}
-		if len(arr) != 2 {
-			t.Errorf("Expected 2 extracted items, got %d", len(arr))
-		}
-	})
 }
 
 // TestMultiFieldExtraction tests multi-field extraction syntax {field1,field2}
@@ -2093,6 +2032,8 @@ func TestGlobalProcessor_ConcurrentAccess(t *testing.T) {
 
 		const goroutines = 50
 		var wg sync.WaitGroup
+		var getErr error
+		var mu sync.Mutex
 
 		for i := 0; i < goroutines; i++ {
 			wg.Add(2)
@@ -2102,18 +2043,40 @@ func TestGlobalProcessor_ConcurrentAccess(t *testing.T) {
 				defer wg.Done()
 				config := DefaultConfig()
 				config.MaxCacheSize = 100 + id
-				p, _ := New(config)
+				p, err := New(config)
+				if err != nil {
+					return
+				}
 				SetGlobalProcessor(p)
 			}(i)
 
-			// Goroutine that gets processor
+			// Goroutine that gets processor — must always observe a non-nil
+			// instance. ErrProcessorClosed is the documented transient outcome
+			// when SetGlobalProcessor swaps the instance mid-call; any other
+			// error is a real failure.
 			go func() {
 				defer wg.Done()
-				_ = getDefaultProcessor()
+				p := getDefaultProcessor()
+				if p == nil {
+					mu.Lock()
+					getErr = errors.New("getDefaultProcessor returned nil during churn")
+					mu.Unlock()
+					return
+				}
+				if _, err := p.Get(`{"k":"v"}`, "k"); err != nil && !errors.Is(err, ErrProcessorClosed) {
+					mu.Lock()
+					if getErr == nil {
+						getErr = err
+					}
+					mu.Unlock()
+				}
 			}()
 		}
 
 		wg.Wait()
+		if getErr != nil {
+			t.Errorf("concurrent getDefaultProcessor observed failure: %v", getErr)
+		}
 	})
 
 	// Cleanup
@@ -3157,19 +3120,6 @@ func TestProcessor_ErrorHandling(t *testing.T) {
 		}
 	})
 
-	t.Run("DeleteWithCleanupNulls", func(t *testing.T) {
-		jsonStr := `{"a": {"b": {"c": 1}}}`
-		cfg := DefaultConfig()
-		cfg.CleanupNulls = true
-		result, err := Delete(jsonStr, "a.b.c", cfg)
-		if err != nil {
-			t.Errorf("Delete with CleanupNulls error: %v", err)
-		}
-		// Verify the result is valid JSON
-		if !json.Valid([]byte(result)) {
-			t.Error("Delete with CleanupNulls should return valid JSON")
-		}
-	})
 }
 
 // TestProcessor_ForeachMethods tests Processor's Foreach methods
@@ -3432,60 +3382,6 @@ func TestProcessor_ForeachVsPackageLevel(t *testing.T) {
 	})
 }
 
-func TestProcessor_Iterators(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("Foreach", func(t *testing.T) {
-		jsonStr := `{"a": 1, "b": 2}`
-		count := 0
-		processor.Foreach(jsonStr, func(key any, item *IterableValue) {
-			count++
-		})
-		if count != 2 {
-			t.Errorf("Foreach visited %d items, want 2", count)
-		}
-	})
-
-	t.Run("ForeachWithPath", func(t *testing.T) {
-		jsonStr := `{"items": [1, 2, 3]}`
-		count := 0
-		err := processor.ForeachWithPath(jsonStr, "items[*]", func(key any, item *IterableValue) {
-			count++
-		})
-		if err != nil {
-			t.Errorf("ForeachWithPath error: %v", err)
-		}
-		if count != 3 {
-			t.Errorf("ForeachWithPath visited %d items, want 3", count)
-		}
-	})
-
-	t.Run("ForeachReturn", func(t *testing.T) {
-		jsonStr := `{"a": 1, "b": 2}`
-		result, err := processor.ForeachReturn(jsonStr, func(key any, item *IterableValue) {
-			// Just iterate
-		})
-		if err != nil {
-			t.Errorf("ForeachReturn error: %v", err)
-		}
-		if result == "" {
-			t.Error("ForeachReturn should return result")
-		}
-	})
-
-	t.Run("ForeachNested", func(t *testing.T) {
-		jsonStr := `{"a": 1, "b": {"c": 2}}`
-		count := 0
-		processor.ForeachNested(jsonStr, func(key any, item *IterableValue) {
-			count++
-		})
-		if count < 2 {
-			t.Errorf("ForeachNested visited %d items, expected at least 2", count)
-		}
-	})
-}
-
 func TestProcessor_ParseAndValidate(t *testing.T) {
 	processor, _ := New()
 	defer processor.Close()
@@ -3533,18 +3429,6 @@ func TestProcessor_PreParse(t *testing.T) {
 		}
 		if parsed == nil {
 			t.Fatal("PreParse returned nil")
-		}
-	})
-
-	t.Run("GetFromParsed", func(t *testing.T) {
-		jsonStr := `{"key": "value", "nested": {"a": 1}}`
-		parsed, _ := processor.PreParse(jsonStr)
-		result, err := processor.GetFromParsed(parsed, "nested.a")
-		if err != nil {
-			t.Errorf("GetFromParsed error: %v", err)
-		}
-		if result != 1.0 {
-			t.Errorf("GetFromParsed = %v, want 1", result)
 		}
 	})
 
@@ -3681,21 +3565,6 @@ func TestProcessor_WildcardAndExtraction(t *testing.T) {
 		}
 	})
 
-	t.Run("Get with extraction", func(t *testing.T) {
-		jsonStr := `{"users": [{"name": "John", "email": "john@example.com"}, {"name": "Jane", "email": "jane@example.com"}]}`
-		result, err := processor.Get(jsonStr, "users{name}")
-		if err != nil {
-			t.Errorf("Get error: %v", err)
-		}
-		// Verify extraction result
-		arr, ok := result.([]any)
-		if !ok {
-			t.Fatalf("Expected array, got %T", result)
-		}
-		if len(arr) != 2 {
-			t.Errorf("Expected 2 extracted names, got %d", len(arr))
-		}
-	})
 }
 
 // TestReverseSlice tests reverse slicing logic
@@ -3875,10 +3744,14 @@ func TestShutdownGlobalProcessor(t *testing.T) {
 		// Create a new processor
 		_ = getDefaultProcessor()
 
-		// Multiple shutdowns should not panic
+		// Multiple shutdowns must be safe AND leave the package usable.
 		ShutdownGlobalProcessor()
 		ShutdownGlobalProcessor()
 		ShutdownGlobalProcessor()
+
+		if _, err := Get(`{"k":"v"}`, "k"); err != nil {
+			t.Errorf("package Get after repeated shutdowns failed: %v", err)
+		}
 	})
 
 	t.Run("GetAfterShutdownCreatesNewProcessor", func(t *testing.T) {

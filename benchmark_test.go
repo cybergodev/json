@@ -888,9 +888,24 @@ func BenchmarkFastEncoder_SingleKeyMap(b *testing.B) {
 // ----------------------------------------------------------------------------
 
 // scanWindowLegacy mirrors the pre-P-001 scan shape: one full
-// fastIndexIgnoreCase pass per pattern over the window, ~27 scans total on a
-// clean window. Kept here only to A/B against windowContainsDangerousMatch.
+// fastIndexIgnoreCase pass per pattern over the window, ~29 scans total on a
+// clean window. Kept here only to A/B against scanWindowPatterns.
 func scanWindowLegacy(window string) bool {
+	for _, dp := range dangerousPatterns {
+		if fastIndexIgnoreCase(window, dp.pattern) != -1 {
+			return true
+		}
+	}
+	return false
+}
+
+// scanWindowLegacyFull mirrors the pre-P-003 scanWindowForPatterns shape: the
+// existence prefilter, then one fastIndexIgnoreCase rescan per pattern once it
+// hits. Kept here only to A/B against the single-pass recording mode.
+func scanWindowLegacyFull(window string) bool {
+	if !scanWindowPatterns(window, nil) {
+		return false
+	}
 	for _, dp := range dangerousPatterns {
 		if fastIndexIgnoreCase(window, dp.pattern) != -1 {
 			return true
@@ -901,8 +916,7 @@ func scanWindowLegacy(window string) bool {
 
 // BenchmarkScanWindow_AB isolates the built-in-pattern scan stage of input
 // validation on a clean window (the common case): legacy scans the window
-// once per pattern; the prefilter makes one pass and skips the pattern loop
-// entirely when nothing matches.
+// once per pattern; the single pass scans once and finds nothing.
 func BenchmarkScanWindow_AB(b *testing.B) {
 	window := `{"id":12345,"name":"user42","email":"user42@example.com","note":"plain descriptive text","active":true,"score":12.5,"tags":["a","b","c"]}`
 
@@ -918,9 +932,139 @@ func BenchmarkScanWindow_AB(b *testing.B) {
 	b.Run("prefilter", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			if windowContainsDangerousMatch(window) {
+			if scanWindowPatterns(window, nil) {
 				b.Fatal("clean window must not match")
 			}
 		}
 	})
+}
+
+// BenchmarkScanWindow_Dirty_AB (P-003) covers the prefilter-hit case: the
+// window contains pattern occurrences (but none in dangerous word context),
+// so the old shape rescanned once per pattern while the recording mode
+// collects every first occurrence in the same single pass that detected them.
+func BenchmarkScanWindow_Dirty_AB(b *testing.B) {
+	window := `{"desc":"mentioning atob and onerror casually: 'myatobx myonerrorx'","note":"evaluate options on time"}`
+
+	b.Run("legacy-rescan", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if !scanWindowLegacyFull(window) {
+				b.Fatal("dirty window must match the existence check")
+			}
+		}
+	})
+
+	b.Run("record-first", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			first := make([]int32, len(dangerousPatterns))
+			for j := range first {
+				first[j] = -1
+			}
+			if !scanWindowPatterns(window, first) {
+				b.Fatal("dirty window must record at least one occurrence")
+			}
+		}
+	})
+}
+
+// ----------------------------------------------------------------------------
+// Cache-keyed operation benchmarks (P-001 round 2)
+// These exercise the validate → cache-key → cache-hit steady state of the
+// non-Get cache consumers (PreParse/Prettify/Compact/Valid) on a large
+// document, where the per-operation FNV scan of the input is a visible share
+// of the total cost.
+// ----------------------------------------------------------------------------
+
+// genLargeDoc builds a ~100KB flat JSON object (4000 keys of ~40 bytes).
+func genLargeDoc() string {
+	var sb strings.Builder
+	sb.Grow(4000*42 + 8)
+	sb.WriteByte('{')
+	for i := 0; i < 4000; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `"key%d":{"value":%d,"label":"Label %d"}`, i, i, i)
+	}
+	sb.WriteByte('}')
+	return sb.String()
+}
+
+func BenchmarkPreParse_Large(b *testing.B) {
+	doc := genLargeDoc()
+	processor, _ := New()
+	defer processor.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parsed, err := processor.PreParse(doc)
+		if err != nil {
+			b.Fatal(err)
+		}
+		parsed.Release()
+	}
+}
+
+// BenchmarkPreParse_LargeShared runs BenchmarkPreParse_Large with
+// CacheSharedResults=true. P-002: PreParse's hit path is zero-copy in BOTH
+// modes (the Data() tree is shared and documented do-not-mutate; copying it
+// was measured at ~47x the hit-path cost), so the two benchmarks differ only
+// in GetFromParsed's result copying, not in PreParse itself. Kept as the
+// labeled zero-copy comparison point for that contract.
+func BenchmarkPreParse_LargeShared(b *testing.B) {
+	doc := genLargeDoc()
+	cfg := DefaultConfig()
+	cfg.CacheSharedResults = true
+	processor, _ := New(cfg)
+	defer processor.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parsed, err := processor.PreParse(doc)
+		if err != nil {
+			b.Fatal(err)
+		}
+		parsed.Release()
+	}
+}
+
+func BenchmarkPrettify_Large(b *testing.B) {
+	doc := genLargeDoc()
+	processor, _ := New()
+	defer processor.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := processor.Prettify(doc); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkCompact_Large(b *testing.B) {
+	doc := genLargeDoc()
+	processor, _ := New()
+	defer processor.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := processor.Compact(doc); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkValid_Large(b *testing.B) {
+	doc := genLargeDoc()
+	processor, _ := New()
+	defer processor.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if ok, err := processor.Valid(doc); err != nil || !ok {
+			b.Fatal("expected valid")
+		}
+	}
 }

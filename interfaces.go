@@ -59,6 +59,10 @@ type Validator interface {
 
 // validationChain runs multiple validators in sequence.
 // Stops at the first error encountered.
+//
+// NOTE (D-002/R8 M5): no production caller — Config.CustomValidators are
+// deprecated and never executed (see the Validator interface doc); retained
+// for tests/future use.
 type validationChain []Validator
 
 // Validate executes all validators in order, stopping at first error.
@@ -161,6 +165,13 @@ type HookContext struct {
 	Value any
 
 	// Config is the active configuration.
+	//
+	// P-002: this points at a pooled per-call Config and is valid only for the
+	// duration of the operation. Hooks MUST NOT retain the pointer past the
+	// call (e.g., queue it for async logging) — once the operation returns the
+	// object's reference fields are cleared and it is recycled into the pool,
+	// then overwritten by an unrelated call. Copy out any fields a hook needs
+	// to keep.
 	Config *Config
 
 	// StartTime is when the operation started (set before After is called).
@@ -388,16 +399,24 @@ type PathParser interface {
 // =============================================================================
 
 // newPropertySegment creates a property access segment.
+//
+// NOTE (D-002/R8 M5): no production caller — parsing builds segments via
+// struct literals; retained for tests/future use.
 func newPropertySegment(key string) PathSegment {
 	return internal.NewPropertySegment(key)
 }
 
 // newArraySliceSegment creates an array slice segment.
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func newArraySliceSegment(start, end, step int, hasStart, hasEnd, hasStep bool) PathSegment {
 	return internal.NewArraySliceSegment(start, end, step, hasStart, hasEnd, hasStep)
 }
 
 // newAppendSegment creates an append segment.
+//
+// NOTE (D-002/R8 M5): no production caller — parseArrayAccess builds the
+// segment directly; retained for tests/future use.
 func newAppendSegment() PathSegment {
 	return internal.PathSegment{
 		Type: internal.AppendSegment,

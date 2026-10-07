@@ -22,12 +22,21 @@ import (
 // library (a map[string]any round-trip must not depend on Go's random map
 // iteration order).
 //
-// PERFORMANCE: maps with at most one entry are ranged directly — no key slice
-// is allocated or sorted. Profiling (P-001) showed that allocation was ~10%
-// of ALL allocated objects on the Set path, where the encoded result object
-// is very often a single-key map. Multi-entry maps keep the classic
-// collect-and-sort loop; range-over-func compiles the caller's loop body
-// inline, so the multi-key path costs the same as a plain loop.
+// PERFORMANCE: three size tiers (P-001, profile-driven):
+//   - maps with at most one entry are ranged directly (no key slice at all);
+//   - small maps (<= smallKeysBufSize keys) collect into a fixed-size stack
+//     array — deterministic zero-allocation and, crucially, zero pool
+//     traffic. Nested small objects are the dominant shape of real JSON, and
+//     an earlier all-pool variant measurably REGRESSED encoding of documents
+//     made of 100 two-key objects (+14% ns/op): every nested map paid a
+//     pool Get/defer/Put cycle to avoid an allocation that escape analysis
+//     had already made free;
+//   - larger maps collect into a pooled buffer (see pools.go) — profiling
+//     showed that per-encode keys allocation was ~30% of all allocated
+//     objects on the Set/Delete path.
+//
+// range-over-func compiles the caller's loop body inline, so each tier costs
+// the same as a plain loop.
 func SortedEntries[V any](m map[string]V) iter.Seq2[string, V] {
 	return func(yield func(string, V) bool) {
 		if len(m) <= 1 {
@@ -38,10 +47,29 @@ func SortedEntries[V any](m map[string]V) iter.Seq2[string, V] {
 			}
 			return
 		}
-		keys := make([]string, 0, len(m))
+		if len(m) <= smallKeysBufSize {
+			var buf [smallKeysBufSize]string
+			keys := buf[:0]
+			for k := range m {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				if !yield(k, m[k]) {
+					return
+				}
+			}
+			return
+		}
+		keysPtr := GetSortedKeysSlice(len(m))
+		defer PutSortedKeysSlice(keysPtr)
+		keys := *keysPtr
 		for k := range m {
 			keys = append(keys, k)
 		}
+		// append may have reallocated; write the final slice back so
+		// PutSortedKeysSlice (and its cap check) sees the buffer we sorted.
+		*keysPtr = keys
 		sort.Strings(keys)
 		for _, k := range keys {
 			if !yield(k, m[k]) {
@@ -172,6 +200,9 @@ func GetEncoder() *FastEncoder {
 
 // GetEncoderWithSize retrieves an encoder with appropriate capacity hint
 // PERFORMANCE: Use tiered pools for better memory management and reduced allocations
+//
+// NOTE (D-002/R8 M5): no production caller — every site uses GetEncoder;
+// retained for tests/future use.
 func GetEncoderWithSize(hint int) *FastEncoder {
 	var e *FastEncoder
 	switch {
@@ -272,21 +303,13 @@ func (e *FastEncoder) EncodeValue(v any) error {
 	case uint64:
 		e.EncodeUint(val)
 	case float32:
-		// encoding/json rejects non-finite floats; EncodeFloat would silently
-		// emit null, so reject here to keep the fast path stdlib-compatible.
-		if math.IsNaN(float64(val)) || math.IsInf(float64(val), 0) {
-			return errUnsupportedFloat(float64(val), 32)
-		}
-		e.EncodeFloat(float64(val), 32)
+		return e.EncodeFloat(float64(val), 32)
 	case float64:
-		if math.IsNaN(val) || math.IsInf(val, 0) {
-			return errUnsupportedFloat(val, 64)
-		}
-		e.EncodeFloat(val, 64)
+		return e.EncodeFloat(val, 64)
 	case bool:
 		e.EncodeBool(val)
 	case time.Time:
-		e.EncodeTime(val)
+		return e.EncodeTime(val)
 	case []byte:
 		// encoding/json emits null for a nil slice, distinct from "" for an
 		// empty non-nil one.
@@ -366,26 +389,28 @@ func (e *FastEncoder) EncodeValue(v any) error {
 			e.writeNull()
 			return nil
 		}
-		for _, f := range val {
-			if math.IsNaN(float64(f)) || math.IsInf(float64(f), 0) {
-				return errUnsupportedFloat(float64(f), 32)
-			}
-		}
-		e.EncodeFloat32Slice(val)
+		// Non-finite elements are rejected by EncodeFloat itself (R11 m4); a
+		// pre-scan would just duplicate that check on every clean encode.
+		return e.EncodeFloat32Slice(val)
 	case []float64:
 		if val == nil {
 			e.writeNull()
 			return nil
 		}
-		for _, f := range val {
-			if math.IsNaN(f) || math.IsInf(f, 0) {
-				return errUnsupportedFloat(f, 64)
-			}
-		}
-		e.EncodeFloatSlice(val)
+		// See []float32: EncodeFloat rejects non-finite values (R11 m4).
+		return e.EncodeFloatSlice(val)
 	case json.Number:
 		// SECURITY: Validate json.Number content before appending
 		// json.Number should only contain valid JSON number characters
+		//
+		// KNOWN LIMITATION (D-002/R10): the ROOT package's Number type (also a
+		// string-kind literal holder, produced by PreserveNumbers parsing)
+		// cannot be case-matched here — internal cannot import the root
+		// package. It falls through to encodeSlow, which marshals it correctly
+		// via its MarshalJSON (stdlib Marshaler contract) at per-value
+		// reflection cost. Sniffing it via an interface case was rejected: a
+		// bare MarshalJSON passthrough skips stdlib's compaction of marshaler
+		// output and changes error wrapping for user types.
 		if !IsValidJSONNumber(string(val)) {
 			return fmt.Errorf("invalid json.Number: %s", string(val))
 		}
@@ -449,7 +474,7 @@ func (e *FastEncoder) EncodeString(s string) {
 }
 
 // isSafeString checks if a string is safe for direct JSON output (no escaping needed AND valid UTF-8)
-// PERFORMANCE v2: Combined single-pass check with optimized paths for common cases
+// PERFORMANCE: Combined single-pass check with optimized paths for common cases
 // Returns true only if the string:
 // 1. Contains no characters that need JSON escaping (control chars, quotes, backslashes)
 // 2. Is valid UTF-8 (all high bytes are part of valid multi-byte sequences)
@@ -459,7 +484,7 @@ func isSafeString(s string) bool {
 		return true
 	}
 
-	// PERFORMANCE v2: Fast path for short strings (<=8 bytes)
+	// PERFORMANCE: Fast path for short strings (<=8 bytes)
 	// Avoids SWAR loop overhead for very common small strings
 	if n <= 8 {
 		for i := 0; i < n; i++ {
@@ -522,6 +547,9 @@ func isSafeString(s string) bool {
 // needsEscape checks if a string needs JSON escaping (without UTF-8 validation)
 // PERFORMANCE: Uses SWAR (SIMD Within A Register) technique for batch processing
 // Note: Use isSafeString for combined escape + UTF-8 check
+//
+// NOTE (D-002/R8 M5): no production caller — isSafeString superseded it;
+// retained for tests/future use.
 func needsEscape(s string) bool {
 	n := len(s)
 	if n == 0 {
@@ -566,7 +594,10 @@ func needsEscape(s string) bool {
 // escapeString escapes special characters for JSON
 // PERFORMANCE: Batch copies safe segments to reduce append calls
 // SECURITY: Validates UTF-8 encoding and replaces invalid sequences.
-// Escapes HTML characters (<, >, &) when htmlEscape is enabled.
+// Escapes U+2028/U+2029 unconditionally (encoding/json parity — they terminate
+// lines in JavaScript). HTML characters (<, >, &) are NOT escaped here: that is
+// the caller's post-pass (see NeedsHTMLEscapeBytes/HTMLEscapeBytes in
+// html_escape.go and the escapeHTML gate in encoding.go).
 func (e *FastEncoder) escapeString(s string) {
 	start := 0
 	n := len(s)
@@ -584,6 +615,28 @@ func (e *FastEncoder) escapeString(s string) {
 				}
 				e.buf = append(e.buf, `\ufffd`...)
 				i++
+				start = i
+				continue
+			}
+			// GEN-001 (stdlib parity): U+2028/U+2029 are valid JSON but
+			// terminate lines in JavaScript; encoding/json escapes them
+			// UNCONDITIONALLY \u2014 even under SetEscapeHTML(false) \u2014 and so does
+			// escapeRune in the full encoder (see encoding.go). The fast path
+			// previously passed all valid multi-byte UTF-8 through raw, so any
+			// fast-encoder output consumed without the caller's HTML-escape
+			// post-pass (Set/Delete mutation results via FastMarshalToString,
+			// Encoder with SetEscapeHTML(false)) could carry a raw line
+			// separator into a JS-embedded string.
+			if r == 0x2028 || r == 0x2029 {
+				if start < i {
+					e.buf = append(e.buf, s[start:i]...)
+				}
+				if r == 0x2028 {
+					e.buf = append(e.buf, `\u2028`...)
+				} else {
+					e.buf = append(e.buf, `\u2029`...)
+				}
+				i += size
 				start = i
 				continue
 			}
@@ -753,7 +806,7 @@ var mediumIntsNeg [900][]byte
 var largeIntsNeg [9000][]byte
 
 // init initializes the medium and negative integer lookup tables and common floats
-// PERFORMANCE v2: Optimized initialization using direct byte array construction
+// PERFORMANCE: Optimized initialization using direct byte array construction
 // avoids string concatenation allocations
 func init() {
 	// Pre-allocate a single buffer for building numbers
@@ -934,10 +987,17 @@ func errUnsupportedFloat(f float64, bits int) error {
 	return fmt.Errorf("json: unsupported value: %s", strconv.FormatFloat(f, 'g', -1, bits))
 }
 
-// EncodeFloat encodes a floating point number
-// PERFORMANCE: Uses pre-computed common values and fast integer conversion
-// SECURITY: Special values (NaN, Inf) are encoded as null for JSON compatibility
-func (e *FastEncoder) EncodeFloat(n float64, bits int) {
+// EncodeFloat encodes a floating point number.
+// PERFORMANCE: Uses pre-computed common values and fast integer conversion.
+//
+// D-002/R11 (m4): NaN and ±Inf are not representable in JSON (RFC 8259), and
+// encoding/json returns UnsupportedValueError for them. This encoder used to
+// emit `null` for them — contradicting the reject-everywhere policy enforced
+// around every production caller (scalar/slice/map pre-checks) and risking
+// that a future direct caller silently produces a value-changed document.
+// EncodeFloat returns the error itself; the per-caller pre-check loops remain
+// only to fail before any partial output is written.
+func (e *FastEncoder) EncodeFloat(n float64, bits int) error {
 	// Fast path for zero. Negative zero keeps its sign ("-0") for encoding/json
 	// parity (stdlib's floatEncoder emits the sign); positive zero stays on the
 	// fast path to avoid a strconv call for this very common value.
@@ -947,29 +1007,20 @@ func (e *FastEncoder) EncodeFloat(n float64, bits int) {
 		} else {
 			e.buf = append(e.buf, '0')
 		}
-		return
+		return nil
 	}
 
-	// Check for special values - encode as null for JSON compatibility
-	// JSON standard (RFC 8259) does not support NaN/Infinity
-	if n != n { // NaN
-		e.buf = append(e.buf, "null"...)
-		return
-	}
-	if n > 0 && n/2 == n { // +Inf
-		e.buf = append(e.buf, "null"...)
-		return
-	}
-	if n < 0 && n/2 == n { // -Inf
-		e.buf = append(e.buf, "null"...)
-		return
+	// Non-finite values are not representable in JSON — reject like
+	// encoding/json (see the method comment, D-002/R11 m4).
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return errUnsupportedFloat(n, bits)
 	}
 
 	// PERFORMANCE: Fast path for common float values
 	bits64 := float64ToBits(n)
 	if cached, ok := commonFloats[bits64]; ok {
 		e.buf = append(e.buf, cached...)
-		return
+		return nil
 	}
 
 	// PERFORMANCE: Fast path for small integer floats (0-100)
@@ -978,7 +1029,7 @@ func (e *FastEncoder) EncodeFloat(n float64, bits int) {
 		intVal := int64(n)
 		if n == float64(intVal) {
 			e.buf = append(e.buf, smallInts[intVal]...)
-			return
+			return nil
 		}
 	}
 
@@ -990,7 +1041,7 @@ func (e *FastEncoder) EncodeFloat(n float64, bits int) {
 		} else {
 			e.EncodeUint(uint64(n))
 		}
-		return
+		return nil
 	}
 
 	// General case: match encoding/json's floatEncoder so output stays
@@ -998,6 +1049,7 @@ func (e *FastEncoder) EncodeFloat(n float64, bits int) {
 	// magnitudes use scientific notation). AppendJSONFloat is the single source
 	// of truth shared with the root-package customEncoder.
 	e.buf = AppendJSONFloat(e.buf, n, bits)
+	return nil
 }
 
 // AppendJSONFloat appends f to dst using the same formatting rules as
@@ -1052,14 +1104,14 @@ func (e *FastEncoder) EncodeBool(b bool) {
 }
 
 // EncodeMap encodes a map[string]any
-// PERFORMANCE v2: Pre-allocates buffer capacity based on map size estimate
+// PERFORMANCE: Pre-allocates buffer capacity based on map size estimate
 func (e *FastEncoder) EncodeMap(m map[string]any) error {
 	if err := e.enterContainer(); err != nil {
 		return err
 	}
 	defer e.leaveContainer()
 
-	// PERFORMANCE v2: Pre-grow buffer to reduce reallocations
+	// PERFORMANCE: Pre-grow buffer to reduce reallocations
 	// Estimate: each entry needs ~32 bytes on average (key + value + quotes + colon + comma)
 	needed := len(m) * 32
 	if cap(e.buf)-len(e.buf) < needed {
@@ -1141,7 +1193,7 @@ func (e *FastEncoder) EncodeMapStringInt(m map[string]int) error {
 }
 
 // EncodeArray encodes a []any
-// PERFORMANCE v2: Pre-allocates buffer capacity based on array size estimate
+// PERFORMANCE: Pre-allocates buffer capacity based on array size estimate
 func (e *FastEncoder) EncodeArray(arr []any) error {
 	if err := e.enterContainer(); err != nil {
 		return err
@@ -1174,7 +1226,7 @@ func (e *FastEncoder) EncodeArray(arr []any) error {
 }
 
 // EncodeStringSlice encodes a []string
-// PERFORMANCE v2: Pre-allocates buffer for large slices
+// PERFORMANCE: Pre-allocates buffer for large slices
 func (e *FastEncoder) EncodeStringSlice(arr []string) {
 	// Pre-allocate for large slices
 	if n := len(arr); n > 8 {
@@ -1200,7 +1252,7 @@ func (e *FastEncoder) EncodeStringSlice(arr []string) {
 }
 
 // EncodeIntSlice encodes a []int
-// PERFORMANCE v2: Pre-allocates buffer for large slices
+// PERFORMANCE: Pre-allocates buffer for large slices
 func (e *FastEncoder) EncodeIntSlice(arr []int) {
 	// Each int needs at most 20 bytes (max int64 digits + comma)
 	if n := len(arr); n > 8 {
@@ -1223,8 +1275,9 @@ func (e *FastEncoder) EncodeIntSlice(arr []int) {
 }
 
 // EncodeFloatSlice encodes a []float64
-// PERFORMANCE v2: Pre-allocates buffer for large slices
-func (e *FastEncoder) EncodeFloatSlice(arr []float64) {
+// PERFORMANCE: Pre-allocates buffer for large slices
+// D-002/R11 (m4): propagates EncodeFloat's non-finite rejection.
+func (e *FastEncoder) EncodeFloatSlice(arr []float64) error {
 	// Each float needs at most 24 bytes
 	if n := len(arr); n > 8 {
 		needed := n * 16 // average estimate
@@ -1239,10 +1292,13 @@ func (e *FastEncoder) EncodeFloatSlice(arr []float64) {
 		if i > 0 {
 			e.buf = append(e.buf, ',')
 		}
-		e.EncodeFloat(v, 64)
+		if err := e.EncodeFloat(v, 64); err != nil {
+			return err
+		}
 	}
 
 	e.buf = append(e.buf, ']')
+	return nil
 }
 
 // EncodeInt32Slice encodes a []int32
@@ -1262,17 +1318,21 @@ func (e *FastEncoder) EncodeInt32Slice(arr []int32) {
 
 // EncodeFloat32Slice encodes a []float32
 // PERFORMANCE: Specialized encoder avoids interface conversion overhead
-func (e *FastEncoder) EncodeFloat32Slice(arr []float32) {
+// D-002/R11 (m4): propagates EncodeFloat's non-finite rejection.
+func (e *FastEncoder) EncodeFloat32Slice(arr []float32) error {
 	e.buf = append(e.buf, '[')
 
 	for i, v := range arr {
 		if i > 0 {
 			e.buf = append(e.buf, ',')
 		}
-		e.EncodeFloat(float64(v), 32)
+		if err := e.EncodeFloat(float64(v), 32); err != nil {
+			return err
+		}
 	}
 
 	e.buf = append(e.buf, ']')
+	return nil
 }
 
 // ============================================================================
@@ -1282,10 +1342,19 @@ func (e *FastEncoder) EncodeFloat32Slice(arr []float32) {
 
 // EncodeTime encodes a time.Time in RFC3339Nano format, matching encoding/json
 // (which preserves sub-second precision via time.Time.MarshalJSON).
-func (e *FastEncoder) EncodeTime(t time.Time) {
+//
+// D-002/R11 (M3): RFC3339 timestamps cannot represent years outside [0,9999];
+// encoding/json returns an error for those while this fast path used to emit an
+// invalid 5-digit-year timestamp with a nil error. Reject with stdlib's
+// message so the fast path no longer silently produces invalid JSON.
+func (e *FastEncoder) EncodeTime(t time.Time) error {
+	if y := t.Year(); y < 0 || y > 9999 {
+		return fmt.Errorf("json: error calling MarshalJSON for type time.Time: Time.MarshalJSON: year outside of range [0,9999]")
+	}
 	e.buf = append(e.buf, '"')
 	e.buf = append(e.buf, t.Format(time.RFC3339Nano)...)
 	e.buf = append(e.buf, '"')
+	return nil
 }
 
 // EncodeBase64 encodes a []byte as base64 string
@@ -1333,16 +1402,6 @@ func (e *FastEncoder) EncodeMapStringInt64(m map[string]int64) error {
 
 // EncodeMapStringFloat64 encodes a map[string]float64
 func (e *FastEncoder) EncodeMapStringFloat64(m map[string]float64) error {
-	// Reject non-finite values up front (D-002): EncodeFloat silently emits
-	// null for them, while encoding/json returns UnsupportedValueError — the
-	// scalar and slice paths already reject (see EncodeValue). Pre-checking
-	// also avoids leaving a partial object in e.buf on error.
-	for _, v := range m {
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			return errUnsupportedFloat(v, 64)
-		}
-	}
-
 	// PERFORMANCE: Pre-grow buffer to reduce reallocations
 	needed := len(m) * 28
 	if cap(e.buf)-len(e.buf) < needed {
@@ -1360,7 +1419,11 @@ func (e *FastEncoder) EncodeMapStringFloat64(m map[string]float64) error {
 
 		e.EncodeString(k)
 		e.buf = append(e.buf, ':')
-		e.EncodeFloat(v, 64)
+		// D-002/R11 (m4): EncodeFloat rejects non-finite values itself — a
+		// pre-scan of the map would duplicate that check on every clean encode.
+		if err := e.EncodeFloat(v, 64); err != nil {
+			return err
+		}
 	}
 
 	e.buf = append(e.buf, '}')
@@ -1401,6 +1464,9 @@ func (e *FastEncoder) EncodeUint64Slice(arr []uint64) {
 
 // FastParseInt parses an integer from a byte slice
 // PERFORMANCE: Avoids string allocation by parsing directly from bytes
+//
+// NOTE (D-002/R8 M5): no production caller — path parsing uses the string
+// form (ParseIntFast); retained for tests/future use.
 func FastParseInt(b []byte) (int64, error) {
 	if len(b) == 0 {
 		return 0, strconv.ErrSyntax
@@ -1475,6 +1541,8 @@ func FastParseInt(b []byte) (int64, error) {
 
 // FastParseFloat parses a float from a byte slice
 // SECURITY: Rejects NaN and Infinity values which are invalid in standard JSON (RFC 8259)
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func FastParseFloat(b []byte) (float64, error) {
 	// SECURITY: Fast check for invalid JSON float values
 	// NaN, Inf, +Inf, -Inf are not valid JSON numbers per RFC 8259
@@ -1508,6 +1576,9 @@ func FastParseFloat(b []byte) (float64, error) {
 // ============================================================================
 
 // FastMarshal marshals a value to JSON using the fast encoder
+//
+// NOTE (D-002/R8 M5): no production caller — FastMarshalToString is the live
+// path; retained for tests/future use.
 func FastMarshal(v any) ([]byte, error) {
 	e := GetEncoder()
 	defer PutEncoder(e)
@@ -1562,6 +1633,12 @@ var structEncoderCache sync.Map
 
 // GetStructEncoder gets cached struct field info
 // PERFORMANCE: Generates type-specific encoding functions for known types
+//
+// NOTE (D-002/R8 M5, confirmed R11): no production caller — encodeSlow routes
+// complex types through stdlib json.Marshal, so this chain (GetStructEncoder/
+// getEncodeFn) is exercised only by tests. ClearStructEncoderCache IS
+// production code (called by the root package's ShutdownGlobalProcessor).
+// Retained for tests/future use.
 func GetStructEncoder(t reflect.Type) []StructFieldInfo {
 	if v, ok := structEncoderCache.Load(t); ok {
 		return v.([]StructFieldInfo)
@@ -1621,6 +1698,8 @@ func ClearStructEncoderCache() {
 
 // getEncodeFn returns a type-specific encoding function for the given type
 // PERFORMANCE: Avoids reflection for common types by generating specialized encoders
+//
+// NOTE (D-002/R8 M5, confirmed R11): no production caller — see GetStructEncoder.
 func getEncodeFn(t reflect.Type) func(*FastEncoder, reflect.Value) error {
 	// Handle pointer types
 	if t.Kind() == reflect.Pointer {
@@ -1654,13 +1733,11 @@ func getEncodeFn(t reflect.Type) func(*FastEncoder, reflect.Value) error {
 		}
 	case reflect.Float32:
 		return func(e *FastEncoder, v reflect.Value) error {
-			e.EncodeFloat(v.Float(), 32)
-			return nil
+			return e.EncodeFloat(v.Float(), 32)
 		}
 	case reflect.Float64:
 		return func(e *FastEncoder, v reflect.Value) error {
-			e.EncodeFloat(v.Float(), 64)
-			return nil
+			return e.EncodeFloat(v.Float(), 64)
 		}
 	case reflect.Bool:
 		return func(e *FastEncoder, v reflect.Value) error {
@@ -1795,6 +1872,9 @@ func splitTag(tag string) []string {
 // ============================================================================
 
 // IsValidUTF8 checks if a byte slice is valid UTF-8
+//
+// NOTE (D-002/R8 M5): no production caller (encoders use utf8.DecodeRune*
+// inline); retained for tests/future use.
 func IsValidUTF8(b []byte) bool {
 	return utf8.Valid(b)
 }
@@ -1811,6 +1891,10 @@ var FastBufferPool = sync.Pool{
 }
 
 // GetFastBuffer gets a buffer from the pool
+//
+// NOTE (D-002/R8 M5): neither GetFastBuffer nor PutFastBuffer has a
+// production caller — the encoder/HTML-escape pools above are the live ones;
+// retained for tests/future use.
 func GetFastBuffer() *bytes.Buffer {
 	buf := FastBufferPool.Get().(*bytes.Buffer)
 	buf.Reset()

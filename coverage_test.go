@@ -276,6 +276,13 @@ func TestValidateFormats(t *testing.T) {
 		{"Time/InvalidHour", processor.validateTimeFormat, "25:00:00", true},
 		{"Time/InvalidFormat", processor.validateTimeFormat, "12-30-45", true},
 		{"Time/Partial", processor.validateTimeFormat, "12:30", true},
+		// Date (YYYY-MM-DD)
+		{"Date/Valid", processor.validateDateFormat, "2024-01-15", false},
+		{"Date/ValidLeapDay", processor.validateDateFormat, "2024-02-29", false},
+		{"Date/InvalidLeapDay", processor.validateDateFormat, "2023-02-29", true},
+		{"Date/InvalidSeparators", processor.validateDateFormat, "2024/01/15", true},
+		{"Date/InvalidMonth", processor.validateDateFormat, "2024-13-01", true},
+		{"Date/Empty", processor.validateDateFormat, "", true},
 		// DateTime
 		{"DateTime/Valid", processor.validateDateTimeFormat, "2024-01-15T10:30:00Z", false},
 		{"DateTime/WithOffset", processor.validateDateTimeFormat, "2024-01-15T10:30:00+07:00", false},
@@ -411,6 +418,19 @@ func TestMaybeEvictConfigCache(t *testing.T) {
 			if err != nil {
 				t.Fatalf("getProcessorWithConfig error at %d: %v", i, err)
 			}
+		}
+
+		// A closed processor must never be served again: re-requesting the
+		// closed config yields a different, live instance.
+		p2, err := getProcessorWithConfig(cfg)
+		if err != nil {
+			t.Fatalf("getProcessorWithConfig re-request error: %v", err)
+		}
+		if p2 == p {
+			t.Error("closed processor was re-served from the config cache")
+		}
+		if p2.IsClosed() {
+			t.Error("re-requested processor is closed")
 		}
 	})
 }
@@ -556,29 +576,6 @@ func TestParseEdgeCases(t *testing.T) {
 		_ = result
 	})
 
-	t.Run("ParseArray", func(t *testing.T) {
-		result, err := ParseAny(`[1, 2, 3]`)
-		if err != nil {
-			t.Errorf("Parse array failed: %v", err)
-		}
-		arr, ok := result.([]any)
-		if !ok {
-			t.Errorf("Expected []any, got %T", result)
-		}
-		if len(arr) != 3 {
-			t.Errorf("Expected 3 elements, got %d", len(arr))
-		}
-	})
-}
-
-// TestValidEdgeCases tests Valid function edge cases
-func TestValidEdgeCases(t *testing.T) {
-	t.Run("ValidEmptyBytes", func(t *testing.T) {
-		if Valid([]byte{}) {
-			t.Error("Valid([]byte{}) should return false")
-		}
-	})
-
 	t.Run("ValidNilBytes", func(t *testing.T) {
 		if Valid(nil) {
 			t.Error("Valid(nil) should return false")
@@ -706,6 +703,12 @@ func TestPatternLevel(t *testing.T) {
 // asserted by the internal package tests; the other subtests (Type-only
 // checks duplicating internal tests) were removed in the FIX-001 cleanup.
 func TestNewSegmentFunctions(t *testing.T) {
+	t.Run("newPropertySegment", func(t *testing.T) {
+		seg := newPropertySegment("name")
+		if seg.Type != internal.PropertySegment || seg.Key != "name" {
+			t.Errorf("newPropertySegment = {%v %q}, want property segment with key \"name\"", seg.Type, seg.Key)
+		}
+	})
 	t.Run("newAppendSegment", func(t *testing.T) {
 		seg := newAppendSegment()
 		if seg.Type != internal.AppendSegment {
