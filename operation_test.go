@@ -1707,10 +1707,12 @@ func TestOperationInternalErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("get from out-of-bounds index returns nil", func(t *testing.T) {
+	t.Run("get from out-of-bounds index returns ErrPathNotFound", func(t *testing.T) {
+		// GEN-001 P0-4: out-of-bounds is a missing path (errors.go contract),
+		// not a silent nil indistinguishable from a legitimate JSON null.
 		result, err := Get(`{"a":[1,2]}`, "a[10]")
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		if !errors.Is(err, ErrPathNotFound) {
+			t.Errorf("err = %v, want ErrPathNotFound", err)
 		}
 		if result != nil {
 			t.Errorf("expected nil result for out-of-bounds, got %v", result)
@@ -2223,10 +2225,14 @@ func TestJSONPointer_EdgesViaGet(t *testing.T) {
 			t.Errorf("Get(/a/-) = %v (%T), err=%v; want [nil nil]", got, got, err)
 		}
 	})
-	t.Run("out-of-bounds index is nil without error", func(t *testing.T) {
+	t.Run("out-of-bounds index is ErrPathNotFound", func(t *testing.T) {
+		// GEN-001 P0-4: aligned with the dot-path and compiled-path behavior.
 		got, err := p.Get(`{"a":[1,2]}`, "/a/9")
-		if err != nil || got != nil {
-			t.Errorf("Get(/a/9) = %v, err=%v; want nil, nil", got, err)
+		if !errors.Is(err, ErrPathNotFound) {
+			t.Errorf("Get(/a/9) err = %v, want ErrPathNotFound", err)
+		}
+		if got != nil {
+			t.Errorf("Get(/a/9) = %v, want nil", got)
 		}
 	})
 }

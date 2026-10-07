@@ -455,3 +455,101 @@ func TestP002_JSONLParallelEarlyReturnsJoinWorkers(t *testing.T) {
 		t.Fatalf("normal path: %v", err)
 	}
 }
+
+// TestGEN001_IterableValuePoolConcurrentRelease is a regression test for the
+// GEN-001 P0-1 audit finding: a callback calling Release() Put the value back
+// to the shared pool, another goroutine's Get() re-initialized it, and the
+// original iteration loop's putIterableValue then nulled the foreign data and
+// Put the same pointer a second time — one object handed to two goroutines,
+// plus a data race on data/released (plain bool check-then-act; an atomic CAS
+// variant re-raced via ABA after the re-Get reset the flag). The fix is the
+// single-putter invariant: Release only clears data, and only the owning
+// loop Puts. Run with -race.
+func TestGEN001_IterableValuePoolConcurrentRelease(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	const docs = 8
+	const items = 200
+	jsonStr := `{"items":[` + strings.Repeat(`{"id":7},`, items-1) + `{"id":7}]}`
+
+	var wg sync.WaitGroup
+	errs := make(chan error, docs)
+	for g := 0; g < docs; g++ {
+		wg.Add(1)
+		go func(releaseEvery int) {
+			defer wg.Done()
+			i := 0
+			err := p.ForeachWithError(jsonStr, "items", func(key any, item *IterableValue) error {
+				if got := item.GetInt("id"); got != 7 {
+					return fmt.Errorf("item %v: id = %d, want 7", key, got)
+				}
+				if releaseEvery > 0 && i%releaseEvery == 0 {
+					item.Release()
+					item.Release() // double Release must be a no-op, not a double Put
+				}
+				i++
+				return nil
+			})
+			if err != nil {
+				errs <- err
+			}
+		}(g) // g == 0: never release; the others release every g-th item
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+// TestGEN001Review_SkipValidationZeroCacheKeyInert is a regression test for a
+// defect the P1 review caught in the SkipValidation wiring: under
+// SkipValidation, validateAndCacheKey returns the zero CacheKey while
+// EnableCache may still be true — PreParse's cache read/write on that zero
+// key would collide every skip-mode document onto one entry and serve the
+// wrong document's parse tree. The zero key is now inert in every cache
+// accessor, so skip-mode documents simply bypass the cache.
+func TestGEN001Review_SkipValidationZeroCacheKeyInert(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.SkipValidation = true
+	cfg.EnableCache = true
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() }) // best-effort cleanup of the test processor
+
+	docA := `{"v":"A","evil":"<script>a</script>"}`
+	docB := `{"v":"B","evil":"<script>b</script>"}`
+
+	for round := 0; round < 3; round++ {
+		// PreParse + GetFromParsed must never cross-contaminate documents.
+		pa, err := p.PreParse(docA)
+		if err != nil {
+			t.Fatalf("round %d PreParse(A): %v", round, err)
+		}
+		pb, err := p.PreParse(docB)
+		if err != nil {
+			t.Fatalf("round %d PreParse(B): %v", round, err)
+		}
+		if v, err := p.GetFromParsed(pa, "v"); err != nil || v != "A" {
+			t.Fatalf("round %d GetFromParsed(A): v=%v err=%v, want A", round, v, err)
+		}
+		if v, err := p.GetFromParsed(pb, "v"); err != nil || v != "B" {
+			t.Fatalf("round %d GetFromParsed(B): v=%v err=%v, want B", round, v, err)
+		}
+
+		// Direct Get and GetMultiple under skip must stay correct too.
+		if v, err := p.Get(docA, "v"); err != nil || v != "A" {
+			t.Fatalf("round %d Get(A): v=%v err=%v", round, v, err)
+		}
+		res, err := p.GetMultiple(docB, []string{"v"})
+		if err != nil || res["v"] != "B" {
+			t.Fatalf("round %d GetMultiple(B): res=%v err=%v", round, res, err)
+		}
+	}
+}

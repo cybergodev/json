@@ -80,6 +80,14 @@ type StreamIterator struct {
 // NewStreamIterator creates a stream iterator from a reader with default settings.
 // The optional cfg parameter allows customization using the unified Config pattern.
 //
+// SECURITY DIVERGENCE (GEN-001 P1): streaming iterators bypass the dangerous
+// content-pattern scan and the strict UTF-8 rejection applied by the
+// non-streaming entry points — they wrap the standard library decoder, which
+// silently replaces invalid UTF-8 with U+FFFD. cfg.MaxJSONSize IS enforced on
+// the total stream (see streamMaxSize). Treat streams from untrusted sources
+// accordingly, or decode through the non-streaming APIs when content-pattern
+// enforcement is required.
+//
 // Example:
 //
 //	// Default settings
@@ -225,6 +233,10 @@ type StreamObjectIterator struct {
 //	cfg := json.DefaultConfig()
 //	cfg.BufferSize = 128 * 1024
 //	iter := json.NewStreamObjectIterator(reader, cfg)
+//
+// SECURITY DIVERGENCE (GEN-001 P1): see NewStreamIterator — streaming
+// iterators bypass content-pattern scanning and strict UTF-8 rejection;
+// cfg.MaxJSONSize is enforced on the total stream.
 func NewStreamObjectIterator(reader io.Reader, cfg ...Config) *StreamObjectIterator {
 	var config Config
 	if len(cfg) > 0 {

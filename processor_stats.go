@@ -120,12 +120,19 @@ func (p *Processor) WarmupCache(jsonStr string, paths []string, cfg ...Config) (
 	}
 	defer releaseConfig(options)
 
-	// Validate JSON input
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// Validate JSON input. GEN-001 P1 review: honor SkipValidation like the
+	// other input funnels (essential size/depth checks only).
+	var jsonErr error
+	if p.effectiveSkipValidation(options) {
+		jsonErr = p.validateInputEssential(jsonStr)
+	} else {
+		jsonErr = p.validateInputForOptions(jsonStr, options)
+	}
+	if jsonErr != nil {
 		return nil, &JsonsError{
 			Op:      "warmup_cache",
 			Message: "invalid JSON input for cache warmup",
-			Err:     err,
+			Err:     jsonErr,
 		}
 	}
 

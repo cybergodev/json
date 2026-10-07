@@ -141,6 +141,20 @@ type Encoder struct {
 	escapeHTML bool
 	indent     string
 	prefix     string
+	// maxJSONSize/maxDepth are the encoding limits resolved at construction
+	// (GEN-001 P1): from the constructor cfg when supplied — clamped exactly
+	// like Config.Validate — else the defaults the shared processor uses
+	// (DefaultMaxJSONSize / DefaultMaxDepth). Previously the constructor cfg's
+	// limits were silently ignored and Encode always read them from the shared
+	// default processor, so a caller tightening MaxJSONSize or MaxDepth got no
+	// protection.
+	maxJSONSize int64
+	maxDepth    int
+	// cfg is the constructor cfg when supplied (nil for the no-cfg form). The
+	// slow path applies it wholesale — the same replace semantics as a
+	// per-call cfg (D-006) — so its encoding options (FloatPrecision,
+	// CustomEscapes, ...) take effect, not just the limits.
+	cfg *Config
 }
 
 // NewEncoder returns a new encoder that writes to w.
@@ -160,12 +174,15 @@ type Encoder struct {
 //	encoder := json.NewEncoder(writer, cfg)
 func NewEncoder(w io.Writer, cfg ...Config) *Encoder {
 	enc := &Encoder{
-		w:          w,
-		escapeHTML: true, // Default behavior matches encoding/json
+		w:           w,
+		escapeHTML:  true, // Default behavior matches encoding/json
+		maxJSONSize: int64(DefaultMaxJSONSize),
+		maxDepth:    DefaultMaxDepth,
 	}
 
 	// Apply configuration if provided
 	if len(cfg) > 0 {
+		enc.cfg = &cfg[0]
 		enc.escapeHTML = cfg[0].EscapeHTML
 		if cfg[0].Pretty {
 			enc.prefix = cfg[0].Prefix
@@ -173,6 +190,18 @@ func NewEncoder(w io.Writer, cfg ...Config) *Encoder {
 			if enc.indent == "" {
 				enc.indent = "  " // Default indent
 			}
+		}
+		// GEN-001 P1: resolve the encoding limits with the same normalization
+		// Config.Validate applies (<=0 → default, > DefaultMaxJSONSize → cap).
+		enc.maxJSONSize = int64(cfg[0].MaxJSONSize)
+		if enc.maxJSONSize <= 0 {
+			enc.maxJSONSize = int64(DefaultMaxJSONSize)
+		} else if enc.maxJSONSize > int64(DefaultMaxJSONSize) {
+			enc.maxJSONSize = int64(DefaultMaxJSONSize)
+		}
+		enc.maxDepth = cfg[0].MaxDepth
+		if enc.maxDepth <= 0 {
+			enc.maxDepth = DefaultMaxDepth
 		}
 	}
 
@@ -209,17 +238,19 @@ func (enc *Encoder) Encode(v any) error {
 	// only run when the processor's config leaves every such option at its
 	// default — otherwise a FloatPrecision=2 processor emitted full precision
 	// for simple values and rounded values for complex ones.
-	if enc.indent == "" && enc.prefix == "" && encodingFastPathEligible(&processor.config) {
+	if enc.indent == "" && enc.prefix == "" &&
+		encodingFastPathEligible(&processor.config) &&
+		(enc.cfg == nil || encodingFastPathEligible(enc.cfg)) { // GEN-001 P1: constructor cfg's encoding options must disqualify the fast path too
 		// Try fast encoder directly
 		encoder := internal.GetEncoder()
-		if processor.config.MaxDepth > 0 {
-			encoder.SetMaxEncodeDepth(processor.config.MaxDepth)
+		if enc.maxDepth > 0 {
+			encoder.SetMaxEncodeDepth(enc.maxDepth)
 		}
 		err := encoder.EncodeValue(v)
 		if err == nil {
 			data := encoder.Bytes()
 			// SECURITY: Check output size against configured limit
-			if int64(len(data)) > processor.config.MaxJSONSize {
+			if int64(len(data)) > enc.maxJSONSize {
 				internal.PutEncoder(encoder)
 				return newSizeLimitError("encode", int64(len(data)), processor.config.MaxJSONSize)
 			}
@@ -245,7 +276,13 @@ func (enc *Encoder) Encode(v any) error {
 	// Use processor's config as base to inherit settings like PreserveNumbers,
 	// FloatPrecision, etc. Only override EscapeHTML when Encoder was explicitly
 	// set to false via SetEscapeHTML(false).
+	// GEN-001 P1: when the constructor received a cfg it REPLACES the base
+	// wholesale — the same replace semantics as a per-call cfg (D-006) — so
+	// the constructor cfg's limits and encoding options actually take effect.
 	config := processor.GetConfig()
+	if enc.cfg != nil {
+		config = *enc.cfg
+	}
 	if !enc.escapeHTML {
 		config.EscapeHTML = false
 	}
@@ -1241,7 +1278,14 @@ func (p *Processor) Unmarshal(data []byte, value any, cfg ...Config) error {
 	// would newly reject calls that have always succeeded — an accepted,
 	// documented divergence rather than a behavioral change.
 	if len(cfg) == 0 {
-		if err := p.validateInput(string(data)); err != nil {
+		// GEN-001 P1: honor the processor's baked SkipValidation (essential
+		// size/depth checks only), matching Parse's cfg path and the Get/Set/
+		// Delete funnels.
+		if p.config.SkipValidation {
+			if err := p.validateInputEssential(string(data)); err != nil {
+				return err
+			}
+		} else if err := p.validateInput(string(data)); err != nil {
 			return err
 		}
 		return json.Unmarshal(data, value)
@@ -2099,6 +2143,15 @@ func (e *customEncoder) encodeString(s string) error {
 			case '\\':
 				e.buffer.WriteString(`\\`)
 			default:
+				if b < 0x20 {
+					// GEN-001 P1: control characters stay escaped even under
+					// DisableEscaping — a raw <0x20 byte inside a string
+					// literal makes the output invalid JSON (RFC 8259 §7)
+					// while Encode still returned nil. DisableEscaping opts
+					// out of OPTIONAL escapes, not out of well-formedness.
+					e.writeUnicodeEscape(rune(b))
+					continue
+				}
 				if b < 0x80 {
 					e.buffer.WriteByte(b)
 				} else {

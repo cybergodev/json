@@ -4,6 +4,35 @@ All notable changes to the cybergodev/json library will be documented in this fi
 
 ---
 
+## v1.5.3 - Audit Fixes: Concurrency, Security Scan & Contract Correctness (2026-10-07)
+
+### Fixed
+
+- `IterableValue` pool double-Put data race — `Release()` is now mark-only and the owning iteration loop alone returns values to the pool (single-putter invariant); `Release()` on serial (non-pooling) JSONL values no longer injects caller-owned objects into the pool
+- `SkipValidation` was dead at the processor level and ignored per-call on `Get` — a new `effectiveSkipValidation` helper makes it consistent across `Get`/`Set`/`SetMultiple`/`GetMultiple`/`Parse`/`Unmarshal`/`ValidateSchema`/`CompareJSON`/`WarmupCache` (essential size/depth/container limits always apply)
+- Zero `CacheKey` is inert across all cache read/write/invalidate entry points — under `SkipValidation`+`EnableCache`, skip-mode documents previously collided on one cache entry and could be served another document's parse tree
+- `NewEncoder(w, cfg)` applies the constructor cfg's `MaxJSONSize`/`MaxDepth` on both the fast and slow paths (previously `Encode` always read the shared default processor's limits)
+- `Parse` honors per-call `Config.SkipValidation` (essential limits only) — the documented stdlib-exact mode is now real for `Unmarshal`/`Parse`; content patterns were previously still rejected
+- Unix critical-directory path validation is case-sensitive on case-sensitive filesystems (`/Var/log/app.json` is a legitimate Linux path); folded matching kept for windows/darwin
+- Corrected the reversed security recommendation above `validateJSONSecurityOptimized` (`FullSecurityScan=true` is the slower deterministic mode)
+
+### Security
+
+- Dangerous-pattern gates context-check EVERY occurrence, not only each pattern's first — a benign word-internal first hit (e.g. inside `myonerrorx`) no longer shields a later standalone `onerror`; applied to built-in reporting, critical patterns, and custom/additional patterns
+- `LoggingHook` output is sanitized via `sanitizePath`/`sanitizeError` — raw sensitive paths (`.users[0].auth.token`) and unredacted errors previously bypassed the library's own redaction and reached logs verbatim
+
+### Changed
+
+- Package docs state the default security-validation differences vs `encoding/json` and the `SkipValidation`/`DisableDefaultPatterns` escape hatches
+- `EscapeNewlines`/`EscapeTabs=false` raw control-byte output documented as deliberately non-standard (strict parsers will reject it); unlike `DisableEscaping`, those options keep the behavior but now warn
+- golangci-lint v2 migration — errcheck/staticcheck findings fixed (commented best-effort `Close()` discards, doc-comment forms, invisible-literal test escapes)
+
+### Added
+
+- Regression tests for the audit fixes: concurrent `Foreach` with in-callback Release/double-Release, the pattern-scan bypass, and skip-mode cache isolation (all run under `-race`); white-box coverage for the Set/Delete internals (`deletePropertyValue` 40%→100%, `setValueForSegment` 43%→100%)
+
+---
+
 ## v1.5.2 - Config Correctness, Production Hardening & Performance (2026-10-07)
 
 > Sweep of baked-config vs per-call-cfg plumbing, `PreserveNumbers` across every path, JSONL engine unification, new hardening options (`DetectDuplicateKeys`/`AllowedFileDirs`/`SaveFileMode`), panic protection at extension points, and profiled performance work. Non-breaking.

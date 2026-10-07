@@ -855,16 +855,11 @@ func TestRecursiveProcessor_EmptyContainers(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "get from empty array",
-			data: []any{},
-			path: "[0]",
-			op:   opGet,
-			check: func(t *testing.T, result any) {
-				t.Helper()
-				if result != nil {
-					t.Errorf("expected nil for out of bounds, got %v", result)
-				}
-			},
+			name:    "get from empty array",
+			data:    []any{},
+			path:    "[0]",
+			op:      opGet,
+			wantErr: true, // GEN-001 P0-4: out of bounds now returns ErrPathNotFound
 		},
 		{
 			name: "slice empty array",
@@ -1105,7 +1100,7 @@ func TestRecursiveProcessor_ErrorPaths(t *testing.T) {
 			data:    []any{1, 2, 3},
 			path:    "[100]",
 			op:      opGet,
-			wantErr: false, // Returns nil for out of bounds get
+			wantErr: true, // GEN-001 P0-4: returns ErrPathNotFound, matching errors.go's contract
 		},
 		{
 			name:    "slice on non-array type",

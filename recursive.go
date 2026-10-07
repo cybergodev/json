@@ -247,7 +247,13 @@ func (urp *recursiveProcessor) handleArrayIndexSegmentUnified(data any, segment 
 		index := internal.NormalizeIndex(segment.Index, len(container))
 		if index < 0 || index >= len(container) {
 			if op == opGet {
-				return nil, nil // Index out of bounds
+				// GEN-001 P0-4: out of bounds is a missing path, not a silent
+				// (nil, nil) — that return was indistinguishable from a real
+				// JSON null and contradicted ErrPathNotFound's contract
+				// ("using array indices out of bounds", errors.go). The
+				// compiled fast path (internal/compiled_path.go) already
+				// returns ErrPathNotFound here; this aligns the recursive path.
+				return nil, fmt.Errorf("array index %d out of bounds (length %d): %w", segment.Index, len(container), ErrPathNotFound)
 			}
 			if op == opSet && createPaths && index >= 0 {
 				// Array extension required

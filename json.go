@@ -2,6 +2,7 @@
 // (not a doc comment) so godoc does not concatenate two package comments.
 // D-002/R8 (m6): the duplicated package-header text that used to sit above
 // was removed — doc.go is the single source of truth.
+
 package json
 
 import (
@@ -128,7 +129,7 @@ func SetGlobalProcessor(processor *Processor) {
 	// ~5s (waitForActiveOps) and would otherwise stall any concurrent
 	// getDefaultProcessor slow-path call that needs the mutex.
 	if old != nil {
-		old.Close()
+		_ = old.Close() // best-effort: the old processor is discarded either way
 	}
 }
 
@@ -153,7 +154,7 @@ func ShutdownGlobalProcessor() {
 	// Closing under the lock would stall concurrent getDefaultProcessor calls
 	// for up to ~5s per Close().
 	if old != nil {
-		old.Close()
+		_ = old.Close() // best-effort: the detached processor is discarded
 	}
 
 	// Close fallback processor created in init() to release its cache goroutines.

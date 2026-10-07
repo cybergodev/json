@@ -38,7 +38,7 @@ func (p *Processor) Set(jsonStr, path string, value any, cfg ...Config) (result 
 			p.incrementErrorCount()
 			return jsonStr, derr
 		}
-		defer q.Close()
+		defer func() { _ = q.Close() }() // best-effort cleanup of the temporary per-call parser
 		return q.Set(jsonStr, path, value)
 	}
 
@@ -252,7 +252,7 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 			p.incrementErrorCount()
 			return jsonStr, derr
 		}
-		defer q.Close()
+		defer func() { _ = q.Close() }() // best-effort cleanup of the temporary per-call parser
 		return q.SetMultiple(jsonStr, updates)
 	}
 
@@ -290,7 +290,9 @@ func (p *Processor) SetMultiple(jsonStr string, updates map[string]any, cfg ...C
 	// stay consistent with Set/Delete, which route through validateOperationInput.
 	// Previously this called validateInputForOptions unconditionally, silently
 	// ignoring SkipValidation — a behavioral divergence from Set.
-	if options.SkipValidation {
+	// GEN-001 P1: effectiveSkipValidation also honors the processor's baked
+	// SkipValidation for no-cfg calls.
+	if p.effectiveSkipValidation(options) {
 		if err := p.validateInputEssential(jsonStr); err != nil {
 			p.incrementErrorCount()
 			return jsonStr, err

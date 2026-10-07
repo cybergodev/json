@@ -73,7 +73,7 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 			p.incrementErrorCount()
 			return nil, derr
 		}
-		defer q.Close()
+		defer func() { _ = q.Close() }() // best-effort cleanup of the temporary per-call parser
 		return q.Get(jsonStr, path)
 	}
 
@@ -666,7 +666,14 @@ func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (
 		}()
 	}
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// GEN-001 P1 review: honor SkipValidation like Get/Set/Parse (essential
+	// size/depth checks only) — this funnel previously ignored it entirely.
+	if p.effectiveSkipValidation(options) {
+		if err := p.validateInputEssential(jsonStr); err != nil {
+			p.incrementErrorCount()
+			return nil, err
+		}
+	} else if err := p.validateInputForOptions(jsonStr, options); err != nil {
 		p.incrementErrorCount()
 		return nil, err
 	}

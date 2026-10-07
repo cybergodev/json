@@ -59,8 +59,15 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 	// and uses streamlined error wrapping.
 	if len(cfg) == 0 {
 		if _, ok := target.(*any); ok && !p.config.PreserveNumbers {
-			// SECURITY: Full input validation is required (size, depth, security patterns)
-			if err := p.validateInput(jsonStr); err != nil {
+			// SECURITY: Full input validation is required (size, depth, security
+			// patterns). GEN-001 P1: honor the processor's baked SkipValidation —
+			// previously only the cfg path below respected it, so a processor
+			// built with SkipValidation still pattern-scanned every no-cfg call.
+			if p.config.SkipValidation {
+				if err := p.validateInputEssential(jsonStr); err != nil {
+					return err
+				}
+			} else if err := p.validateInput(jsonStr); err != nil {
 				return err
 			}
 			if err := json.Unmarshal(stringToBytes(jsonStr), target); err != nil {
@@ -84,7 +91,17 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// GEN-001 P0-3: honor SkipValidation exactly like the operation funnel
+	// (validateOperationInputHashed) — with it set, only the essential
+	// size/depth/container limits run. Without this, the documented
+	// "SkipValidation: true for stdlib-exact behavior" escape hatch
+	// (COMPATIBILITY.md) was dead for Unmarshal/Parse with a per-call cfg:
+	// content patterns were still rejected.
+	if options.SkipValidation {
+		if err := p.validateInputEssential(jsonStr); err != nil {
+			return err
+		}
+	} else if err := p.validateInputForOptions(jsonStr, options); err != nil {
 		return err
 	}
 

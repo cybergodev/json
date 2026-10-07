@@ -455,7 +455,7 @@ func TestReleaseConfigCoversAllReferenceFields(t *testing.T) {
 		kind := field.Type.Kind()
 		isRef := kind == reflect.Slice || kind == reflect.Map ||
 			kind == reflect.Chan || kind == reflect.Func ||
-			kind == reflect.Interface || kind == reflect.Ptr
+			kind == reflect.Interface || kind == reflect.Pointer
 		// context.Context is an interface
 		if !isRef && field.Type.String() == "context.Context" {
 			isRef = true

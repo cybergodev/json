@@ -31,7 +31,7 @@ func (p *Processor) Delete(jsonStr, path string, cfg ...Config) (result string, 
 			p.incrementErrorCount()
 			return jsonStr, derr
 		}
-		defer q.Close()
+		defer func() { _ = q.Close() }() // best-effort cleanup of the temporary per-call parser
 		return q.Delete(jsonStr, path)
 	}
 

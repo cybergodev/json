@@ -173,7 +173,7 @@ func (si *StringIntern) evictRandomLocked() bool {
 	return count > 0
 }
 
-// Stats returns statistics about the string intern
+// InternStats holds statistics about the string interner.
 type InternStats struct {
 	Entries   int
 	Size      int64
@@ -491,7 +491,7 @@ func (ki *KeyIntern) Size() int {
 	return total
 }
 
-// Stats returns statistics about the key interner
+// KeyInternStats holds statistics about the key interner.
 type KeyInternStats struct {
 	ShardCount  int
 	HotKeyCount int64

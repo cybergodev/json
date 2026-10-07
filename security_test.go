@@ -1420,10 +1420,39 @@ func TestP003FirstOccurrenceRecording(t *testing.T) {
 // TestP003ScanWindowErrorEquivalence pins scanWindowForPatterns to the
 // pre-P-003 shape (existence prefilter, then one fastIndexIgnoreCase rescan
 // per pattern): both must select the SAME error — same pattern (list order,
-// not position order) and same message — or both return nil. This includes
-// the historical quirk that only a pattern's FIRST occurrence gets the
-// word-context check: a benign first occurrence shields a dangerous second
-// one, and the rewrite must preserve that exactly.
+// not position order) and same message — or both return nil. GEN-001 P0-3
+// closed the historical quirk that only a pattern's FIRST occurrence got the
+// word-context check (a benign first occurrence shielded a dangerous second
+// one); both shapes now context-check every occurrence.
+// TestGEN001_FirstOccurrenceShieldingClosed is a pipeline-level regression
+// test for the GEN-001 P0-3 fix: a benign word-internal first occurrence of
+// a dangerous pattern must not shield a later standalone occurrence. The
+// pre-fix scanner context-checked only the FIRST occurrence per pattern, so
+// this payload passed validation.
+func TestGEN001_FirstOccurrenceShieldingClosed(t *testing.T) {
+	shielded := []string{
+		`{"x":"myonerrorx then onerror"}`,
+		`{"a":"evaluate it","b":"eval(1)"}`,
+		`{"a":"myatobx","b":"atob(ZXZhbA==)"}`,
+	}
+	for _, in := range shielded {
+		var v any
+		if err := Unmarshal([]byte(in), &v); err == nil {
+			t.Errorf("Unmarshal(%s) = nil error, want security violation", in)
+		}
+		if Valid([]byte(in)) {
+			t.Errorf("Valid(%s) = true, want false", in)
+		}
+	}
+	// Benign word-internal occurrences alone must still pass.
+	for _, in := range []string{`{"x":"myonerrorx"}`, `{"x":"evaluate the options"}`} {
+		var v any
+		if err := Unmarshal([]byte(in), &v); err != nil {
+			t.Errorf("Unmarshal(%s) = %v, want nil", in, err)
+		}
+	}
+}
+
 func TestP003ScanWindowErrorEquivalence(t *testing.T) {
 	sv := newSecurityValidator(
 		100*1024*1024, // maxJSONSize
@@ -1445,7 +1474,9 @@ func TestP003ScanWindowErrorEquivalence(t *testing.T) {
 		if scanWindowPatterns(w, nil) {
 			for _, dp := range dangerousPatterns {
 				if idx := fastIndexIgnoreCase(w, dp.pattern); idx != -1 {
-					if sv.isDangerousContextIgnoreCase(w, idx, len(dp.pattern)) {
+					// GEN-001 P0-3: every occurrence context-checked — matching
+					// the fixed production semantics.
+					if sv.indexInDangerousContext(w, dp.pattern, idx) >= 0 {
 						return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
 					}
 				}
@@ -1469,8 +1500,8 @@ func TestP003ScanWindowErrorEquivalence(t *testing.T) {
 		// Occurs but word context declines: both paths return nil.
 		`{"x":"myonerrorx"}`,
 		`{"x":"evaluate the options"}`,
-		// Quirk preservation: FIRST occurrence benign shields the SECOND
-		// standalone one — both paths must return nil.
+		// GEN-001 P0-3 regression: the benign FIRST occurrence must NOT shield
+		// the SECOND standalone one — both paths must now error.
 		`{"x":"myonerrorx then onerror"}`,
 		// Position vs list order: "atob(" appears before "__proto__", but
 		// __proto__ (list index 0) wins the error on both paths.

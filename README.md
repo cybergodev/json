@@ -6,7 +6,7 @@
 [![Thread Safe](https://img.shields.io/badge/Thread_Safe-Yes-brightgreen.svg)](#)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](docs/SECURITY.md)
 
-> A high-performance, thread-safe Go JSON processing library with 100% `encoding/json` compatibility.
+> A high-performance, thread-safe Go JSON processing library — drop-in `encoding/json` signatures, with security hardening on by default (see [compatibility notes](docs/COMPATIBILITY.md#security-hardening-differences-d-002)).
 > Powerful path syntax, type safety, streaming processing, production-grade performance.
 
 **[中文文档](README_zh-CN.md)** | **[www.cybergo.dev/json](https://www.cybergo.dev/json)**
@@ -48,13 +48,13 @@
 | Memory pooling | - | `sync.Pool` for hot paths |
 | Path caching | - | Smart cache with TTL |
 | Batch operations | - | `ProcessBatch()` for bulk work |
-| 100% Compatibility | Native | Drop-in replacement (signatures extended with optional config) |
+| Drop-in compatibility | Native | Same signatures (optional config extension); [security hardening on by default](docs/COMPATIBILITY.md) |
 
 ---
 
 ## Features
 
-- **100% Compatible** - Drop-in replacement for `encoding/json`, all standard function signatures supported with optional config extension
+- **Drop-in Compatible** - All `encoding/json` function signatures supported with optional config extension; [default security validation](docs/COMPATIBILITY.md#security-hardening-differences-d-002) rejects some payloads `encoding/json` accepts (oversize, over-deep, invalid UTF-8, dangerous content patterns)
 - **Powerful Paths** - Dot notation, array slicing, field extraction, JSON Pointer (RFC 6901)
 - **High Performance** - Smart caching, memory pooling, optimized hot paths
 - **Type Safe** - Generics support with `GetTyped[T]`, built-in defaults, `AccessResult` type conversion
@@ -113,7 +113,7 @@ func main() {
     newAge := json.GetInt(updated, "user.age")
     fmt.Println(newAge) // 29
 
-    // 100% encoding/json compatible
+    // encoding/json-compatible signatures
     bytes, _ := json.Marshal(map[string]any{"status": "ok"})
     fmt.Println(string(bytes)) // {"status":"ok"}
 }
@@ -232,7 +232,7 @@ result, err = json.SetMultipleCreate(data, map[string]any{
 ### Encoding and Formatting
 
 ```go
-// Standard encoding (100% compatible)
+// Standard encoding (byte-compatible output for typical values)
 bytes, _ := json.Marshal(data)
 json.Unmarshal(bytes, &target)
 bytes, _ := json.MarshalIndent(data, "", "  ")
@@ -791,6 +791,8 @@ All standard functions are fully compatible:
 Compatible types: `Encoder`, `Decoder`, `Number`, `Token`, `Delim`, `SyntaxError`, `UnmarshalTypeError`, `InvalidUnmarshalError`, `UnsupportedTypeError`, `UnsupportedValueError`, `MarshalerError`.
 
 **Note**: `RawMessage` is not currently re-exported. Use `encoding/json.RawMessage` if needed.
+
+**Security by default — one real behavioral difference**: unlike `encoding/json`, the default configuration validates input. `Unmarshal` rejects documents that exceed `MaxJSONSize` / nesting limits, contain invalid UTF-8, or carry built-in dangerous content patterns (`<script`, `javascript:`, `onerror`, `eval(`, …); `Valid` returns `false` for them. If your payloads legitimately embed such content (HTML fragments, code samples), set `SkipValidation: true` (stdlib-exact behavior) or `DisableDefaultPatterns: true` (keep size/depth limits, drop content patterns).
 
 See [Compatibility Guide](docs/COMPATIBILITY.md) for full details.
 
