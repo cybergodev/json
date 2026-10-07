@@ -48,8 +48,10 @@
 func Marshal(value any, cfg ...Config) ([]byte, error)
 ```
 
-Encodes a Go value to JSON. 100% compatible with `encoding/json.Marshal`.
-When called without `cfg`, it is byte-compatible with `encoding/json.Marshal`.
+Encodes a Go value to JSON. Signature-compatible with `encoding/json.Marshal`
+and byte-compatible for typical values, with one deliberate difference (D-002):
+the encoded output is capped at `Config.MaxJSONSize` (default 100MB) and returns
+`ErrSizeLimit` instead of succeeding — stdlib has no such cap.
 
 **Parameters:**
 - `value` - Any Go value to encode
@@ -72,8 +74,14 @@ jsonBytes, err := json.Marshal(data)
 func Unmarshal(data []byte, value any, cfg ...Config) error
 ```
 
-Decodes JSON bytes into a Go value. 100% compatible with `encoding/json.Unmarshal`.
-When called without `cfg`, it is byte-compatible with `encoding/json.Unmarshal`.
+Decodes JSON bytes into a Go value. Signature-compatible with
+`encoding/json.Unmarshal`, but the no-config call applies this library's default
+security hardening — deliberate differences from the standard library (D-002):
+input larger than `Config.MaxJSONSize` (default 100MB) → `ErrSizeLimit`;
+dangerous-pattern substrings in string values (e.g. `"__proto__"`, `"<script"`)
+→ security violation (stdlib accepts them as plain data); invalid UTF-8 in
+string values → rejected (stdlib replaces it with U+FFFD). Pass
+`SkipValidation: true` for stdlib-exact behavior on trusted input.
 
 **Parameters:**
 - `data` - JSON bytes to decode
@@ -116,8 +124,12 @@ jsonBytes, err := json.MarshalIndent(data, "", "  ")
 func Valid(data []byte, cfg ...Config) bool
 ```
 
-Reports whether data is valid JSON. Byte-compatible with `encoding/json.Valid`
-when called without `cfg`.
+Reports whether data is valid JSON. Signature-compatible with
+`encoding/json.Valid`, but the no-config call is not purely syntactic (D-002):
+it routes through default security validation, so syntactically valid JSON can
+still return `false` when it exceeds `MaxJSONSize`, contains invalid UTF-8, or
+carries a dangerous pattern in a string value. For a syntax-only check use
+`encoding/json.Valid` (or `ValidWithConfig` with `SkipValidation: true`).
 
 **Parameters:**
 - `data` - JSON bytes to validate
@@ -140,7 +152,7 @@ func (enc *Encoder) SetEscapeHTML(on bool)
 func (enc *Encoder) SetIndent(prefix, indent string)
 ```
 
-Writes JSON values to an output stream. 100% compatible with `encoding/json.Encoder`. The optional `cfg` parameter allows customization of encoding behavior (e.g., `EscapeHTML`, `Pretty`, `Prefix`, `Indent`).
+Writes JSON values to an output stream. Compatible with `encoding/json.Encoder` (byte-identical output for typical values), with one deliberate difference (D-002): the encoded output is capped at `Config.MaxJSONSize` (default 100MB) and returns `ErrSizeLimit` instead of succeeding. The optional `cfg` parameter allows customization of encoding behavior (e.g., `EscapeHTML`, `Pretty`, `Prefix`, `Indent`).
 
 **Example:**
 ```go
@@ -171,7 +183,7 @@ func (dec *Decoder) More() bool
 func (dec *Decoder) Token() (Token, error)
 ```
 
-Reads and decodes JSON values from an input stream. 100% compatible with `encoding/json.Decoder`. The optional `cfg` parameter allows customization of decoding behavior (e.g., `DisallowUnknown`, `MaxNestingDepthSecurity`, `MaxJSONSize`).
+Reads and decodes JSON values from an input stream. Compatible with `encoding/json.Decoder` (see [Security-Hardening Differences](../COMPATIBILITY.md) in the compatibility guide for `Unmarshal`-level input checks). Known limitation: `DisallowUnknownFields()` (and cfg `DisallowUnknown`) is enforced only on the `UseNumber()` path — on the default decode path it is currently a no-op. The optional `cfg` parameter allows customization of decoding behavior (e.g., `MaxNestingDepthSecurity`, `MaxJSONSize`).
 
 **Example:**
 ```go
@@ -251,7 +263,7 @@ value, err := json.Get(data, "users[0].name")
 func GetString(jsonStr, path string, defaultValue ...string) string
 ```
 
-Retrieves a string value from JSON at the specified path. Returns the zero value if path not found or conversion fails, or the provided `defaultValue` if given.
+Retrieves a string value from JSON at the specified path. Returns the zero value if the path is not found, the value is null, or type conversion fails, or the provided `defaultValue` if given.
 
 **Example:**
 ```go
@@ -266,7 +278,7 @@ name := json.GetString(data, "user.name", "unknown")
 func GetInt(jsonStr, path string, defaultValue ...int) int
 ```
 
-Retrieves an integer value from JSON at the specified path. Returns the zero value if path not found or conversion fails, or the provided `defaultValue` if given.
+Retrieves an integer value from JSON at the specified path. Returns the zero value if the path is not found, the value is null, or type conversion fails, or the provided `defaultValue` if given.
 
 **Example:**
 ```go
@@ -281,7 +293,7 @@ age := json.GetInt(data, "user.age", 0)
 func GetFloat(jsonStr, path string, defaultValue ...float64) float64
 ```
 
-Retrieves a float64 value from JSON at the specified path. Returns the zero value if path not found or conversion fails, or the provided `defaultValue` if given.
+Retrieves a float64 value from JSON at the specified path. Returns the zero value if the path is not found, the value is null, or type conversion fails, or the provided `defaultValue` if given.
 
 **Example:**
 ```go
@@ -296,7 +308,7 @@ price := json.GetFloat(data, "product.price", 0.0)
 func GetBool(jsonStr, path string, defaultValue ...bool) bool
 ```
 
-Retrieves a boolean value from JSON at the specified path. Returns the zero value if path not found or conversion fails, or the provided `defaultValue` if given.
+Retrieves a boolean value from JSON at the specified path. Returns the zero value if the path is not found, the value is null, or type conversion fails, or the provided `defaultValue` if given.
 
 **Example:**
 ```go
@@ -311,7 +323,7 @@ active := json.GetBool(data, "user.active", false)
 func GetArray(jsonStr, path string, defaultValue ...[]any) []any
 ```
 
-Retrieves an array value from JSON at the specified path. Returns `nil` if path not found or conversion fails, or the provided `defaultValue` if given.
+Retrieves an array value from JSON at the specified path. Returns `nil` if the path is not found, the value is null, or type conversion fails, or the provided `defaultValue` if given.
 
 **Example:**
 ```go
@@ -326,7 +338,7 @@ items := json.GetArray(data, "items", []any{})
 func GetObject(jsonStr, path string, defaultValue ...map[string]any) map[string]any
 ```
 
-Retrieves an object value from JSON at the specified path. Returns `nil` if path not found or conversion fails, or the provided `defaultValue` if given.
+Retrieves an object value from JSON at the specified path. Returns `nil` if the path is not found, the value is null, or type conversion fails, or the provided `defaultValue` if given.
 
 **Example:**
 ```go
@@ -359,7 +371,7 @@ if result.Ok() {
 func GetTyped[T any](jsonStr, path string, defaultValue ...T) T
 ```
 
-Retrieves a typed value from JSON at the specified path using generics. Returns the zero value if path not found or conversion fails, or the provided `defaultValue` if given.
+Retrieves a typed value from JSON at the specified path using generics. Returns the zero value if the path is not found, the value is null, or type conversion fails, or the provided `defaultValue` if given.
 
 **Example:**
 ```go
@@ -423,7 +435,7 @@ Sets a value in JSON at the specified path.
 - `jsonStr` - JSON string
 - `path` - Path expression
 - `value` - Value to set
-- `cfg` - Optional configuration (use `CreatePaths: true` to auto-create paths)
+- `cfg` - Optional configuration (auto-create paths; `CreatePaths` defaults to `true`)
 
 **Returns:**
 - `string` - Modified JSON string
@@ -438,8 +450,8 @@ result, err := json.Set(data, "user.name", "Alice")
 
 // Auto-create nested paths
 cfg := json.DefaultConfig()
-cfg.CreatePaths = true
-result, err := json.Set(data, "new.nested.path", "value", cfg)
+cfg.CreatePaths = true // redundant: CreatePaths defaults to true
+result, err = json.Set(data, "new.nested.path", "value", cfg)
 ```
 
 ---
@@ -457,11 +469,11 @@ newMember := map[string]any{
     "name": "Charlie",
     "role": "Developer",
 }
-result, err := json.Set(data, "departments[0].teams[0].members[+]", newMember)
+result, err = json.Set(data, "departments[0].teams[0].members[+]", newMember)
 
 // Append multiple values (slice expansion)
 moreItems := []any{4, 5, 6}
-result, err := json.Set(data, "numbers[+]", moreItems)
+result, err = json.Set(data, "numbers[+]", moreItems)
 // Result: numbers becomes [1, 2, 3, 4, 5, 6]
 ```
 
@@ -473,7 +485,7 @@ members = append(members, newUser)                   // Step 2: Append
 result, _ := json.Set(data, "users", members)        // Step 3: Set back
 
 // NEW WAY: 1 operation
-result, _ := json.Set(data, "users[+]", newUser)     // Single operation!
+result, _ = json.Set(data, "users[+]", newUser)       // Single operation!
 ```
 
 ---
@@ -553,7 +565,7 @@ result, err := json.Delete(data, "user.temp")
 // With null cleanup
 cfg := json.DefaultConfig()
 cfg.CleanupNulls = true
-result, err := json.Delete(data, "user.temp", cfg)
+result, err = json.Delete(data, "user.temp", cfg)
 ```
 
 ---
@@ -564,7 +576,7 @@ result, err := json.Delete(data, "user.temp", cfg)
 func DeleteClean(jsonStr, path string, cfg ...Config) (string, error)
 ```
 
-Deletes a value from JSON and removes null values. Equivalent to calling `Delete` with `CleanupNulls: true`.
+Deletes a value from JSON and removes null values. Equivalent to calling `Delete` with `CleanupNulls: true` **and** `CompactArrays: true` (cleans up null placeholders and empty array slots).
 
 **Example:**
 ```go
@@ -581,16 +593,15 @@ result, err := json.DeleteClean(data, "user.temp")
 func Encode(value any, cfg ...Config) (string, error)
 ```
 
-Converts any Go value to JSON string.
-
-> **Deprecated:** `Encode` is functionally identical to `EncodeWithConfig` (both forward to the
-> same implementation). Use `EncodeWithConfig`, or `Marshal` when `[]byte` output is acceptable.
-> `Encode` will be removed in a future major version.
+Converts any Go value to JSON string. This is the canonical string-returning
+encoder (D-005 decision D1): the optional trailing `Config` selects the encoding
+behavior for this call; omitted, the default configuration applies. `Marshal` is
+the `[]byte`-returning `encoding/json` drop-in.
 
 **Example:**
 ```go
-// Prefer EncodeWithConfig (or Marshal for []byte output):
-result, err := json.EncodeWithConfig(data)
+result, err := json.Encode(data)                    // compact (default)
+result, err = json.Encode(data, json.PrettyConfig()) // pretty
 ```
 
 ---
@@ -618,10 +629,14 @@ func EncodeWithConfig(value any, cfg ...Config) (string, error)
 
 Converts any Go value to JSON string with custom configuration.
 
+> **Deprecated:** functionally identical to `Encode` — the name predates `Encode`
+> accepting an optional trailing `Config`. Use `Encode(value, cfg)`. Kept for the
+> lifetime of v1; will not be removed.
+
 **Example:**
 ```go
 cfg := json.PrettyConfig()
-result, err := json.EncodeWithConfig(data, cfg)
+result, err := json.EncodeWithConfig(data, cfg) // → prefer json.Encode(data, cfg)
 ```
 
 ---
@@ -657,11 +672,13 @@ result, err := json.EncodeBatch(map[string]any{"name": "Alice", "age": 30})
 func EncodeFields(value any, fields []string, cfg ...Config) (string, error)
 ```
 
-Encodes only the specified fields of a struct to JSON.
+Encodes only the specified fields of a struct to JSON. Fields are matched against the serialized JSON key names (i.e. `json` tag names), not Go struct field names; a tagged struct must pass the tag names.
 
 **Example:**
 ```go
 result, err := json.EncodeFields(user, []string{"Name", "Email"})
+// For a struct with tags (e.g. `json:"name"`), pass the tag names instead:
+// json.EncodeFields(user, []string{"name", "email"})
 ```
 
 ---
@@ -672,7 +689,7 @@ result, err := json.EncodeFields(user, []string{"Name", "Email"})
 func EncodeStream(values any, cfg ...Config) (string, error)
 ```
 
-Encodes values as a JSON stream (array).
+Encodes a slice of values as a JSON array — a passthrough alias of `Encode`; non-slice values are not wrapped into an array.
 
 **Example:**
 ```go
@@ -748,7 +765,7 @@ err := json.Parse(jsonStr, &result)
 // With security configuration
 cfg := json.SecurityConfig()
 var data map[string]any
-err := json.Parse(untrustedInput, &data, cfg)
+err = json.Parse(untrustedInput, &data, cfg)
 ```
 
 ---
@@ -870,11 +887,17 @@ func Foreach(jsonStr string, fn func(key any, item *IterableValue), cfg ...Confi
 
 Iterates over JSON arrays or objects (read-only).
 
+> **Deprecated:** `Foreach` drops errors — an invalid document or a closed
+> processor silently skips the callback entirely (D-005 decision D2). Use
+> `ForeachWithError`, which returns the error. Kept for the lifetime of v1.
+
 **Example:**
 ```go
-json.Foreach(data, func(key any, item *json.IterableValue) {
+// Prefer the error-returning form (exact replacement iterates the root: "."):
+err := json.ForeachWithError(data, ".", func(key any, item *json.IterableValue) error {
     name := item.GetString("name")
     fmt.Printf("Key: %v, Name: %s\n", key, name)
+    return nil
 })
 ```
 
@@ -897,6 +920,9 @@ func ForeachNested(jsonStr string, fn func(key any, item *IterableValue), cfg ..
 ```
 
 Recursively iterates through all nested levels.
+
+> **Deprecated:** drops errors the same way `Foreach` does (D-005 decision D2).
+> Use `ForeachNestedWithError`. Kept for the lifetime of v1.
 
 ---
 
@@ -978,7 +1004,7 @@ Recursively iterates through all nested levels with an error-returning callback.
 func ForeachFile(filePath string, fn func(key any, item *IterableValue) error, cfg ...Config) error
 ```
 
-Iterates over a JSON file without loading it entirely into memory. Supports early termination via `item.Break()`.
+Iterates over a JSON file. The whole file is loaded and parsed first (memory is O(file size)); for memory-bounded streaming of JSONL input use `StreamJSONLFile`. Supports early termination via `item.Break()`.
 
 **Example:**
 ```go
@@ -1006,7 +1032,7 @@ Iterates over a specific path within a JSON file.
 func ForeachFileChunked(filePath string, chunkSize int, fn func(chunk []*IterableValue) error, cfg ...Config) error
 ```
 
-Iterates over a JSON file in chunks for memory-efficient processing of large files.
+Iterates over a JSON file in chunks; chunks are delivered after the whole file is loaded and parsed (memory is O(file size)); for memory-bounded streaming use `StreamJSONLChunked`.
 
 ---
 
@@ -1210,7 +1236,7 @@ jsonl, err := json.ToJSONL(data, cfg)
 func NewJSONLWriter(writer io.Writer, cfg ...Config) *JSONLWriter
 ```
 
-Creates a new JSONL writer with optional Config for encoding options.
+Creates a new JSONL writer with optional Config — only `Config.EscapeHTML` is honored.
 
 ---
 
@@ -1236,17 +1262,19 @@ Validates JSON data against a schema.
 
 **Example:**
 ```go
-// Build schemas with NewSchemaWithConfig: length/range constraints
-// (MinLength, MaxLength, Minimum, Maximum, MinItems, MaxItems, MultipleOf)
+// Build schemas with NewSchema: length/range constraints
+// (MinLength, MaxLength, Minimum, Maximum, MinItems, MaxItems)
 // are enforced only via its pointer fields — a struct literal cannot set the
 // internal "constraint present" flags, so such constraints are silently
-// skipped.
+// skipped. MultipleOf is the exception: it is a plain non-pointer field,
+// enabled by any non-zero value (MultipleOf > 0) — no pointer construction
+// needed.
 minLen, zero := 1, 0.0
-schema := json.NewSchemaWithConfig(json.SchemaConfig{
+schema := json.NewSchema(json.SchemaConfig{
     Type: "object",
     Properties: map[string]*json.Schema{
-        "name": json.NewSchemaWithConfig(json.SchemaConfig{Type: "string", MinLength: &minLen}),
-        "age":  json.NewSchemaWithConfig(json.SchemaConfig{Type: "number", Minimum: &zero}),
+        "name": json.NewSchema(json.SchemaConfig{Type: "string", MinLength: &minLen}),
+        "age":  json.NewSchema(json.SchemaConfig{Type: "number", Minimum: &zero}),
     },
     Required: []string{"name"},
 })
@@ -1302,7 +1330,7 @@ if err != nil || !ok {
 
 ### DeepCopy
 
-> **Note:** This function is unexported (`deepCopy`). Deep copy is performed internally when needed by operations like `Set` and `MergeJSON`.
+> **Note:** This function is unexported (`deepCopy`). Deep copy is performed internally when needed by operations like `Get` (cache isolation) and the `Foreach*` family.
 
 ---
 
@@ -1478,7 +1506,7 @@ Returns all registered dangerous patterns.
 func SafeError(err error) string
 ```
 
-Returns a sanitized error message with sensitive paths redacted.
+Returns a best-effort client-safe message by stripping the wrapper's Op/Path context. Paths may still appear in inner error messages (e.g. validation errors embed the offending path) — redact explicitly if required.
 
 ---
 
@@ -1639,7 +1667,7 @@ func (c *Config) Clone() *Config
 func (c *Config) Validate() error
 func (c *Config) ValidateWithWarnings() []ConfigWarning
 func (c *Config) AddHook(hook Hook)
-func (c *Config) AddValidator(validator Validator)
+func (c *Config) AddValidator(validator Validator) // Deprecated: never executed; use AddHook
 func (c *Config) AddDangerousPattern(pattern DangerousPattern)
 ```
 
@@ -1648,7 +1676,8 @@ func (c *Config) AddDangerousPattern(pattern DangerousPattern)
 ```go
 func DefaultSchema() *Schema
 func DefaultSchemaConfig() SchemaConfig
-func NewSchemaWithConfig(cfg SchemaConfig) *Schema
+func NewSchema(cfg SchemaConfig) *Schema
+// NewSchemaWithConfig(cfg) — deprecated alias of NewSchema (D-005); kept for v1
 ```
 
 ---
@@ -1672,7 +1701,7 @@ if err != nil {
 defer processor.Close()
 
 // Or with configuration
-processor, err := json.New(json.DefaultConfig())
+processor, err = json.New(json.DefaultConfig())
 if err != nil {
     log.Fatal(err)
 }
@@ -1693,6 +1722,7 @@ func (p *Processor) GetBool(jsonStr, path string, defaultValue ...bool) bool
 func (p *Processor) GetArray(jsonStr, path string, defaultValue ...[]any) []any
 func (p *Processor) GetObject(jsonStr, path string, defaultValue ...map[string]any) map[string]any
 func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (map[string]any, error)
+func (p *Processor) GetWithContext(ctx context.Context, jsonStr, path string, cfg ...Config) (any, error)
 func (p *Processor) SafeGet(jsonStr, path string, cfg ...Config) AccessResult
 func (p *Processor) GetFromParsed(parsed *ParsedJSON, path string, cfg ...Config) (any, error)
 func (p *Processor) GetCompiled(jsonStr string, cp *CompiledPath) (any, error)
@@ -1712,11 +1742,17 @@ func (p *Processor) DeleteClean(jsonStr, path string, cfg ...Config) (string, er
 func (p *Processor) Marshal(value any, cfg ...Config) ([]byte, error)
 func (p *Processor) Unmarshal(data []byte, value any, cfg ...Config) error
 func (p *Processor) MarshalIndent(value any, prefix, indent string, cfg ...Config) ([]byte, error)
+// Encode is the canonical string-returning encoder (D-005 D1);
+// EncodeWithConfig is a deprecated alias kept for v1.
 func (p *Processor) Encode(value any, cfg ...Config) (string, error)
 func (p *Processor) EncodeWithConfig(value any, cfg ...Config) (string, error)
+func (p *Processor) EncodeBatch(pairs map[string]any, cfg ...Config) (string, error)
+func (p *Processor) EncodeFields(value any, fields []string, cfg ...Config) (string, error)
+func (p *Processor) EncodeStream(values any, cfg ...Config) (string, error)
 func (p *Processor) EncodePretty(value any, cfg ...Config) (string, error)
 func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error)
 func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error)
+func (p *Processor) CompactString(jsonStr string, cfg ...Config) (string, error) // D-005: mirror of json.CompactString
 func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) error
 func (p *Processor) Indent(dst *bytes.Buffer, src []byte, prefix, indent string, cfg ...Config) error
 func (p *Processor) HTMLEscape(dst *bytes.Buffer, src []byte, cfg ...Config)
@@ -1727,6 +1763,11 @@ func (p *Processor) ParseAny(jsonStr string, cfg ...Config) (any, error)
 func (p *Processor) Valid(jsonStr string, cfg ...Config) (bool, error)
 func (p *Processor) ValidBytes(data []byte) bool
 func (p *Processor) ValidateSchema(jsonStr string, schema *Schema, cfg ...Config) ([]ValidationError, error)
+
+// Comparison & Merge
+func (p *Processor) CompareJSON(json1, json2 string, cfg ...Config) (bool, error)
+func (p *Processor) MergeJSON(json1, json2 string, cfg ...Config) (string, error)
+func (p *Processor) MergeMany(jsons []string, cfg ...Config) (string, error)
 
 // File operations
 func (p *Processor) LoadFromFile(filePath string, cfg ...Config) (string, error)
@@ -1744,6 +1785,8 @@ func (p *Processor) GetStats() Stats
 func (p *Processor) GetHealthStatus() HealthStatus
 
 // Iteration
+// Deprecated (D-005 D2, error-dropping void forms): Foreach, ForeachNested —
+// use ForeachWithError / ForeachNestedWithError. Kept for the lifetime of v1.
 func (p *Processor) Foreach(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config)
 func (p *Processor) ForeachWithPath(jsonStr, path string, fn func(key any, item *IterableValue), cfg ...Config) error
 func (p *Processor) ForeachWithPathAndControl(jsonStr, path string, fn func(key any, value any) IteratorControl, cfg ...Config) error
@@ -1759,18 +1802,23 @@ func (p *Processor) ForeachFileWithPath(filePath, path string, fn func(key any, 
 func (p *Processor) ForeachFileChunked(filePath string, chunkSize int, fn func(chunk []*IterableValue) error, cfg ...Config) error
 func (p *Processor) ForeachFileNested(filePath string, fn func(key any, item *IterableValue) error, cfg ...Config) error
 
-// JSONL Streaming
-func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error) error
-func (p *Processor) StreamJSONLParallel(reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error) error
-func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error) error
-func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(chunk []*IterableValue) error) error
-func (p *Processor) ForeachJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error) error
-func (p *Processor) MapJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) (any, error)) ([]any, error)
-func (p *Processor) ReduceJSONL(reader io.Reader, initial any, fn func(acc any, item *IterableValue) any) (any, error)
-func (p *Processor) FilterJSONL(reader io.Reader, predicate func(item *IterableValue) bool) ([]*IterableValue, error)
-func (p *Processor) StreamJSONLFile(filename string, fn func(lineNum int, item *IterableValue) error) error
-func (p *Processor) CollectJSONL(reader io.Reader) ([]*IterableValue, error)
-func (p *Processor) FirstJSONL(reader io.Reader, predicate func(item *IterableValue) bool) (*IterableValue, bool, error)
+// JSONL Streaming (D-005 Phase 2: the Processor methods accept the same
+// optional trailing Config as their package-level counterparts — per-call
+// override of the processor's JSONL settings)
+func (p *Processor) StreamJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error
+func (p *Processor) StreamJSONLParallel(reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error
+func (p *Processor) StreamJSONLParallelWithContext(ctx context.Context, reader io.Reader, workers int, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error
+func (p *Processor) StreamJSONLChunked(reader io.Reader, chunkSize int, fn func(chunk []*IterableValue) error, cfg ...Config) error
+func (p *Processor) ForeachJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error
+func (p *Processor) MapJSONL(reader io.Reader, fn func(lineNum int, item *IterableValue) (any, error), cfg ...Config) ([]any, error)
+func (p *Processor) ReduceJSONL(reader io.Reader, initial any, fn func(acc any, item *IterableValue) any, cfg ...Config) (any, error)
+func (p *Processor) FilterJSONL(reader io.Reader, predicate func(item *IterableValue) bool, cfg ...Config) ([]*IterableValue, error)
+func (p *Processor) StreamJSONLFile(filename string, fn func(lineNum int, item *IterableValue) error, cfg ...Config) error
+func (p *Processor) CollectJSONL(reader io.Reader, cfg ...Config) ([]*IterableValue, error)
+func (p *Processor) FirstJSONL(reader io.Reader, predicate func(item *IterableValue) bool, cfg ...Config) (*IterableValue, bool, error)
+func (p *Processor) ParseJSONL(data []byte, cfg ...Config) ([]any, error)
+func (p *Processor) ToJSONL(data []any, cfg ...Config) ([]byte, error)
+func (p *Processor) ToJSONLString(data []any, cfg ...Config) (string, error)
 
 // Lifecycle
 func (p *Processor) Close() error
@@ -1825,7 +1873,7 @@ var ErrInvalidPath       = errors.New("invalid path format")
 var ErrProcessorClosed   = errors.New("processor is closed")
 var ErrConcurrencyLimit  = errors.New("concurrency limit exceeded")  // Returned by governed operations (Get/Set/Delete/...) when MaxConcurrency is reached. Increase MaxConcurrency in Config for high-concurrency scenarios.
 var ErrOperationTimeout  = errors.New("operation timeout")             // Deprecated: Reserved for future use; not currently returned by any operation.
-var ErrUnsupportedPath   = errors.New("unsupported path operation")
+var ErrUnsupportedPath   = errors.New("unsupported path operation")    // Deprecated: not currently returned by any operation (D-002 audit); unsupported segments surface as ErrInvalidPath or ErrTypeMismatch. Reserved for future use.
 var ErrResourceExhausted = errors.New("system resources exhausted")    // Deprecated: Reserved for future use; not currently returned by any operation.
 ```
 
@@ -2064,6 +2112,11 @@ func (p *NDJSONProcessor) ProcessReader(reader io.Reader, fn func(lineNum int, o
 
 A processor for NDJSON/JSONL files with line-by-line processing.
 
+> **Deprecated** (D-005): duplicates the `StreamJSONL` family with a
+> `map[string]any` callback. Use `Processor.StreamJSONL` / `StreamJSONLFile`
+> (same limits, same JSONL config knobs, `*IterableValue` callback with typed
+> access; `item.GetData()` yields the decoded map). Kept for the lifetime of v1.
+
 ---
 
 ### ParsedJSON
@@ -2075,7 +2128,7 @@ func (p *ParsedJSON) Data() any
 func (p *ParsedJSON) Release()
 ```
 
-A pre-parsed JSON document for reuse across multiple operations. Create with `Processor.PreParse`, then use `Processor.GetFromParsed` and `Processor.SetFromParsed` for efficient repeated access. Call `Release()` when done to return the value to the internal pool.
+A pre-parsed JSON document for reuse across multiple operations. Create with `Processor.PreParse`, then use `Processor.GetFromParsed` and `Processor.SetFromParsed` for efficient repeated access. Call `Release()` when done to drop the reference so the parsed tree can be garbage-collected.
 
 **PreParse Example:**
 ```go
@@ -2115,7 +2168,7 @@ func (w *JSONLWriter) Err() error
 func (w *JSONLWriter) Stats() JSONLStats
 ```
 
-A streaming JSONL writer with buffered output and optional pretty printing.
+A streaming JSONL writer; the optional Config controls `EscapeHTML` only — Pretty/Indent/CustomEscapes/FloatPrecision/MaxJSONSize are ignored. For full config-driven encoding per line, build lines with `Encode` and write them via `WriteRaw`.
 
 ---
 
@@ -2261,7 +2314,7 @@ type SchemaConfig struct {
 }
 ```
 
-Configuration for creating schemas with optional pointer-typed fields. Unlike `Schema`, numeric and boolean constraints use pointer types (`*int`, `*float64`, `*bool`) so that zero values are distinguishable from "not set". Use `DefaultSchemaConfig()` for defaults and `NewSchemaWithConfig(cfg)` to create.
+Configuration for creating schemas with optional pointer-typed fields. Unlike `Schema`, numeric and boolean constraints use pointer types (`*int`, `*float64`, `*bool`) so that zero values are distinguishable from "not set". Use `DefaultSchemaConfig()` for defaults and `NewSchema(cfg)` to create (`NewSchemaWithConfig` is a deprecated alias, D-005).
 
 ---
 
@@ -2365,25 +2418,33 @@ if err := iter.Err(); err != nil {
 ## Extension Interfaces
 
 These exported interfaces and types support customizing encoding, validation,
-hooking, and path parsing. They are registered via fields on `Config` (e.g.,
-`CustomEncoder`, `CustomTypeEncoders`, `CustomValidators`, `Hooks`,
-`AdditionalDangerousPatterns`) or `Processor.AddHook`.
+hooking, and path parsing. The live extension points are `Hooks` (registered
+via `Config.AddHook` / `Processor.AddHook`), `AdditionalDangerousPatterns`
+(via `Config.AddDangerousPattern`), and `CustomPathParser`.
+
+> **Deprecated (not wired):** `CustomEncoder`, `CustomTypeEncoders`
+> (`TypeEncoder`), and `CustomValidators` (`Validator`, `AddValidator`) are
+> never consulted by the encoding or operation pipelines — setting them has
+> no effect. They are retained only for v1 API compatibility. Use `Hook`
+> (`Before`) for pre-operation checks, and implement `json.Marshaler` /
+> `encoding.TextMarshaler` on your types for custom encoding.
 
 ```go
-// CustomEncoder replaces the default encoder for all values.
-// Register via Config.CustomEncoder.
+// CustomEncoder — Deprecated: not wired; never invoked by the encoding
+// pipeline. Retained for v1 compatibility.
 type CustomEncoder interface {
     Encode(value any) (string, error)
 }
 
-// TypeEncoder handles encoding for a specific reflect.Type.
-// Register via Config.CustomTypeEncoders (map[reflect.Type]TypeEncoder).
+// TypeEncoder — Deprecated: not wired; Config.CustomTypeEncoders is never
+// consulted. Retained for v1 compatibility.
 type TypeEncoder interface {
     Encode(v reflect.Value) (string, error)
 }
 
-// Validator validates a JSON string before processing.
-// Register via Config.AddValidator; all registered validators must pass.
+// Validator — Deprecated: not wired; validators registered via
+// Config.CustomValidators / AddValidator are never executed.
+// Use Hook (Before) for pre-operation checks.
 type Validator interface {
     Validate(jsonStr string) error
 }
@@ -2410,30 +2471,12 @@ const (
 )
 ```
 
-### SecurityLimits
-
-```go
-type SecurityLimits struct {
-    MaxNestingDepth            int
-    MaxSecurityValidationSize  int64
-    MaxObjectKeys              int
-    MaxArrayElements           int
-    MaxJSONSize                int64
-    MaxPathDepth               int
-}
-```
-
-A read-only summary of the security-relevant limits on a `Config`. Returned by
-the unexported `(*Config).getSecurityLimits()` helper; the same values are
-available directly on `Config` (e.g., `config.MaxJSONSize`,
-`config.MaxNestingDepthSecurity`).
-
 ### Hook, HookContext, and HookFunc
 
 ```go
 // HookContext provides context for operation hooks.
 type HookContext struct {
-    Operation string    // "get", "set", "delete", "marshal", "unmarshal"
+    Operation string    // "get", "set", "delete", "get_multiple", "set_multiple"
     JSONStr   string    // Input JSON (may contain sensitive data — do not log)
     Path      string
     Value     any
@@ -2476,6 +2519,9 @@ Convenience constructors (`LoggingHook`, `TimingHook`, `ValidationHook`,
 | `{field}` | Batch extract | `users{name}` | All user names |
 | `{flat:field}` | Flatten extract | `users{flat:skills}` | All skills flattened |
 | `[+]` | Array append (Set only) | `items[+]` | Append value to array |
+| `*` / `[*]` | Wildcard | `items[*]` | All array elements / all object keys |
+| `\.` `\\` `\[` `\]` `\{` `\}` | Escaped literal characters | `user\.name` | Key literally named `user.name` |
+| `/a/b` | JSON Pointer style | `/user/name` | Same as `user.name` |
 
 > **Note:** To access the entire JSON document, pass an empty path `""`
 > (e.g., `json.Get(data, "")` returns the full document). The `$` symbol is

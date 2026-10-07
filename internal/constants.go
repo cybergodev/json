@@ -15,11 +15,6 @@ const (
 	MaxPathLength     = 5000 // Maximum path length for security (single source of truth)
 	MaxCacheKeyLength = 1024 // Maximum cache key length to prevent memory issues
 
-	// Array index sentinel values
-	// These values are distinct from valid array indices to avoid confusion
-	// ArrayIndexInvalid is returned when the index cannot be determined
-	ArrayIndexInvalid = -999999 // Kept for backward compatibility
-
 	// ============================================================================
 	// POOL SIZE LIMITS - Single source of truth for all resource pools
 	// These limits prevent memory bloat while maintaining good pool hit rates

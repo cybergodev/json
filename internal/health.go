@@ -177,6 +177,9 @@ type CheckResult struct {
 }
 
 // GetSummary returns a formatted summary of the health status
+//
+// NOTE (D-002/R8 M5): no production caller — the root package converts
+// internal.HealthStatus to its own type; retained for tests/future use.
 func (hs *HealthStatus) GetSummary() string {
 	status := "HEALTHY"
 	if !hs.Healthy {
@@ -210,6 +213,8 @@ func (hs *HealthStatus) GetSummary() string {
 }
 
 // GetFailedChecks returns a list of failed health check names
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func (hs *HealthStatus) GetFailedChecks() []string {
 	var failed []string
 	for name, result := range hs.Checks {

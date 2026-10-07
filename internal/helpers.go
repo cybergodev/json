@@ -103,16 +103,21 @@ func deepMergeWithMode(base, override any, mode MergeMode, depth int, visited ma
 	}
 }
 
-// mapPtr extracts the pointer from a map without reflect.ValueOf allocation.
-// Uses unsafe for zero-allocation pointer extraction from known map[string]any type.
-// SAFETY: Only called on values already type-asserted to map[string]any.
+// mapPtr extracts the map header pointer for use as a cycle-detection
+// identity key. It goes through reflect.ValueOf(...).Pointer(), which returns
+// the runtime hmap pointer as a uintptr; the transient reflect.Value wrapper
+// is a small stack allocation, traded for staying off unsafe here. As with any
+// uintptr derived from a pointer, the value must not outlive the map it
+// identifies — safe for the visited-set usage in mergeObjects, whose maps are
+// held live by the caller for the duration of the merge.
 func mapPtr(m map[string]any) uintptr {
 	return reflect.ValueOf(m).Pointer()
 }
 
 // mergeObjects handles object merging based on mode
 func mergeObjects(baseMap, overrideMap map[string]any, mode MergeMode, depth int, visited map[uintptr]bool) map[string]any {
-	// Cycle detection - use mapPtr to avoid reflect.ValueOf wrapper allocation
+	// Cycle detection — mapPtr yields the map header pointer as identity
+	// (see its comment for the allocation trade-off)
 	basePtr := mapPtr(baseMap)
 	if visited[basePtr] {
 		return overrideMap
@@ -339,7 +344,7 @@ func mergeArraysDifference(baseArray, overrideArray []any) []any {
 }
 
 // ArrayItemKey generates a unique key for array item deduplication
-// PERFORMANCE v3: Use strconv for integer formatting, avoid fmt.Sprintf for common types
+// PERFORMANCE: Use strconv for integer formatting, avoid fmt.Sprintf for common types
 func ArrayItemKey(item any) string {
 	switch v := item.(type) {
 	case string:
@@ -380,7 +385,7 @@ func ArrayItemKey(item any) string {
 
 // FormatNumberForDedup formats a number for deduplication key generation.
 // Handles edge cases: NaN, Inf, and values outside int64 range.
-// PERFORMANCE v2: Uses strconv instead of fmt.Sprintf for integer path.
+// PERFORMANCE: Uses strconv instead of fmt.Sprintf for integer path.
 func FormatNumberForDedup(f float64) string {
 	if !math.IsInf(f, 0) && !math.IsNaN(f) && f >= math.MinInt64 && f <= math.MaxInt64 && f == float64(int64(f)) {
 		return strconv.FormatInt(int64(f), 10)
@@ -388,30 +393,18 @@ func FormatNumberForDedup(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
-// IsJSONPointerPath checks if a path uses JSON Pointer format
-func IsJSONPointerPath(path string) bool {
-	return path != "" && path[0] == '/'
-}
-
-// IsDotNotationPath checks if a path uses dot notation format
-func IsDotNotationPath(path string) bool {
-	return path != "" && path != "." && path[0] != '/'
-}
-
 // IsArrayPath checks if a path contains array access
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func IsArrayPath(path string) bool {
 	return strings.Contains(path, "[") && strings.Contains(path, "]")
 }
 
 // IsSlicePath checks if a path contains slice notation
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func IsSlicePath(path string) bool {
 	return strings.Contains(path, "[") && strings.Contains(path, ":") && strings.Contains(path, "]")
-}
-
-// IsJSONObject checks if data is a JSON object (map[string]any)
-func IsJSONObject(data any) bool {
-	_, ok := data.(map[string]any)
-	return ok
 }
 
 // IsJSONArray checks if data is a JSON array ([]any)
@@ -433,45 +426,9 @@ func IsJSONPrimitive(data any) bool {
 	}
 }
 
-// TryConvertToArray attempts to convert a map to an array if it has numeric keys
-func TryConvertToArray(m map[string]any) ([]any, bool) {
-	const maxSparseRatio = 10 // Maximum allowed ratio of max_index / key_count
-
-	if len(m) == 0 {
-		return []any{}, true
-	}
-
-	maxIndex := -1
-	for key := range m {
-		if index, err := strconv.Atoi(key); err == nil && index >= 0 {
-			if index > maxIndex {
-				maxIndex = index
-			}
-		} else {
-			return nil, false
-		}
-	}
-
-	// Check for sparse array - if max index is much larger than key count,
-	// the resulting array would have too many nil elements
-	if maxIndex > 0 && maxIndex > len(m)*maxSparseRatio {
-		// Sparse array detected - don't convert to avoid memory waste
-		return nil, false
-	}
-
-	arr := make([]any, maxIndex+1)
-	for key, value := range m {
-		if index, err := strconv.Atoi(key); err == nil {
-			arr[index] = value
-		}
-	}
-
-	return arr, true
-}
-
 // IndexIgnoreCase finds a pattern in s case-insensitively without allocation
 // This is a shared utility function used by multiple packages for security pattern matching
-// PERFORMANCE v2: Optimized with reduced branching and batch processing
+// PERFORMANCE: Optimized with reduced branching and batch processing
 func IndexIgnoreCase(s, pattern string) int {
 	plen := len(pattern)
 	if plen == 0 {
@@ -515,7 +472,7 @@ func IndexIgnoreCase(s, pattern string) int {
 }
 
 // matchPatternIgnoreCaseFast checks if s matches pattern case-insensitively
-// PERFORMANCE v2: Unrolled loop for common pattern lengths
+// PERFORMANCE: Unrolled loop for common pattern lengths
 func matchPatternIgnoreCaseFast(s, pattern string) bool {
 	n := len(pattern)
 	if len(s) != n {
@@ -636,6 +593,10 @@ func cleanupArrayCompact(arr []any, compactArrays bool) []any {
 // ConvertNumbersToFloat recursively converts json.Number and Number types to float64
 // This is needed because standard json.Marshal encodes json.Number as strings
 // PERFORMANCE: Pre-allocates result containers with capacity hints
+//
+// NOTE (D-002/R8 M5): no production caller — the root package uses its own
+// convertLibraryNumbers (helpers.go, distinct depth limit); retained for
+// tests/future use.
 func ConvertNumbersToFloat(data any) any {
 	return convertNumbersToFloatDepth(data, 0)
 }

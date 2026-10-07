@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -143,15 +144,11 @@ func TestSecurityValidation(t *testing.T) {
 			// Generate deeply nested JSON
 			deepJSON := genNestedJSON(50, "deep") // 50 levels
 
+			// SecurityConfig caps nesting at 30, so 50 levels must be rejected.
 			_, err := processor.Get(deepJSON, "a")
-			// SecurityConfig has conservative nesting depth limits
-			if err != nil {
-				var jsonErr *JsonsError
-				if errors.As(err, &jsonErr) {
-					helper.AssertTrue(
-						jsonErr.Err == ErrDepthLimit,
-						"Expected depth limit error, got: %v", jsonErr.Err)
-				}
+			helper.AssertError(err)
+			if !errors.Is(err, ErrDepthLimit) {
+				t.Errorf("50-deep JSON under SecurityConfig: expected ErrDepthLimit, got %v", err)
 			}
 		})
 	})
@@ -234,16 +231,23 @@ func TestSecurityValidation(t *testing.T) {
 			},
 			{
 				name: "InvalidSequence",
-				json: `{"invalid": "test\xFF\xFE"}`,
+				// Interpreted literal: real invalid UTF-8 bytes, not the
+				// four ASCII characters \xFF\xFE.
+				json: "{\"invalid\": \"test\xFF\xFE\"}",
 				path: "invalid",
 			},
 		}
 
 		for _, tt := range unicodeTests {
 			t.Run(tt.name, func(t *testing.T) {
-				helper.AssertNoPanic(func() {
-					processor.Get(tt.json, tt.path)
-				})
+				// Valid Unicode round-trips without error; invalid UTF-8
+				// sequences are rejected by input validation.
+				_, err := processor.Get(tt.json, tt.path)
+				if tt.name == "InvalidSequence" {
+					helper.AssertError(err)
+				} else {
+					helper.AssertNoError(err)
+				}
 			})
 		}
 	})
@@ -255,11 +259,9 @@ func TestSecurityValidation(t *testing.T) {
 		// Test JSON with BOM (Byte Order Mark)
 		jsonWithBOM := "\xEF\xBB\xBF" + `{"data": "value"}`
 
-		result, err := processor.Get(jsonWithBOM, "data")
-		// Should handle BOM gracefully
-		if err == nil {
-			helper.AssertNotNil(result)
-		}
+		// A leading BOM is rejected, not silently stripped.
+		_, err := processor.Get(jsonWithBOM, "data")
+		helper.AssertError(err)
 	})
 }
 
@@ -271,13 +273,12 @@ func TestSecurityEdgeCases(t *testing.T) {
 		processor, _ := New(SecurityConfig())
 		defer processor.Close()
 
-		jsonWithNull := `{"data": "test\x00middle"}`
+		// Interpreted literal: a real NUL byte inside a string value.
+		jsonWithNull := "{\"data\": \"test\x00middle\"}"
 		_, err := processor.Get(jsonWithNull, "data")
-		// Should not panic
-		helper.AssertNoPanic(func() {
-			processor.Get(jsonWithNull, "data")
-		})
-		_ = err // May or may not error depending on implementation
+		if err == nil {
+			t.Error("NUL byte inside a string value: expected rejection, got nil error")
+		}
 	})
 
 	t.Run("OverlongPath", func(t *testing.T) {
@@ -291,8 +292,10 @@ func TestSecurityEdgeCases(t *testing.T) {
 		}
 
 		testData := `{"a": {"b": "value"}}`
-		// Library handles long paths gracefully
-		_, _ = processor.Get(testData, longPath)
+		// The over-long path must be rejected, not silently navigated.
+		if _, err := processor.Get(testData, longPath); err == nil {
+			t.Error("1001-segment path: expected rejection, got nil error")
+		}
 	})
 
 	t.Run("MassiveArrayIndex", func(t *testing.T) {
@@ -300,8 +303,15 @@ func TestSecurityEdgeCases(t *testing.T) {
 		defer processor.Close()
 
 		testData := `{"arr": [1, 2, 3]}`
-		// Library handles out of bounds gracefully
-		_, _ = processor.Get(testData, "arr[999999999]")
+		// The index is beyond the reasonable-range guard and is rejected as
+		// an invalid path rather than silently resolving to nil.
+		v, err := processor.Get(testData, "arr[999999999]")
+		if err == nil {
+			t.Error("massive array index: expected rejection, got nil error")
+		}
+		if v != nil {
+			t.Errorf("massive array index: got %v, want nil", v)
+		}
 	})
 
 	t.Run("NegativeIndexEdgeCases", func(t *testing.T) {
@@ -343,466 +353,6 @@ func generateLargeJSON(size int) string {
 // ============================================================================
 // File Security Tests (from file_security_test.go)
 // ============================================================================
-
-// TestWindowsDeviceNames tests Windows reserved device name detection
-func TestWindowsDeviceNames(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific test on non-Windows platform")
-	}
-
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "CON device",
-			filePath:    "CON",
-			expectError: true,
-			description: "Windows reserved device name CON",
-		},
-		{
-			name:        "PRN device",
-			filePath:    "PRN",
-			expectError: true,
-			description: "Windows reserved device name PRN",
-		},
-		{
-			name:        "AUX device",
-			filePath:    "AUX",
-			expectError: true,
-			description: "Windows reserved device name AUX",
-		},
-		{
-			name:        "NUL device",
-			filePath:    "NUL",
-			expectError: true,
-			description: "Windows reserved device name NUL",
-		},
-		{
-			name:        "COM1 device",
-			filePath:    "COM1",
-			expectError: true,
-			description: "Windows COM port 1",
-		},
-		{
-			name:        "COM9 device",
-			filePath:    "COM9",
-			expectError: true,
-			description: "Windows COM port 9",
-		},
-		{
-			name:        "COM0 device",
-			filePath:    "COM0",
-			expectError: true,
-			description: "Windows COM0 (invalid but reserved)",
-		},
-		{
-			name:        "LPT1 device",
-			filePath:    "LPT1",
-			expectError: true,
-			description: "Windows LPT port 1",
-		},
-		{
-			name:        "LPT9 device",
-			filePath:    "LPT9",
-			expectError: true,
-			description: "Windows LPT port 9",
-		},
-		{
-			name:        "LPT0 device",
-			filePath:    "LPT0",
-			expectError: true,
-			description: "Windows LPT0 (invalid but reserved)",
-		},
-		{
-			name:        "CONIN device",
-			filePath:    "CONIN$",
-			expectError: true,
-			description: "Windows console input",
-		},
-		{
-			name:        "CONOUT device",
-			filePath:    "CONOUT$",
-			expectError: true,
-			description: "Windows console output",
-		},
-		{
-			name:        "device with extension",
-			filePath:    "CON.txt",
-			expectError: true,
-			description: "Reserved name with extension",
-		},
-		{
-			name:        "normal file",
-			filePath:    "normal.json",
-			expectError: false,
-			description: "Normal file name",
-		},
-		{
-			name:        "path with device",
-			filePath:    "data/CON",
-			expectError: true,
-			description: "Path containing device name",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("%s: Unexpected error for path '%s': %v", tt.description, tt.filePath, err)
-			}
-		})
-	}
-}
-
-// TestPathTraversalDetection tests path traversal attack detection
-func TestPathTraversalDetection(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "double dot traversal",
-			filePath:    "../../etc/passwd",
-			expectError: true,
-			description: "Standard path traversal",
-		},
-		{
-			name:        "URL encoded traversal",
-			filePath:    "%2e%2e/%2e%2e/etc/passwd",
-			expectError: true,
-			description: "URL encoded double dots",
-		},
-		{
-			name:        "double URL encoded",
-			filePath:    "%252e%252e/%252e%252e",
-			expectError: true,
-			description: "Double URL encoded traversal",
-		},
-		{
-			name:        "mixed encoding traversal",
-			filePath:    "..%2fetc/passwd",
-			expectError: true,
-			description: "Mixed URL and normal separator",
-		},
-		{
-			name:        "Windows backslash encoded",
-			filePath:    "..%5cetc/passwd",
-			expectError: true,
-			description: "Encoded Windows backslash",
-		},
-		{
-			name:        "UTF-8 overlong encoding",
-			filePath:    "..%c0%af/etc/passwd",
-			expectError: true,
-			description: "UTF-8 overlong encoding attack",
-		},
-		{
-			name:        "partial double encoding",
-			filePath:    "..%2e",
-			expectError: true,
-			description: "Partial double encoding",
-		},
-		{
-			name:        "null byte injection",
-			filePath:    "file.txt\x00",
-			expectError: true,
-			description: "Null byte in path",
-		},
-		{
-			name:        "newline injection",
-			filePath:    "file.txt%0a",
-			expectError: true,
-			description: "Encoded newline injection",
-		},
-		{
-			name:        "carriage return injection",
-			filePath:    "file.txt%0d",
-			expectError: true,
-			description: "Encoded CR injection",
-		},
-		{
-			name:        "tab injection",
-			filePath:    "file.txt%09",
-			expectError: true,
-			description: "Encoded tab injection",
-		},
-		{
-			name:        "five consecutive dots",
-			filePath:    ".....//etc/passwd",
-			expectError: true,
-			description: "Five dots pattern",
-		},
-		{
-			name:        "six consecutive dots",
-			filePath:    "......//etc/passwd",
-			expectError: true,
-			description: "Six dots pattern",
-		},
-		{
-			name:        "normal path",
-			filePath:    "data/user/profile.json",
-			expectError: false,
-			description: "Normal file path",
-		},
-		{
-			name:        "absolute path",
-			filePath:    "/home/user/data.json",
-			expectError: false,
-			description: "Absolute path (allowed on Unix)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				// Allow certain errors that aren't security-related
-				if !strings.Contains(err.Error(), "security") &&
-					!strings.Contains(err.Error(), "traversal") &&
-					!strings.Contains(err.Error(), "null byte") {
-					t.Errorf("%s: Unexpected error for path '%s': %v", tt.description, tt.filePath, err)
-				}
-			}
-		})
-	}
-}
-
-// TestAlternateDataStreamDetection tests ADS detection on Windows
-func TestAlternateDataStreamDetection(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific ADS test on non-Windows platform")
-	}
-
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "ADS with colon",
-			filePath:    "file.txt:stream",
-			expectError: true,
-			description: "Alternate data stream",
-		},
-		{
-			name:        "ADS with $DATA",
-			filePath:    "file.txt:$DATA",
-			expectError: true,
-			description: "ADS with $DATA stream",
-		},
-		{
-			name:        "complex ADS",
-			filePath:    "file.txt:stream:$DATA",
-			expectError: true,
-			description: "Complex ADS pattern",
-		},
-		{
-			name:        "drive letter not ADS",
-			filePath:    "C:/data/file.txt",
-			expectError: false,
-			description: "Drive letter pattern is valid",
-		},
-		{
-			name:        "drive letter with colon",
-			filePath:    "C:data/file.txt",
-			expectError: false,
-			description: "Relative path from drive",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				if strings.Contains(err.Error(), "alternate data stream") {
-					t.Errorf("%s: Unexpected ADS error for path '%s': %v", tt.description, tt.filePath, err)
-				}
-			}
-		})
-	}
-}
-
-// TestPathLengthValidation tests path length limits
-func TestPathLengthValidation(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	// Create a path that exceeds maxPathLength
-	longPath := strings.Repeat("a", maxPathLength+1)
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "exceeds max length",
-			filePath:    longPath,
-			expectError: true,
-			description: "Path exceeds maximum length",
-		},
-		{
-			name:        "exactly max length",
-			filePath:    strings.Repeat("b", maxPathLength),
-			expectError: false,
-			description: "Path at maximum length",
-		},
-		{
-			name:        "normal length",
-			filePath:    "data/user/profile.json",
-			expectError: false,
-			description: "Normal length path",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path, but got none", tt.description)
-			}
-			if !tt.expectError && err != nil {
-				if strings.Contains(err.Error(), "too long") {
-					t.Errorf("%s: Unexpected length error: %v", tt.description, err)
-				}
-			}
-		})
-	}
-}
-
-// TestInvalidCharactersInWindowsPath tests invalid character detection on Windows
-func TestInvalidCharactersInWindowsPath(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific character test on non-Windows platform")
-	}
-
-	processor, _ := New()
-	defer processor.Close()
-
-	invalidChars := []string{"<", ">", ":", "\"", "|", "?", "*"}
-
-	for _, char := range invalidChars {
-		t.Run("invalid char "+char, func(t *testing.T) {
-			// Use path where colon isn't the drive letter
-			filePath := "data" + char + "file.json"
-			if char == ":" {
-				filePath = "data" + char + "\\file.json"
-			}
-
-			err := processor.validateFilePath(filePath)
-			// Should error for invalid characters (except valid drive letter colon)
-			if char != ":" || !strings.HasPrefix(filePath, "C:") && !strings.HasPrefix(filePath, "D:") {
-				if err == nil {
-					t.Errorf("Expected error for invalid character '%s', but got none", char)
-				}
-			}
-		})
-	}
-}
-
-// TestNullByteDetection tests null byte detection in paths
-func TestNullByteDetection(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name     string
-		filePath string
-	}{
-		{
-			name:     "null at start",
-			filePath: "\x00file.txt",
-		},
-		{
-			name:     "null in middle",
-			filePath: "file\x00.txt",
-		},
-		{
-			name:     "null at end",
-			filePath: "file.txt\x00",
-		},
-		{
-			name:     "multiple nulls",
-			filePath: "file\x00\x00.txt",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if err == nil {
-				t.Errorf("Expected error for path with null byte '%s', but got none", tt.filePath)
-			}
-		})
-	}
-}
-
-// TestUNCPathDetection tests UNC path detection on Windows
-func TestUNCPathDetection(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific UNC test on non-Windows platform")
-	}
-
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-	}{
-		{
-			name:        "UNC with backslashes",
-			filePath:    "\\\\server\\share\\file.txt",
-			expectError: true,
-		},
-		{
-			name:        "UNC with forward slashes",
-			filePath:    "//server/share/file.txt",
-			expectError: true,
-		},
-		{
-			name:        "local path",
-			filePath:    "C:/data/file.txt",
-			expectError: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("Expected error for UNC path, but got none")
-			}
-		})
-	}
-}
 
 // TestContainsPathTraversal tests the path traversal detection helper
 func TestContainsPathTraversal(t *testing.T) {
@@ -892,287 +442,6 @@ func TestContainsConsecutiveDots(t *testing.T) {
 	}
 }
 
-// TestFilePathValidationEdgeCases tests edge cases in file path validation
-func TestFilePathValidationEdgeCases(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "empty path",
-			filePath:    "",
-			expectError: true,
-			description: "Empty path should error",
-		},
-		{
-			name:        "single character",
-			filePath:    "a",
-			expectError: false,
-			description: "Single character path",
-		},
-		{
-			name:        "current directory",
-			filePath:    ".",
-			expectError: false,
-			description: "Current directory reference",
-		},
-		{
-			name:        "parent directory",
-			filePath:    "..",
-			expectError: true,
-			description: "Parent directory reference (traversal)",
-		},
-		{
-			name:        "file with extension",
-			filePath:    "document.pdf",
-			expectError: false,
-			description: "Normal file with extension",
-		},
-		{
-			name:        "deep path",
-			filePath:    "a/b/c/d/e/f/g/h/i/j/file.txt",
-			expectError: false,
-			description: "Deep but valid path",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("%s: Unexpected error for path '%s': %v", tt.description, tt.filePath, err)
-			}
-		})
-	}
-}
-
-// TestWindowsPathValidationComponents tests Windows path validation components
-func TestWindowsPathValidationComponents(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Skipping Windows-specific test on non-Windows platform")
-	}
-
-	tests := []struct {
-		name        string
-		filePath    string
-		expectError bool
-		description string
-	}{
-		{
-			name:        "valid absolute path",
-			filePath:    "C:/Users/user/data.json",
-			expectError: false,
-			description: "Valid Windows absolute path",
-		},
-		{
-			name:        "valid relative path",
-			filePath:    "data/config.json",
-			expectError: false,
-			description: "Valid Windows relative path",
-		},
-		{
-			name:        "path with spaces",
-			filePath:    "C:/Program Files/data.json",
-			expectError: false,
-			description: "Path with spaces (valid)",
-		},
-		{
-			name:        "path with underscore",
-			filePath:    "my_data/file.json",
-			expectError: false,
-			description: "Path with underscore (valid)",
-		},
-		{
-			name:        "path with hyphen",
-			filePath:    "my-data/file.json",
-			expectError: false,
-			description: "Path with hyphen (valid)",
-		},
-		{
-			name:        "path with pipe",
-			filePath:    "data|file.json",
-			expectError: true,
-			description: "Path with pipe (invalid)",
-		},
-		{
-			name:        "path with asterisk",
-			filePath:    "data/*.json",
-			expectError: true,
-			description: "Path with asterisk (invalid)",
-		},
-		{
-			name:        "path with question mark",
-			filePath:    "data/file?.json",
-			expectError: true,
-			description: "Path with question mark (invalid)",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p, _ := New()
-			defer p.Close()
-			err := p.validateFilePath(tt.filePath)
-			if tt.expectError && err == nil {
-				t.Errorf("%s: Expected error for path '%s', but got none", tt.description, tt.filePath)
-			}
-			if !tt.expectError && err != nil {
-				t.Errorf("%s: Unexpected error for path '%s': %v", tt.description, tt.filePath, err)
-			}
-		})
-	}
-}
-
-// TestSecurityValidationWithRealPaths tests security validation with realistic paths
-func TestSecurityValidationWithRealPaths(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	validPaths := []string{
-		"data/users/profile.json",
-		"config/settings.json",
-		"logs/app.log",
-		"backup/data.bak",
-		"cache/index.tmp",
-	}
-
-	for _, path := range validPaths {
-		t.Run("valid_"+path, func(t *testing.T) {
-			err := processor.validateFilePath(path)
-			if err != nil {
-				// Some errors are OK (like file not found), but not security errors
-				if strings.Contains(err.Error(), "security") ||
-					strings.Contains(err.Error(), "traversal") ||
-					strings.Contains(err.Error(), "null byte") {
-					t.Errorf("Valid path '%s' failed security validation: %v", path, err)
-				}
-			}
-		})
-	}
-}
-
-// TestFilePathNormalization tests file path normalization
-func TestFilePathNormalization(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	tests := []struct {
-		name     string
-		input    string
-		validate func(t *testing.T, err error)
-	}{
-		{
-			name:  "valid normalized path",
-			input: "data/config.json",
-			validate: func(t *testing.T, err error) {
-				if err != nil && strings.Contains(err.Error(), "security") {
-					t.Errorf("Unexpected security error: %v", err)
-				}
-			},
-		},
-		{
-			name:  "path with extra separators",
-			input: "data///config.json",
-			validate: func(t *testing.T, err error) {
-				if err != nil && strings.Contains(err.Error(), "security") {
-					t.Errorf("Unexpected security error: %v", err)
-				}
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.input)
-			tt.validate(t, err)
-		})
-	}
-}
-
-// TestSymlinkValidation tests symlink validation in paths
-func TestSymlinkValidation(t *testing.T) {
-	p, _ := New()
-	defer p.Close()
-
-	// This test checks that the validation logic handles symlinks properly
-	// We can't create actual symlinks in tests, but we can verify the logic exists
-
-	tests := []struct {
-		name        string
-		filePath    string
-		description string
-	}{
-		{
-			name:        "potential symlink path",
-			filePath:    "data/link/target.json",
-			description: "Path that might contain symlink",
-		},
-		{
-			name:        "normal file path",
-			filePath:    "data/file.json",
-			description: "Regular file path",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Just verify the validation runs without panicking
-			_ = p.validateFilePath(tt.filePath)
-			t.Logf("Validation completed for: %s", tt.description)
-		})
-	}
-}
-
-// TestCrossPlatformPathValidation tests path validation works on both platforms
-func TestCrossPlatformPathValidation(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	universalPaths := []struct {
-		name        string
-		path        string
-		expectError bool
-	}{
-		{
-			name:        "simple json file",
-			path:        "data.json",
-			expectError: false,
-		},
-		{
-			name:        "nested path",
-			path:        "users/admin/profile.json",
-			expectError: false,
-		},
-		{
-			name:        "path traversal attempt",
-			path:        "../../../etc/passwd",
-			expectError: true,
-		},
-		{
-			name:        "null byte injection",
-			path:        "file.txt\x00 malicious",
-			expectError: true,
-		},
-	}
-
-	for _, tt := range universalPaths {
-		t.Run(tt.name, func(t *testing.T) {
-			err := processor.validateFilePath(tt.path)
-			if tt.expectError && err == nil {
-				t.Errorf("Expected error for path '%s', but got none", tt.path)
-			}
-		})
-	}
-}
-
 // ============================================================================
 // Sampling Bypass Security Tests
 // Tests for CVE-like vulnerability where attacks could be hidden between sample points
@@ -1250,11 +519,12 @@ func TestSamplingBypassFixed(t *testing.T) {
 		// Even if individual fragments aren't complete patterns
 		maliciousJSON := sb.String()
 
-		// This should either be caught by pattern fragments or density check
-		// The exact behavior depends on the implementation details
+		// The malformed fragment values also make this invalid JSON, so the
+		// parse must fail either way — never a silent success or a panic.
 		var result any
-		_ = processor.Parse(maliciousJSON, &result)
-		// We just verify it doesn't panic or crash
+		if err := processor.Parse(maliciousJSON, &result); err == nil {
+			t.Error("distributed fragment payload: expected rejection, got nil error")
+		}
 	})
 
 	t.Run("LegitimateLargeJSON", func(t *testing.T) {
@@ -1734,6 +1004,82 @@ func TestPanicProtectionForeachFileChunked(t *testing.T) {
 	sec003AssertPanicked(t, err)
 }
 
+// panickingPathParser implements PathParser by panicking, pinning the
+// parsePathGuarded recover in path.go / processor_cache.go.
+type panickingPathParser struct{}
+
+func (panickingPathParser) ParsePath(path string) ([]PathSegment, error) {
+	panic("boom from CustomPathParser")
+}
+
+// panickingValidator implements Validator by panicking, pinning the
+// validationChain recover in interfaces.go.
+type panickingValidator struct{}
+
+func (panickingValidator) Validate(jsonStr string) error {
+	panic("boom from Validator")
+}
+
+// panickingHook implements Hook with a panicking Before, pinning the
+// hookChain.executeBefore recover in interfaces.go.
+type panickingHook struct{}
+
+func (panickingHook) Before(HookContext) error { panic("boom from Hook.Before") }
+
+func (panickingHook) After(_ HookContext, result any, err error) (any, error) {
+	return result, err
+}
+
+// TestPanicProtectionExtensionPoints pins SEC-003 across the user-implemented
+// extension interfaces: a panicking CustomPathParser, Validator, or Hook is
+// recovered and surfaced as an error (or, for the chain, stops execution)
+// rather than crashing the program.
+func TestPanicProtectionExtensionPoints(t *testing.T) {
+	t.Run("CustomPathParser via Get", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CustomPathParser = panickingPathParser{}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+
+		_, err = p.Get(`{"a":1}`, "a")
+		sec003AssertPanicked(t, err)
+	})
+
+	t.Run("CustomPathParser via Set", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.CustomPathParser = panickingPathParser{}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+
+		_, err = p.Set(`{"a":1}`, "a", 2)
+		sec003AssertPanicked(t, err)
+	})
+
+	t.Run("validationChain", func(t *testing.T) {
+		chain := validationChain{panickingValidator{}}
+		sec003AssertPanicked(t, chain.Validate(`{}`))
+	})
+
+	t.Run("Hook Before via Get", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.AddHook(panickingHook{})
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer p.Close()
+
+		_, err = p.Get(`{"a":1}`, "a")
+		sec003AssertPanicked(t, err)
+	})
+}
+
 // ============================================================================
 // CONTAINER-LIMIT TESTS (merged from container_limits_test.go)
 // ============================================================================
@@ -1969,12 +1315,12 @@ func TestSecurity_NonASCIIPath(t *testing.T) {
 }
 
 // TestP001WindowPrefilterEquivalence guards the scanWindowForPatterns
-// single-pass prefilter: windowContainsDangerousMatch must report true exactly
-// when at least one built-in dangerous pattern occurs case-insensitively in
-// the window (context-free — the word-boundary check stays with the ordered
-// loop). If this equivalence breaks in EITHER direction, scanning either
-// misses dangerous content (false negative) or the prefilter gains nothing
-// (always-true degeneration).
+// single-pass scanner's existence mode: scanWindowPatterns(w, nil) must
+// report true exactly when at least one built-in dangerous pattern occurs
+// case-insensitively in the window (context-free — the word-boundary check
+// stays with the ordered loop). If this equivalence breaks in EITHER
+// direction, scanning either misses dangerous content (false negative) or
+// the pass gains nothing (always-true degeneration).
 func TestP001WindowPrefilterEquivalence(t *testing.T) {
 	corpus := []string{
 		// Clean windows: candidate first letters present, no full pattern.
@@ -2021,8 +1367,1060 @@ func TestP001WindowPrefilterEquivalence(t *testing.T) {
 				break
 			}
 		}
-		if got := windowContainsDangerousMatch(w); got != reference {
+		if got := scanWindowPatterns(w, nil); got != reference {
 			t.Errorf("window %q: prefilter=%v, reference(any pattern occurrence)=%v", w, got, reference)
 		}
+	}
+}
+
+// TestP003FirstOccurrenceRecording guards the recording mode of
+// scanWindowPatterns: the position filed for every built-in pattern must equal
+// what a per-pattern fastIndexIgnoreCase scan reports (its FIRST occurrence).
+// scanWindowForPatterns builds its ordered reporting loop on these positions,
+// so a drift here would change which occurrence the word-context check sees.
+func TestP003FirstOccurrenceRecording(t *testing.T) {
+	corpus := []string{
+		// Clean window: nothing recorded.
+		`{"id":1,"name":"user42","note":"evaluate options on time"}`,
+		// Single occurrences, several patterns, mixed case.
+		`{"x":"ONERROR"}`,
+		`{"x":"<script>alert(1)</script>"}`,
+		`{"x":"setTimeout(f,10)"}`,
+		// Same pattern twice: only the FIRST position may be recorded.
+		`{"a":"onerror later","b":"earlier onerror"}`,
+		// Position order vs pattern order: "atob(" occurs EARLIER in the
+		// window than "__proto__", but both must be recorded independently.
+		`{"a":"atob(x)","b":"__proto__"}`,
+		// First occurrence in benign word context, second standalone.
+		`{"x":"myonerrorx and onerror"}`,
+		// Edge shapes.
+		``,
+		`onload`,
+		`{"a":"eval(`,
+		strings.Repeat("x", 5000) + "eval(",
+	}
+
+	for _, w := range corpus {
+		first := make([]int32, len(dangerousPatterns))
+		for i := range first {
+			first[i] = -1
+		}
+		scanWindowPatterns(w, first)
+
+		for i, dp := range dangerousPatterns {
+			want := fastIndexIgnoreCase(w, dp.pattern)
+			if got := int(first[i]); got != want {
+				t.Errorf("window %q pattern %q: recorded first=%d, fastIndexIgnoreCase=%d",
+					w, dp.pattern, got, want)
+			}
+		}
+	}
+}
+
+// TestP003ScanWindowErrorEquivalence pins scanWindowForPatterns to the
+// pre-P-003 shape (existence prefilter, then one fastIndexIgnoreCase rescan
+// per pattern): both must select the SAME error — same pattern (list order,
+// not position order) and same message — or both return nil. This includes
+// the historical quirk that only a pattern's FIRST occurrence gets the
+// word-context check: a benign first occurrence shields a dangerous second
+// one, and the rewrite must preserve that exactly.
+func TestP003ScanWindowErrorEquivalence(t *testing.T) {
+	sv := newSecurityValidator(
+		100*1024*1024, // maxJSONSize
+		1024,          // maxPathLength
+		200,           // maxNestingDepth
+		false,         // fullSecurityScan
+		false,         // disableDefaultPatterns
+		false,         // detectDuplicateKeys
+		nil,           // additionalPatterns
+		100000,        // maxObjectKeys
+		100000,        // maxArrayElements
+	)
+	// scanCustomPatterns reads the global registry live; keep it empty so the
+	// comparison isolates the built-in path.
+	clearDangerousPatterns()
+	defer clearDangerousPatterns()
+
+	legacyErr := func(w string) error {
+		if scanWindowPatterns(w, nil) {
+			for _, dp := range dangerousPatterns {
+				if idx := fastIndexIgnoreCase(w, dp.pattern); idx != -1 {
+					if sv.isDangerousContextIgnoreCase(w, idx, len(dp.pattern)) {
+						return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
+					}
+				}
+			}
+		}
+		return nil
+	}
+
+	corpus := []string{
+		// Clean.
+		`{"id":1,"note":"plain"}`,
+		// Dangerous in context: each must error identically on both paths.
+		`{"x":"<script>alert(1)</script>"}`,
+		`{"x":"javascript:alert(1)"}`,
+		`{"x":"eval(1)"}`,
+		`{"x":"__proto__"}`,
+		`{"x":"constructor[0]"}`,
+		`{"x":"prototype.x"}`,
+		`{"x":"document.cookie"}`,
+		`{"x":"__defineGetter__"}`,
+		// Occurs but word context declines: both paths return nil.
+		`{"x":"myonerrorx"}`,
+		`{"x":"evaluate the options"}`,
+		// Quirk preservation: FIRST occurrence benign shields the SECOND
+		// standalone one — both paths must return nil.
+		`{"x":"myonerrorx then onerror"}`,
+		// Position vs list order: "atob(" appears before "__proto__", but
+		// __proto__ (list index 0) wins the error on both paths.
+		`{"a":"atob(x)","b":"__proto__"}`,
+		// Case variations.
+		`{"x":"OnErRoR=y"}`,
+		`{"x":"VbScRiPt:go"}`,
+		// Truncated at pattern boundary.
+		`{"a":"eval(`,
+		// Standalone edge shapes.
+		``,
+		`onerror`,
+		`<svg`,
+	}
+
+	for _, w := range corpus {
+		want := legacyErr(w)
+		got := sv.scanWindowForPatterns(w)
+
+		switch {
+		case want == nil && got == nil:
+			// agree: benign
+		case want == nil || got == nil:
+			t.Errorf("window %q: legacy error=%v, new error=%v", w, want, got)
+		case want.Error() != got.Error():
+			t.Errorf("window %q: legacy error=%q, new error=%q", w, want.Error(), got.Error())
+		}
+	}
+}
+
+// TestP003SensitivePatternScan guards the single-pass sensitive-pattern scan:
+// the first-byte-bucketed walk must report true exactly when the previous
+// per-pattern strings.Contains loop did (same lowercasing, same existence
+// semantics), for benign keys/values, occurrences in any position or case,
+// boundary lengths, and strings dense in bucket-first-bytes.
+func TestP003SensitivePatternScan(t *testing.T) {
+	sv := newSecurityValidator(
+		100*1024*1024, 1024, 200,
+		false, false, false, nil, 100000, 100000,
+	)
+	defer sv.Close()
+
+	reference := func(s string) bool {
+		if len(s) < minSensitivePatternLen {
+			return false
+		}
+		if !isLowercaseASCII(s) {
+			s = strings.ToLower(s)
+		}
+		for _, p := range sensitivePatterns {
+			if strings.Contains(s, p) {
+				return true
+			}
+		}
+		return false
+	}
+
+	corpus := []string{
+		// Benign keys and values.
+		"user", "name", "email", "description", "note about nothing special",
+		"created_at", "isActive", "plain data 42",
+		strings.Repeat("description_", 200),
+		// Occurrences: prefix, suffix, mid-word, mixed case, exact pattern.
+		"password", "user_password", "PASSWORD", "paSSwordX", "x-password-y",
+		"bearer token", "X-API-KEY", "authorization", "social_security_number",
+		"aws_secret", "session_id", "creditcard", "jwt", "cvv",
+		// Substring traps: benign words CONTAINING a short pattern.
+		"pinned", "authentication", "secretsauce", "keyed",
+		// Boundary lengths: below/above the shortest pattern (3).
+		"s", "cv", "jw", "pwd", "pw",
+		// Non-ASCII that lowercases differently than the pattern.
+		"PÄSSWORD", "pässword",
+		"",
+	}
+
+	for _, s := range corpus {
+		want := reference(s)
+		if got := sv.containsSensitivePatterns(s); got != want {
+			t.Errorf("containsSensitivePatterns(%q) = %v, reference(per-pattern loop) = %v", s, got, want)
+		}
+	}
+}
+
+// TestP003StructureLimits pins validateStructureLimits to the pre-P-003
+// two-pass shape: nesting scan to completion, then the container scan only
+// when nesting passed. The merged single pass must select the SAME error for
+// every (validator, document) pair — including the precedence rule that a
+// nesting violation beats a container violation even when the container one
+// occurs EARLIER in the text, the first-textual-violation order within each
+// class, the end-of-scan unbalanced check, and the large-input-only bracket
+// anomaly checks (consecutive opens / total brackets, ≥64KB).
+func TestP003StructureLimits(t *testing.T) {
+	validators := []struct {
+		name                string
+		maxNestingDepth     int
+		maxObjectKeys       int
+		maxArrayElements    int
+		detectDuplicateKeys bool
+	}{
+		{"defaults", 200, 100000, 100000, false},
+		{"tight-depth", 3, 100000, 100000, false},
+		{"tight-keys", 200, 5, 100000, false},
+		{"tight-elements", 200, 100000, 5, false},
+		{"dup-detection", 200, 100000, 100000, true},
+		{"unlimited-containers", 200, -1, -1, false},
+		{"zero-depth-defaults-to-100", 0, 100000, 100000, false},
+	}
+
+	pad := strings.Repeat(" ", securityNestingValidationThreshold) // pushes docs over 64KB
+	oversizedObj := `{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9}`
+
+	docs := []string{
+		// Clean documents of various shapes.
+		`{}`,
+		`[]`,
+		`[[[]]]`,
+		`{"a":[1,2,{"b":3}],"s":"x\"y\\z","t":true}`,
+		`{"brackets":"[not a bracket] {also not}","esc":"\\"quoted\\""}`,
+		`  [ 1 , 2 ]  `,
+		`"just a string"`,
+		`123`,
+		`null`,
+		// Nesting-class violations.
+		strings.Repeat("[", 4),         // exceeds tight-depth(3); unbalanced
+		`{"a":{"b":{"c":{"d":1}}}}`,    // depth 4 via objects
+		strings.Repeat("[", 101),       // exceeds zero-depth fallback (100)
+		pad + strings.Repeat("[", 101), // large path: consecutive opens fire first
+		strings.Repeat("[]", 500001),   // large path: total brackets > 1M
+		// Unbalanced (end-of-scan, nesting class).
+		`[`,
+		`]`,
+		`{]`,
+		`{"a":1]`,
+		// Container-class violations.
+		oversizedObj,                // 10 keys > tight-keys(5)
+		`[1,2,3,4,5,6]`,             // 6 elements > tight-elements(5)
+		`{"a":1,"a":2}`,             // duplicate key (dup-detection validator)
+		`{"a":1,"a":2,"b":3,"c":4}`, // dup fires before oversized-pop
+		// Both classes: container violation textually EARLIER, nesting later —
+		// the nesting error must win (the container scan never used to run).
+		oversizedObj + strings.Repeat("[", 4),
+		// Clean large documents.
+		`{"pad":"` + strings.Repeat("a", securityNestingValidationThreshold) + `"}`,
+		pad + `[[[[]]]]`,
+	}
+
+	for _, v := range validators {
+		sv := newSecurityValidator(
+			100*1024*1024, 1024, v.maxNestingDepth,
+			false, false, v.detectDuplicateKeys, nil,
+			v.maxObjectKeys, v.maxArrayElements,
+		)
+		reference := func(doc string) error {
+			if err := sv.validateNestingDepth(doc); err != nil {
+				return err
+			}
+			return sv.validateContainerCounts(doc)
+		}
+
+		for _, doc := range docs {
+			want := reference(doc)
+			got := sv.validateStructureLimits(doc)
+
+			switch {
+			case want == nil && got == nil:
+				// agree: valid
+			case want == nil || got == nil:
+				t.Errorf("validator %s doc %.40q: reference=%v, merged=%v", v.name, doc, want, got)
+			case want.Error() != got.Error():
+				t.Errorf("validator %s doc %.40q: reference=%q, merged=%q", v.name, doc, want.Error(), got.Error())
+			}
+		}
+	}
+}
+
+// ============================================================================
+// TEST-ONLY SECURITY HELPERS (moved from security.go in the D-002 cleanup:
+// they had no production callers and exist only as test conveniences).
+// ============================================================================
+
+// clearDangerousPatterns removes all custom patterns from the global registry.
+// Use with caution - this does not affect built-in patterns.
+func clearDangerousPatterns() {
+	globalPatternRegistry.Clear()
+}
+
+// validateNestingDepth and validateContainerCounts below are the pre-P-003
+// two-pass structural scans, preserved verbatim (moved from security.go when
+// validateStructureLimits merged them into one pass) as the REFERENCE
+// implementation TestP003StructureLimits checks the merged walk against:
+// reference = validateNestingDepth to completion, then validateContainerCounts
+// only if nesting passed. They have no production callers. Their direct test
+// (TestValidateContainerCounts* table) also keeps exercising them unchanged.
+func (sv *securityValidator) validateNestingDepth(jsonStr string) error {
+	// SECURITY: Validate nesting depth for all inputs regardless of size.
+	// Use a faster scan for small JSON (< 64KB) by only checking depth,
+	// and full scan for larger inputs that also track total brackets.
+	// Small but deeply nested JSON can still cause stack overflow during processing.
+	if len(jsonStr) < securityNestingValidationThreshold {
+		// Fast path for small JSON: only check max depth, no bracket counting
+		depth := 0
+		inString := false
+		escaped := false
+		maxCheckDepth := sv.maxNestingDepth
+		if maxCheckDepth <= 0 {
+			maxCheckDepth = 100
+		}
+		for i := 0; i < len(jsonStr); i++ {
+			c := jsonStr[i]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if inString {
+				if c == byte(0x5c) {
+					escaped = true
+				} else if c == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inString = true
+			case '{', '[':
+				depth++
+				if depth > maxCheckDepth {
+					return newOperationError("validate_nesting_depth",
+						fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, maxCheckDepth), ErrDepthLimit)
+				}
+			case '}', ']':
+				depth--
+			}
+			// A backslash outside a string (unreachable as an escape marker) is
+			// simply ignored, matching the parser's tolerance for stray bytes —
+			// malformed JSON is rejected downstream by encoding/json anyway.
+		}
+		if depth != 0 {
+			return newOperationError("validate_nesting_depth",
+				"unbalanced brackets in JSON structure", ErrInvalidJSON)
+		}
+		return nil
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	maxCheckDepth := sv.maxNestingDepth
+	if maxCheckDepth <= 0 {
+		maxCheckDepth = 100 // Default max depth
+	}
+
+	// SECURITY: Track total bracket count to prevent DoS attacks
+	// Attackers can create shallow but massive bracket structures
+	// Set limit high enough for normal use but prevent excessive structures
+	totalBrackets := 0
+	maxTotalBrackets := securityMaxTotalBrackets
+
+	// SECURITY: Track consecutive opening brackets for anomaly detection
+	consecutiveOpens := 0
+	maxConsecutiveOpens := securityMaxConsecutiveOpens
+
+	// Use byte-level iteration for better performance
+	// Check all JSON regardless of size to prevent depth-based attacks
+	for i := 0; i < len(jsonStr); i++ {
+		c := jsonStr[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		switch c {
+		case '\\':
+			if inString {
+				escaped = true
+			}
+		case '"':
+			inString = !inString
+		case '{', '[':
+			if !inString {
+				depth++
+				totalBrackets++
+				consecutiveOpens++
+
+				// SECURITY: Check for too many consecutive opens (potential attack)
+				if consecutiveOpens > maxConsecutiveOpens {
+					return newOperationError("validate_nesting_depth",
+						fmt.Sprintf("too many consecutive opening brackets at position %d", i), ErrDepthLimit)
+				}
+
+				if depth > maxCheckDepth {
+					return newOperationError("validate_nesting_depth",
+						fmt.Sprintf("nesting depth %d exceeds maximum %d", depth, maxCheckDepth), ErrDepthLimit)
+				}
+
+				// SECURITY: Check total bracket count
+				if totalBrackets > maxTotalBrackets {
+					return newOperationError("validate_nesting_depth",
+						fmt.Sprintf("total bracket count %d exceeds maximum %d", totalBrackets, maxTotalBrackets), ErrDepthLimit)
+				}
+			}
+		case '}', ']':
+			if !inString {
+				depth--
+				totalBrackets++
+				consecutiveOpens = 0 // Reset on closing bracket
+			}
+		default:
+			consecutiveOpens = 0 // Reset on non-bracket character
+		}
+	}
+
+	// SECURITY: Check for unbalanced brackets
+	if depth != 0 {
+		return newOperationError("validate_nesting_depth",
+			"unbalanced brackets in JSON structure", ErrInvalidJSON)
+	}
+
+	return nil
+}
+
+// validateContainerCounts is the pre-P-003 container scan (reference for
+// TestP003StructureLimits; see the comment above validateNestingDepth).
+func (sv *securityValidator) validateContainerCounts(jsonStr string) error {
+	maxKeys := sv.maxObjectKeys
+	maxElements := sv.maxArrayElements
+	// Both unlimited — nothing to enforce. (Config validation clamps these to
+	// >=100, so this is a defensive guard for the unlimited sentinel.)
+	// Duplicate-key detection reuses this same walk, so it must also proceed.
+	if maxKeys <= 0 && maxElements <= 0 && !sv.detectDuplicateKeys {
+		return nil
+	}
+
+	detectDup := sv.detectDuplicateKeys
+
+	stack := make([]containerFrame, 0, 32)
+
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(jsonStr); i++ {
+		c := jsonStr[i]
+
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inString {
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+				// Duplicate-key check (GEN-001): a string just closed in key
+				// position of an object frame. Containers cannot open inside
+				// a string, so the frame seen here is the one that was on top
+				// when the key opened. Keys are compared as raw bytes: two
+				// spellings that differ only by escape encoding (e.g. "a" vs
+				// "a") are treated as distinct — the underlying parse is
+				// still last-wins for such pairs.
+				if detectDup && len(stack) > 0 {
+					top := &stack[len(stack)-1]
+					if !top.isArray && top.keyStart >= 0 {
+						key := jsonStr[top.keyStart:i]
+						top.keyStart = -1
+						if top.keySet == nil {
+							top.keySet = make(map[string]struct{}, 8)
+						}
+						if _, dup := top.keySet[key]; dup {
+							return newOperationError("validate_container_counts",
+								fmt.Sprintf("duplicate object key %q", key), ErrDuplicateKey)
+						}
+						top.keySet[key] = struct{}{}
+					}
+				}
+			}
+			continue
+		}
+
+		switch c {
+		case '"':
+			inString = true
+			if detectDup && len(stack) > 0 {
+				top := &stack[len(stack)-1]
+				// In an object, a string opening while expecting a child is a
+				// KEY (a value string only follows ':', which clears
+				// expectingChild). Array strings are values — not tracked.
+				if !top.isArray && top.expectingChild {
+					top.keyStart = i + 1
+				}
+			}
+			noteValueStart(stack)
+		case '{', '[':
+			// A container open is itself a value start in its parent...
+			noteValueStart(stack)
+			// ...then descend into the new container.
+			stack = append(stack, containerFrame{
+				isArray:        c == '[',
+				expectingChild: true,
+				keyStart:       -1,
+			})
+		case '}', ']':
+			if len(stack) > 0 {
+				frame := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if frame.isArray {
+					if maxElements > 0 && frame.count > maxElements {
+						return newOperationError("validate_container_counts",
+							fmt.Sprintf("array has %d elements, exceeds maximum %d", frame.count, maxElements),
+							ErrSizeLimit)
+					}
+				} else {
+					if maxKeys > 0 && frame.count > maxKeys {
+						return newOperationError("validate_container_counts",
+							fmt.Sprintf("object has %d keys, exceeds maximum %d", frame.count, maxKeys),
+							ErrSizeLimit)
+					}
+				}
+			}
+		case ',':
+			if len(stack) > 0 {
+				stack[len(stack)-1].expectingChild = true
+			}
+		case ':':
+			// Object key/value separator. The key was already counted as a value
+			// start; nothing to do. (A ':' outside an object is malformed JSON
+			// and is rejected by the parser downstream.)
+		default:
+			// Whitespace is structural; any other byte is the leading byte of a
+			// primitive value (digit, '-', 't'/'f'/'n', etc.).
+			if !isSpace(c) {
+				noteValueStart(stack)
+			}
+		}
+	}
+
+	return nil
+}
+
+// getDefaultPatterns returns the built-in dangerous patterns as DangerousPattern values.
+// All default patterns are considered Critical level.
+// PERFORMANCE: Cached to avoid repeated allocation — the result is immutable.
+var getDefaultPatterns = sync.OnceValue(func() []DangerousPattern {
+	result := make([]DangerousPattern, len(dangerousPatterns))
+	for i, p := range dangerousPatterns {
+		result[i] = DangerousPattern{
+			Pattern: p.pattern,
+			Name:    p.name,
+			Level:   PatternLevelCritical,
+		}
+	}
+	return result
+})
+
+// getCriticalPatterns returns patterns that are always fully scanned.
+// PERFORMANCE: Cached to avoid repeated allocation — the result is immutable.
+var getCriticalPatterns = sync.OnceValue(func() []DangerousPattern {
+	result := make([]DangerousPattern, len(criticalPatterns))
+	for i, p := range criticalPatterns {
+		result[i] = DangerousPattern{
+			Pattern: p.pattern,
+			Name:    p.name,
+			Level:   PatternLevelCritical,
+		}
+	}
+	return result
+})
+
+// TestValidateFilePath_Matrix consolidates the eight identical-scaffold
+// validateFilePath tables (device names, traversal, ADS, path length, null
+// bytes, UNC, edge cases, Windows components) plus the former standalone
+// invalid-chars / real-paths / normalization / cross-platform tables into one
+// table-driven test. Rows flagged windows=true replace the per-function
+// runtime.GOOS skips and are skipped silently on other platforms.
+func TestValidateFilePath_Matrix(t *testing.T) {
+	processor, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer processor.Close()
+
+	rows := []struct {
+		group       string
+		windows     bool
+		name        string
+		filePath    string
+		expectError bool
+	}{
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "CON device",
+			filePath:    "CON",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "PRN device",
+			filePath:    "PRN",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "AUX device",
+			filePath:    "AUX",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "NUL device",
+			filePath:    "NUL",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "COM1 device",
+			filePath:    "COM1",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "COM9 device",
+			filePath:    "COM9",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "COM0 device",
+			filePath:    "COM0",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "LPT1 device",
+			filePath:    "LPT1",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "LPT9 device",
+			filePath:    "LPT9",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "LPT0 device",
+			filePath:    "LPT0",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "CONIN device",
+			filePath:    "CONIN$",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "CONOUT device",
+			filePath:    "CONOUT$",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "device with extension",
+			filePath:    "CON.txt",
+			expectError: true,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "normal file",
+			filePath:    "normal.json",
+			expectError: false,
+		},
+		{
+			group:       "device-names",
+			windows:     true,
+			name:        "path with device",
+			filePath:    "data/CON",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "double dot traversal",
+			filePath:    "../../etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "URL encoded traversal",
+			filePath:    "%2e%2e/%2e%2e/etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "double URL encoded",
+			filePath:    "%252e%252e/%252e%252e",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "mixed encoding traversal",
+			filePath:    "..%2fetc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "Windows backslash encoded",
+			filePath:    "..%5cetc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "UTF-8 overlong encoding",
+			filePath:    "..%c0%af/etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "partial double encoding",
+			filePath:    "..%2e",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "null byte injection",
+			filePath:    "file.txt\x00",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "newline injection",
+			filePath:    "file.txt%0a",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "carriage return injection",
+			filePath:    "file.txt%0d",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "tab injection",
+			filePath:    "file.txt%09",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "five consecutive dots",
+			filePath:    ".....//etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "six consecutive dots",
+			filePath:    "......//etc/passwd",
+			expectError: true,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "normal path",
+			filePath:    "data/user/profile.json",
+			expectError: false,
+		},
+		{
+			group:       "traversal",
+			windows:     false,
+			name:        "absolute path",
+			filePath:    "/home/user/data.json",
+			expectError: false,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "ADS with colon",
+			filePath:    "file.txt:stream",
+			expectError: true,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "ADS with $DATA",
+			filePath:    "file.txt:$DATA",
+			expectError: true,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "complex ADS",
+			filePath:    "file.txt:stream:$DATA",
+			expectError: true,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "drive letter not ADS",
+			filePath:    "C:/data/file.txt",
+			expectError: false,
+		},
+		{
+			group:       "alternate-data-stream",
+			windows:     true,
+			name:        "drive letter with colon",
+			filePath:    "C:data/file.txt",
+			expectError: false,
+		},
+		{
+			group:       "path-length",
+			windows:     false,
+			name:        "exceeds max length",
+			filePath:    strings.Repeat("a", maxPathLength+1),
+			expectError: true,
+		},
+		{
+			group:       "path-length",
+			windows:     false,
+			name:        "exactly max length",
+			filePath:    strings.Repeat("b", maxPathLength),
+			expectError: false,
+		},
+		{
+			group:       "path-length",
+			windows:     false,
+			name:        "normal length",
+			filePath:    "data/user/profile.json",
+			expectError: false,
+		},
+		{
+			group:       "null-bytes",
+			windows:     false,
+			name:        "null at start",
+			filePath:    "\x00file.txt",
+			expectError: true,
+		},
+		{
+			group:       "null-bytes",
+			windows:     false,
+			name:        "null in middle",
+			filePath:    "file\x00.txt",
+			expectError: true,
+		},
+		{
+			group:       "null-bytes",
+			windows:     false,
+			name:        "null at end",
+			filePath:    "file.txt\x00",
+			expectError: true,
+		},
+		{
+			group:       "null-bytes",
+			windows:     false,
+			name:        "multiple nulls",
+			filePath:    "file\x00\x00.txt",
+			expectError: true,
+		},
+		{
+			group:       "unc",
+			windows:     true,
+			name:        "UNC with backslashes",
+			filePath:    "\\\\server\\share\\file.txt",
+			expectError: true,
+		},
+		{
+			group:       "unc",
+			windows:     true,
+			name:        "UNC with forward slashes",
+			filePath:    "//server/share/file.txt",
+			expectError: true,
+		},
+		{
+			group:       "unc",
+			windows:     true,
+			name:        "local path",
+			filePath:    "C:/data/file.txt",
+			expectError: false,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "empty path",
+			filePath:    "",
+			expectError: true,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "single character",
+			filePath:    "a",
+			expectError: false,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "current directory",
+			filePath:    ".",
+			expectError: false,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "parent directory",
+			filePath:    "..",
+			expectError: true,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "file with extension",
+			filePath:    "document.pdf",
+			expectError: false,
+		},
+		{
+			group:       "edge-cases",
+			windows:     false,
+			name:        "deep path",
+			filePath:    "a/b/c/d/e/f/g/h/i/j/file.txt",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "valid absolute path",
+			filePath:    "C:/Users/user/data.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "valid relative path",
+			filePath:    "data/config.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with spaces",
+			filePath:    "C:/Program Files/data.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with underscore",
+			filePath:    "my_data/file.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with hyphen",
+			filePath:    "my-data/file.json",
+			expectError: false,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with pipe",
+			filePath:    "data|file.json",
+			expectError: true,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with asterisk",
+			filePath:    "data/*.json",
+			expectError: true,
+		},
+		{
+			group:       "components",
+			windows:     true,
+			name:        "path with question mark",
+			filePath:    "data/file?.json",
+			expectError: true,
+		},
+		{
+			group:       "windows-invalid-chars",
+			windows:     true,
+			name:        "path with less-than",
+			filePath:    "data<file.json",
+			expectError: true,
+		},
+		{
+			group:       "windows-invalid-chars",
+			windows:     true,
+			name:        "path with greater-than",
+			filePath:    "data>file.json",
+			expectError: true,
+		},
+		{
+			group:       "windows-invalid-chars",
+			windows:     true,
+			name:        "path with quote",
+			filePath:    `data"file.json`,
+			expectError: true,
+		},
+		{
+			group:       "windows-invalid-chars",
+			windows:     true,
+			name:        "colon is not a drive letter",
+			filePath:    `data:\file.json`,
+			expectError: true,
+		},
+		{
+			group:       "normalization",
+			name:        "extra separators",
+			filePath:    "data///config.json",
+			expectError: false,
+		},
+	}
+
+	for _, tt := range rows {
+		if tt.windows && runtime.GOOS != "windows" {
+			continue
+		}
+		t.Run(tt.group+"/"+tt.name, func(t *testing.T) {
+			err := processor.validateFilePath(tt.filePath)
+			if tt.expectError && err == nil {
+				t.Errorf("path %q: expected rejection, got nil error", tt.filePath)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("path %q: unexpected error: %v", tt.filePath, err)
+			}
+		})
 	}
 }

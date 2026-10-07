@@ -1,8 +1,6 @@
 package internal
 
 import (
-	"fmt"
-	"reflect"
 	"strings"
 )
 
@@ -103,19 +101,10 @@ func IsComplexPath(path string) bool {
 	return false
 }
 
-// HasComplexSegments checks if any segment is complex (slice or extract)
-func HasComplexSegments(segments []PathSegment) bool {
-	for _, segment := range segments {
-		switch segment.Type {
-		case ArraySliceSegment, ExtractSegment:
-			return true
-		}
-	}
-	return false
-}
-
 // IsExtractionPath checks if a path contains extraction patterns that trigger
 // multi-container (distributed) operations: }[, }:, }{, {flat:
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func IsExtractionPath(path string) bool {
 	extractionPatterns := []string{
 		"}[",
@@ -134,6 +123,9 @@ func IsExtractionPath(path string) bool {
 }
 
 // IsExtractionSegment checks if a segment triggers extraction operations
+//
+// NOTE (D-002/R8 M5): no production caller — call sites compare
+// segment.Type == ExtractSegment directly; retained for tests/future use.
 func IsExtractionSegment(segment PathSegment) bool {
 	return segment.Type == ExtractSegment
 }
@@ -142,23 +134,23 @@ func IsExtractionSegment(segment PathSegment) bool {
 func ParsePathSegment(part string, segments []PathSegment) []PathSegment {
 	if strings.Contains(part, "[") {
 		return ParseArraySegment(part, segments)
-	} else if strings.Contains(part, "{") {
+	}
+	if strings.Contains(part, "{") {
 		return ParseExtractionSegment(part, segments)
-	} else {
-		if index, ok := ParseIntFast(part); ok {
-			segments = append(segments, PathSegment{
-				Type:  ArrayIndexSegment,
-				Index: index,
-			})
-			return segments
-		}
-
+	}
+	if index, ok := ParseIntFast(part); ok {
 		segments = append(segments, PathSegment{
-			Key:  UnescapePathSegment(part),
-			Type: PropertySegment,
+			Type:  ArrayIndexSegment,
+			Index: index,
 		})
 		return segments
 	}
+
+	segments = append(segments, PathSegment{
+		Key:  UnescapePathSegment(part),
+		Type: PropertySegment,
+	})
+	return segments
 }
 
 // ParseArraySegment parses array access segments like [0], [1:3], etc.
@@ -176,8 +168,11 @@ func ParseArraySegment(part string, segments []PathSegment) []PathSegment {
 
 	if openBracket > 0 {
 		propertyName := part[:openBracket]
+		// Unescape like parsePropertyWithArray (internal/path.go): otherwise
+		// Set writes a bogus literal key for paths like `key\.[0]` while Get
+		// reads the unescaped `key.` — reads and writes diverged (D-002).
 		segments = append(segments, PathSegment{
-			Key:  propertyName,
+			Key:  UnescapePathSegment(propertyName),
 			Type: PropertySegment,
 		})
 	}
@@ -263,8 +258,10 @@ func ParseExtractionSegment(part string, segments []PathSegment) []PathSegment {
 
 	if openBrace > 0 {
 		propertyName := part[:openBrace]
+		// Same unescape as ParseArraySegment — keep Get/Set/Delete consistent
+		// for escaped keys preceding an extraction brace (D-002).
 		segments = append(segments, PathSegment{
-			Key:  propertyName,
+			Key:  UnescapePathSegment(propertyName),
 			Type: PropertySegment,
 		})
 	}
@@ -352,6 +349,8 @@ func SplitPathIntoSegments(path string, segments []PathSegment) []PathSegment {
 }
 
 // ReconstructPath reconstructs a path string from segments
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func ReconstructPath(segments []PathSegment) string {
 	if len(segments) == 0 {
 		return ""
@@ -368,60 +367,6 @@ func ReconstructPath(segments []PathSegment) string {
 	return sb.String()
 }
 
-// NormalizePathSeparators removes duplicate dots and trims leading/trailing dots
-// Optimized: single-pass construction using strings.Builder
-func NormalizePathSeparators(path string) string {
-	if len(path) == 0 {
-		return ""
-	}
-
-	// Fast path: check if normalization is needed
-	needsNormalization := false
-	hasLeadingDot := path[0] == '.'
-	hasTrailingDot := path[len(path)-1] == '.'
-
-	for i := 0; i < len(path)-1; i++ {
-		if path[i] == '.' && path[i+1] == '.' {
-			needsNormalization = true
-			break
-		}
-	}
-
-	// If no normalization needed, just trim
-	if !needsNormalization && !hasLeadingDot && !hasTrailingDot {
-		return path
-	}
-
-	// Build normalized path in single pass
-	var sb strings.Builder
-	sb.Grow(len(path))
-
-	inDotRun := false
-	for i := 0; i < len(path); i++ {
-		c := path[i]
-		if c == '.' {
-			if !inDotRun {
-				sb.WriteByte(c)
-				inDotRun = true
-			}
-		} else {
-			sb.WriteByte(c)
-			inDotRun = false
-		}
-	}
-
-	result := sb.String()
-	// Trim leading and trailing dots
-	result = strings.Trim(result, ".")
-
-	return result
-}
-
-// IsValidPropertyName checks if a name is a valid property name
-func IsValidPropertyName(name string) bool {
-	return name != "" && !strings.ContainsAny(name, ".[]{}()")
-}
-
 // IsValidArrayIndex checks if a string is a valid array index
 func IsValidArrayIndex(index string) bool {
 	if index == "" {
@@ -432,24 +377,6 @@ func IsValidArrayIndex(index string) bool {
 
 	_, ok := ParseIntFast(index)
 	return ok
-}
-
-// IsValidSliceRange checks if a range string is a valid slice range
-func IsValidSliceRange(rangeStr string) bool {
-	parts := strings.Split(rangeStr, ":")
-	if len(parts) < 2 || len(parts) > 3 {
-		return false
-	}
-
-	for _, part := range parts {
-		if part != "" {
-			if _, ok := ParseIntFast(part); !ok {
-				return false
-			}
-		}
-	}
-
-	return true
 }
 
 // IsArrayType checks if data is an array type
@@ -472,21 +399,6 @@ func IsObjectType(data any) bool {
 	}
 }
 
-// IsSliceType checks if data is a slice type using reflection
-// This handles any slice type, not just []any
-func IsSliceType(data any) bool {
-	if data == nil {
-		return false
-	}
-	switch data.(type) {
-	case []any:
-		return true
-	default:
-		// Use reflection for other slice types
-		return reflect.ValueOf(data).Kind() == reflect.Slice
-	}
-}
-
 // IsNilOrEmpty checks if a value is nil or empty
 func IsNilOrEmpty(data any) bool {
 	if data == nil {
@@ -505,17 +417,4 @@ func IsNilOrEmpty(data any) bool {
 	default:
 		return false
 	}
-}
-
-// WrapError wraps an error with context
-func WrapError(err error, context string) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("%s: %w", context, err)
-}
-
-// CreatePathError creates a path-specific error
-func CreatePathError(path string, operation string, err error) error {
-	return fmt.Errorf("failed to %s at path '%s': %w", operation, path, err)
 }

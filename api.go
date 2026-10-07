@@ -39,12 +39,14 @@ func getProcessorOrFail() (*Processor, error) {
 // processorForCfg returns the default processor when cfg is omitted, or a
 // config-cached processor whose baked-in settings match the supplied cfg.
 //
-// It lets package-level functions that delegate to Processor methods (which read
-// p.config directly, e.g. the JSONL/stream family) honor an optional trailing
-// Config by selecting the right processor, rather than threading cfg through
-// every method signature. With no cfg it is identical to getProcessorOrFail
-// (behavior unchanged). This mirrors how CompareJSON applies cfg via
-// getProcessorWithConfig.
+// It lets package-level functions that delegate to Processor methods honor an
+// optional trailing Config by selecting the right processor, rather than
+// threading cfg through every method signature. Since D-005 Phase 2 the
+// JSONL/stream Processor methods also accept a per-call Config themselves, but
+// the package level keeps the baked-processor route: it reuses the config-keyed
+// processor cache across repeated calls. With no cfg it is identical to
+// getProcessorOrFail (behavior unchanged). This mirrors how CompareJSON applies
+// cfg via getProcessorWithConfig.
 func processorForCfg(cfg ...Config) (*Processor, error) {
 	if len(cfg) == 0 {
 		return getProcessorOrFail()
@@ -73,15 +75,6 @@ func withProcessorStringResult(fn func(*Processor) (string, error), jsonStr stri
 	p, err := getProcessorOrFail()
 	if err != nil {
 		return jsonStr, err
-	}
-	return fn(p)
-}
-
-// withProcessorBytesResult handles operations that return []byte.
-func withProcessorBytesResult(fn func(*Processor) ([]byte, error)) ([]byte, error) {
-	p, err := getProcessorOrFail()
-	if err != nil {
-		return nil, err
 	}
 	return fn(p)
 }
@@ -204,6 +197,9 @@ var configFieldList = []configFieldAccessor{
 	{"MaxConcurrency",
 		func(a, b Config) bool { return a.MaxConcurrency == b.MaxConcurrency },
 		func(h uint64, c Config) uint64 { return internal.HashInt(h, c.MaxConcurrency) }},
+	{"MaxOperationsPerSecond",
+		func(a, b Config) bool { return a.MaxOperationsPerSecond == b.MaxOperationsPerSecond },
+		func(h uint64, c Config) uint64 { return internal.HashInt(h, c.MaxOperationsPerSecond) }},
 	{"ParallelThreshold",
 		func(a, b Config) bool { return a.ParallelThreshold == b.ParallelThreshold },
 		func(h uint64, c Config) uint64 { return internal.HashInt(h, c.ParallelThreshold) }},
@@ -444,6 +440,31 @@ var configFieldList = []configFieldAccessor{
 	{"DisableDefaultPatterns",
 		func(a, b Config) bool { return a.DisableDefaultPatterns == b.DisableDefaultPatterns },
 		func(h uint64, c Config) uint64 { return internal.HashBool(h, c.DisableDefaultPatterns) }},
+	{"DetectDuplicateKeys",
+		func(a, b Config) bool { return a.DetectDuplicateKeys == b.DetectDuplicateKeys },
+		func(h uint64, c Config) uint64 { return internal.HashBool(h, c.DetectDuplicateKeys) }},
+	{"SaveFileMode",
+		func(a, b Config) bool { return a.SaveFileMode == b.SaveFileMode },
+		func(h uint64, c Config) uint64 { return internal.HashInt(h, int(c.SaveFileMode)) }},
+	{"AllowedFileDirs",
+		func(a, b Config) bool {
+			if len(a.AllowedFileDirs) != len(b.AllowedFileDirs) {
+				return false
+			}
+			for i, d := range a.AllowedFileDirs {
+				if d != b.AllowedFileDirs[i] {
+					return false
+				}
+			}
+			return true
+		},
+		func(h uint64, c Config) uint64 {
+			h = internal.HashInt(h, len(c.AllowedFileDirs))
+			for _, d := range c.AllowedFileDirs {
+				h = internal.HashString(h, d)
+			}
+			return h
+		}},
 	{"Hooks",
 		func(a, b Config) bool {
 			if len(a.Hooks) != len(b.Hooks) {
@@ -661,6 +682,8 @@ func SafeGet(jsonStr, path string, cfg ...Config) AccessResult {
 
 // Set sets a value in JSON at the specified path.
 // Creates intermediate paths if Config.CreatePaths is true.
+// A root path ("", ".", or the JSON Pointer root "/") replaces the entire
+// document with value (GEN-001).
 //
 // Returns:
 //   - On success: modified JSON string and nil error
@@ -739,8 +762,10 @@ func DeleteClean(jsonStr, path string, cfg ...Config) (string, error) {
 }
 
 // Marshal returns the JSON encoding of v.
-// This function is 100% compatible with encoding/json.Marshal: calling it as
-// json.Marshal(v) behaves identically to the standard library.
+// Signature-compatible with encoding/json.Marshal and byte-compatible for
+// typical values, with one deliberate difference (D-002 doc correction): the
+// encoded output is capped at Config.MaxJSONSize (default 100MB) and returns
+// ErrSizeLimit instead of succeeding — stdlib has no such cap.
 //
 // For configuration options (indentation, number handling, etc.), pass an
 // optional Config. This mirrors Processor.Marshal, making the package-level
@@ -754,14 +779,22 @@ func DeleteClean(jsonStr, path string, cfg ...Config) (string, error) {
 //	// With configuration (non-breaking, optional trailing Config)
 //	b, err = json.Marshal(value, json.PrettyConfig())
 func Marshal(value any, cfg ...Config) ([]byte, error) {
-	return withProcessorBytesResult(func(p *Processor) ([]byte, error) {
+	return withProcessor(func(p *Processor) ([]byte, error) {
 		return p.Marshal(value, cfg...)
 	})
 }
 
 // Unmarshal parses the JSON-encoded data and stores the result in v.
-// This function is 100% compatible with encoding/json.Unmarshal: calling it as
-// json.Unmarshal(data, &v) behaves identically to the standard library.
+// Signature-compatible with encoding/json.Unmarshal, but the no-config call
+// applies this library's default security hardening — deliberate differences
+// from the standard library (D-002 doc correction):
+//   - input larger than Config.MaxJSONSize (default 100MB) → ErrSizeLimit
+//   - dangerous-pattern substrings in string values (e.g. "__proto__",
+//     "<script") → security violation; stdlib accepts them as plain data
+//   - invalid UTF-8 in string values → rejected; stdlib replaces it
+//
+// Pass SkipValidation: true in a Config for stdlib-exact lenient behavior on
+// trusted input, or a custom Config to tighten/loosen the limits.
 //
 // For configuration options (security limits, number preservation, etc.), pass
 // an optional Config. This mirrors Processor.Unmarshal.
@@ -796,7 +829,7 @@ func Unmarshal(data []byte, value any, cfg ...Config) error {
 //	// With configuration (non-breaking, optional trailing Config)
 //	b, err = json.MarshalIndent(v, "", "  ", json.SecurityConfig())
 func MarshalIndent(v any, prefix, indent string, cfg ...Config) ([]byte, error) {
-	return withProcessorBytesResult(func(p *Processor) ([]byte, error) {
+	return withProcessor(func(p *Processor) ([]byte, error) {
 		return p.MarshalIndent(v, prefix, indent, cfg...)
 	})
 }
@@ -884,13 +917,32 @@ func HTMLEscape(dst *bytes.Buffer, src []byte, cfg ...Config) {
 }
 
 // Encode converts any Go value to JSON string.
+// This is the canonical string-returning encoder; Marshal is the []byte-returning
+// encoding/json drop-in. The optional trailing Config selects the encoding
+// behavior for this call (Pretty, EscapeHTML, SortKeys, FloatPrecision, ...);
+// omitted, the default configuration applies.
 //
-// Deprecated: Encode is functionally identical to EncodeWithConfig (both forward
-// to the same implementation). Use EncodeWithConfig, or Marshal when []byte
-// output is acceptable. Encode will be removed in a future major version.
+// Example:
+//
+//	// Default configuration
+//	result, err := json.Encode(data)
+//
+//	// Pretty output
+//	result, err := json.Encode(data, json.PrettyConfig())
+//
+//	// Custom configuration
+//	cfg := json.DefaultConfig()
+//	cfg.SortKeys = true
+//	result, err := json.Encode(data, cfg)
+//
+// Errors:
+//   - ErrProcessorClosed: the default processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func Encode(value any, cfg ...Config) (string, error) {
 	return withProcessor(func(p *Processor) (string, error) {
-		return p.EncodeWithConfig(value, cfg...)
+		return p.Encode(value, cfg...)
 	})
 }
 
@@ -912,27 +964,16 @@ func EncodePretty(value any, cfg ...Config) (string, error) {
 }
 
 // EncodeWithConfig converts any Go value to JSON string using the unified Config.
-// This is the recommended way to encode JSON with configuration.
 //
-// Example:
+// Deprecated: EncodeWithConfig is functionally identical to Encode — the name
+// predates Encode accepting an optional trailing Config. Use Encode(value, cfg)
+// (or PrettyConfig()/SecurityConfig() presets). EncodeWithConfig will not be
+// removed within v1 (per D-005 the module stays on v1.x).
 //
-//	// Default configuration
-//	result, err := json.EncodeWithConfig(data)
-//
-//	// Pretty output
-//	result, err := json.EncodeWithConfig(data, json.PrettyConfig())
-//
-//	// Security-focused output
-//	result, err := json.EncodeWithConfig(data, json.SecurityConfig())
-//
-//	// Custom configuration
-//	cfg := json.DefaultConfig()
-//	cfg.Pretty = true
-//	cfg.SortKeys = true
-//	result, err := json.EncodeWithConfig(data, cfg)
+// Errors: see Encode.
 func EncodeWithConfig(value any, cfg ...Config) (string, error) {
 	return withProcessor(func(p *Processor) (string, error) {
-		return p.EncodeWithConfig(value, cfg...)
+		return p.Encode(value, cfg...)
 	})
 }
 
@@ -954,13 +995,16 @@ func Prettify(jsonStr string, cfg ...Config) (string, error) {
 }
 
 // Valid reports whether data is valid JSON.
-// This function is 100% compatible with encoding/json.Valid: calling it as
-// json.Valid(data) behaves identically to the standard library and returns a
-// plain bool.
+// Signature-compatible with encoding/json.Valid and returns a plain bool.
 //
-// For configuration options (security limits, full security scan, etc.), pass
-// an optional Config. When config is supplied, Valid forwards to
-// Processor.Valid and collapses any error to false.
+// NOTE (D-002 doc correction): the no-config call is NOT purely syntactic
+// like the standard library — it routes through the default processor's
+// security validation, so input that is syntactically valid JSON can still
+// return false when it exceeds MaxJSONSize, contains invalid UTF-8, or
+// carries a dangerous pattern (e.g. "__proto__", "<script") in a string
+// value. Callers needing stdlib-exact syntax-only checks should use
+// encoding/json.Valid (or a Config with SkipValidation: true via
+// ValidWithConfig).
 //
 // Example:
 //
@@ -1317,8 +1361,9 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 				if staleProc, ok := existing.(*Processor); ok {
 					asyncCloseProcessor(staleProc)
 				}
-				// Check cache size and evict if necessary
-				maybeEvictConfigCache()
+				// Check cache size and evict if necessary, protecting the key
+				// we just stored (see maybeEvictConfigCache)
+				maybeEvictConfigCache(cacheKey)
 				return p, nil
 			}
 			// CAS failed - close our processor and create a fresh one for retry
@@ -1330,8 +1375,9 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 			continue
 		}
 		// Successfully stored new entry
-		// Check cache size and evict if necessary
-		maybeEvictConfigCache()
+		// Check cache size and evict if necessary, protecting the key we just
+		// stored (see maybeEvictConfigCache)
+		maybeEvictConfigCache(cacheKey)
 		return p, nil
 	}
 
@@ -1354,7 +1400,14 @@ func getProcessorWithConfig(cfg Config) (*Processor, error) {
 // and prevent unbounded goroutine growth.
 // DETERMINISM FIX: Uses hash-based eviction order instead of random map iteration
 // to ensure consistent behavior across runs.
-func maybeEvictConfigCache() {
+//
+// protect is the cache key the CALLER is about to return a processor for: it
+// is excluded from eviction candidates. Without this, the freshly stored key
+// ranked among all entries and, with the cache at its limit, had a
+// ~evictCount/limit chance of being evicted-and-closed by its own store —
+// handing the caller a processor that asyncCloseProcessor was concurrently
+// tearing down, producing spurious ErrProcessorClosed failures (D-002).
+func maybeEvictConfigCache(protect uint64) {
 	configProcessorCacheMu.Lock()
 
 	var count int
@@ -1379,6 +1432,10 @@ func maybeEvictConfigCache() {
 		cacheKey, keyOk := key.(uint64)
 		if !keyOk {
 			return true // skip invalid cache key type
+		}
+		// Never evict the caller's freshly stored key (see func comment).
+		if cacheKey == protect {
+			return true
 		}
 		if p, ok := value.(*Processor); ok {
 			if p.IsClosed() {

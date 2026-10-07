@@ -2,6 +2,7 @@ package json
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -24,8 +25,17 @@ type Config struct {
 	// ===== Cache Settings =====
 	MaxCacheSize int           `json:"max_cache_size"`
 	CacheTTL     time.Duration `json:"cache_ttl"`
-	EnableCache  bool          `json:"enable_cache"`
-	CacheResults bool          `json:"cache_results"` // Per-operation caching
+
+	// EnableCache turns on the result/parse caches. SECURITY NOTE (D-002):
+	// cache identity is a 64-bit FNV-1a hash of the input document — fast,
+	// but collision-constructible by an attacker who controls stored
+	// payloads. A deliberate collision can serve one document's cached
+	// result for another. For workloads where attackers control BOTH
+	// documents that hash to the same key, disable caching (or key results
+	// externally). Accidental collisions remain astronomically unlikely.
+	EnableCache bool `json:"enable_cache"`
+
+	CacheResults bool `json:"cache_results"` // Per-operation caching
 
 	// CacheSharedResults, when true, lets cache-hit Get/GetFromParsed return the
 	// cached value directly WITHOUT a defensive deep copy. This eliminates the
@@ -77,20 +87,60 @@ type Config struct {
 	MaxConcurrency    int `json:"max_concurrency"`
 	ParallelThreshold int `json:"parallel_threshold"`
 
+	// MaxOperationsPerSecond caps the rate of governed operations (Get/Set/
+	// Delete) on this processor: an operation starting less than
+	// 1/MaxOperationsPerSecond seconds after the previous one is rejected with
+	// a rate-limit error. Zero (the default) disables the cap.
+	// D-002/R8 (M3): this wires up the previously unreachable checkRateLimit —
+	// the limiter existed but no Config field could ever set it.
+	// Clamped to [0, 1000000] by Validate.
+	MaxOperationsPerSecond int `json:"max_operations_per_second"`
+
 	// ===== Processing Options =====
+	// EnableValidation was intended to toggle input validation.
+	//
+	// Deprecated: EnableValidation is not consulted by any operation —
+	// validation runs unless SkipValidation is set. Setting it has no effect
+	// (it only participates in config cache keying). Retained for v1
+	// compatibility. (D-002/R8 M2)
 	EnableValidation bool `json:"enable_validation"`
-	StrictMode       bool `json:"strict_mode"`
-	CreatePaths      bool `json:"create_paths"`
-	CleanupNulls     bool `json:"cleanup_nulls"`
-	CompactArrays    bool `json:"compact_arrays"`
-	ContinueOnError  bool `json:"continue_on_error"` // Continue on batch errors
+	// StrictMode was intended to enable stricter parsing rules.
+	//
+	// Deprecated: StrictMode is not consulted by any parser or operation —
+	// setting it has no effect (it only participates in config cache keying).
+	// Retained for v1 compatibility. (D-002/R8 M2)
+	StrictMode      bool `json:"strict_mode"`
+	CreatePaths     bool `json:"create_paths"`
+	CleanupNulls    bool `json:"cleanup_nulls"`
+	CompactArrays   bool `json:"compact_arrays"`
+	ContinueOnError bool `json:"continue_on_error"` // Continue on batch errors
 
 	// ===== Input/Output Options =====
-	AllowComments    bool `json:"allow_comments"`
-	PreserveNumbers  bool `json:"preserve_numbers"`
+	// AllowComments was intended to permit // and # comments in JSON input.
+	//
+	// Deprecated: AllowComments is not consulted by any parser — setting it has
+	// no effect (it only participates in config cache keying). Retained for v1
+	// compatibility. (D-002/R8 M2)
+	AllowComments   bool `json:"allow_comments"`
+	PreserveNumbers bool `json:"preserve_numbers"`
+	// ValidateInput was intended to toggle input validation.
+	//
+	// Deprecated: ValidateInput is not consulted by any operation — setting it
+	// has no effect (it only participates in config cache keying). Retained
+	// for v1 compatibility. (D-002/R8 M2)
 	ValidateInput    bool `json:"validate_input"`
 	ValidateFilePath bool `json:"validate_file_path"`
 	SkipValidation   bool `json:"skip_validation"` // Skip validation for trusted input
+
+	// DetectDuplicateKeys rejects JSON input in which any object contains a
+	// repeated key, returning an error wrapping ErrDuplicateKey. The default
+	// (false) preserves encoding/json semantics: duplicates are silently
+	// resolved last-wins. Applies wherever input validation runs — including
+	// per-call Configs — but note it also fires under SkipValidation, since it
+	// is an explicitly requested semantic check (GEN-001).
+	// LIMITATION: keys are compared as raw bytes, so spellings that differ
+	// only by escape encoding (e.g. "a" vs "a") are treated as distinct.
+	DetectDuplicateKeys bool `json:"detect_duplicate_keys"`
 
 	// ===== Encoding Options =====
 	Pretty          bool            `json:"pretty"`
@@ -112,12 +162,23 @@ type Config struct {
 	CustomEscapes   map[rune]string `json:"custom_escapes,omitempty"`
 
 	// ===== Observability =====
-	EnableMetrics     bool `json:"enable_metrics"`
+	EnableMetrics bool `json:"enable_metrics"`
+	// EnableHealthCheck was intended to gate health checking.
+	//
+	// Deprecated: EnableHealthCheck is not consulted — GetHealthStatus/
+	// GetStats work regardless of this flag. Setting it has no effect (it only
+	// participates in config cache keying). Retained for v1 compatibility.
+	// (D-002/R8 M2)
 	EnableHealthCheck bool `json:"enable_health_check"`
 
 	// ===== Large File Processing =====
-	// ChunkSize is the size of each chunk when processing large files.
-	// Default: 1MB (1024 * 1024 bytes)
+	// ChunkSize was intended as the chunk size for chunked large-file
+	// processing.
+	//
+	// Deprecated: ChunkSize is not read by any code path — the streaming
+	// readers use BufferSize, and no chunked file reader exists. Setting it has
+	// no effect (it only participates in config cache keying). Retained for v1
+	// compatibility. (D-002/R8 M2)
 	ChunkSize int64 `json:"chunk_size"`
 
 	// MaxMemory is the maximum memory to use for large file processing.
@@ -128,13 +189,28 @@ type Config struct {
 	// Default: 64KB (64 * 1024 bytes)
 	BufferSize int `json:"buffer_size"`
 
-	// SamplingEnabled enables sampling for very large files.
-	// When true, only a subset of data is validated for security.
-	// Default: true
+	// SaveFileMode is the permission bits used when SaveToFile / MarshalToFile
+	// create a NEW file; existing files keep their current permissions
+	// (matching os.WriteFile, which does not change them on overwrite).
+	// Zero falls back to 0644. Use 0600 when the data is sensitive and the
+	// file should not be group/world-readable (GEN-001). Validated to
+	// permission bits only (<= 0777).
+	SaveFileMode os.FileMode `json:"save_file_mode,omitempty"`
+
+	// SamplingEnabled was intended to toggle sampling for very large inputs.
+	//
+	// Deprecated: SamplingEnabled is not consulted — security scanning switches
+	// to rolling-window mode automatically above 4KB (see FullSecurityScan);
+	// this field never governed it. Setting it has no effect (it only
+	// participates in config cache keying). Retained for v1 compatibility.
+	// (D-002/R8 M2)
 	SamplingEnabled bool `json:"sampling_enabled"`
 
-	// SampleSize is the number of samples to take when sampling is enabled.
-	// Default: 1000
+	// SampleSize was intended as the sample count for sampled security scans.
+	//
+	// Deprecated: SampleSize is not consulted by any code path (see
+	// SamplingEnabled). Setting it has no effect (it only participates in
+	// config cache keying). Retained for v1 compatibility. (D-002/R8 M2)
 	SampleSize int `json:"sample_size"`
 
 	// ===== JSONL (JSON Lines) Configuration =====
@@ -177,18 +253,45 @@ type Config struct {
 	// Default: MergeUnion (combine all keys/elements)
 	MergeMode MergeMode `json:"merge_mode"`
 
+	// ===== File Access Security =====
+	// AllowedFileDirs restricts file operations to the listed directories
+	// (GEN-001). When non-empty, every path passed to the path-based file APIs
+	// — LoadFromFile, UnmarshalFromFile, SaveToFile, MarshalToFile, the
+	// ForeachFile* family, and StreamJSONLFile — must resolve (after symlink
+	// resolution) inside one of these directories; anything else is rejected
+	// with ErrSecurityViolation. This allowlist is stricter than (and applied
+	// in addition to) the built-in platform blocklists.
+	// Entries must be absolute (relative entries are resolved against the
+	// working directory by Validate, with a warning); matching is by path
+	// prefix on the cleaned path. Default: empty (blocklist checks only).
+	// The deprecated NDJSONProcessor entry points are not allowlist-aware.
+	// A per-call Config with a non-empty list overrides the processor's list.
+	AllowedFileDirs []string `json:"allowed_file_dirs,omitempty"`
+
 	// ===== Extension Points =====
 
-	// CustomEncoder replaces the default encoder entirely.
-	// If set, Encode operations use this encoder instead of the built-in one.
+	// CustomEncoder was intended to replace the default encoder for all values.
+	//
+	// Deprecated: CustomEncoder is not wired into the encoding pipeline —
+	// setting it has no effect on output (it only participates in config
+	// cache keying and fast-path routing). Retained for v1 compatibility;
+	// the built-in encoder cannot be replaced.
 	CustomEncoder CustomEncoder
 
-	// CustomTypeEncoders provides encoding for specific types.
-	// Keys are reflect.Type values; values implement TypeEncoder.
+	// CustomTypeEncoders was intended to provide encoding for specific types.
+	//
+	// Deprecated: CustomTypeEncoders is never consulted by the encoding
+	// pipeline — setting it has no effect on output. Retained for v1
+	// compatibility; use the built-in encoding (json.Marshaler /
+	// encoding.TextMarshaler on your types) instead.
 	CustomTypeEncoders map[reflect.Type]TypeEncoder
 
-	// CustomValidators run before operations.
-	// All validators must pass for the operation to proceed.
+	// CustomValidators was intended to run user validation before operations.
+	//
+	// Deprecated: CustomValidators are never executed by any public
+	// operation — setting them (or calling AddValidator) has no effect.
+	// Retained for v1 compatibility; use Config.AddHook with a Before hook
+	// for pre-operation checks.
 	CustomValidators []Validator
 
 	// AdditionalDangerousPatterns adds security patterns beyond defaults.
@@ -206,35 +309,16 @@ type Config struct {
 	// Hooks provide before/after interception for operations.
 	Hooks []Hook
 
-	// CustomPathParser replaces the default path parser.
-	// If set, path parsing uses this parser instead of the built-in one.
+	// CustomPathParser replaces the default path parser for ALL path-based
+	// operations (Get/Set/Delete/iterate). If set, ParsePath is invoked
+	// instead of the built-in splitter on every operation path, and its
+	// results bypass the global path-segment cache (the cache is keyed by
+	// path string and cannot distinguish parser implementations).
+	//
+	// D-002 (M33): previously this field was documented but never invoked —
+	// setting it changed no behavior. Configs carrying a custom parser are
+	// also excluded from the config-processor cache (see getProcessorWithConfig).
 	CustomPathParser PathParser
-}
-
-// SecurityLimits holds a summary of the security-related limits from Config.
-// Returned by Config.getSecurityLimits for structured access to limit values.
-type SecurityLimits struct {
-	MaxNestingDepth           int   `json:"max_nesting_depth"`
-	MaxSecurityValidationSize int64 `json:"max_security_validation_size"`
-	MaxObjectKeys             int   `json:"max_object_keys"`
-	MaxArrayElements          int   `json:"max_array_elements"`
-	MaxJSONSize               int64 `json:"max_json_size"`
-	MaxPathDepth              int   `json:"max_path_depth"`
-}
-
-// getSecurityLimits returns a summary of current security limits
-func (c *Config) getSecurityLimits() SecurityLimits {
-	if c == nil {
-		return SecurityLimits{}
-	}
-	return SecurityLimits{
-		MaxNestingDepth:           c.MaxNestingDepthSecurity,
-		MaxSecurityValidationSize: c.MaxSecurityValidationSize,
-		MaxObjectKeys:             c.MaxObjectKeys,
-		MaxArrayElements:          c.MaxArrayElements,
-		MaxJSONSize:               c.MaxJSONSize,
-		MaxPathDepth:              c.MaxPathDepth,
-	}
 }
 
 // AddHook adds an operation hook to the configuration.
@@ -247,7 +331,10 @@ func (c *Config) AddHook(hook Hook) {
 }
 
 // AddValidator adds a custom validator to the configuration.
-// Validators are executed in order; all must pass for operations to proceed.
+//
+// Deprecated: validators are never executed by any public operation — added
+// validators have no effect. Use AddHook with a Before hook for
+// pre-operation checks.
 func (c *Config) AddValidator(validator Validator) {
 	if c == nil {
 		return
@@ -270,7 +357,14 @@ type ParsedJSON struct {
 	data any
 }
 
-// Data returns the underlying parsed data
+// Data returns the underlying parsed data.
+//
+// P-002 CONTRACT: the returned tree is shared with the processor's parse cache
+// and may be read concurrently by other PreParse/GetFromParsed callers. It
+// MUST NOT be mutated — doing so poisons the cache for every reader (a data
+// race under -race, silent corruption otherwise). Copy the parts you need to
+// change, or use GetFromParsed/Get, which return safe copies of extracted
+// values by default.
 func (p *ParsedJSON) Data() any {
 	if p == nil {
 		return nil
@@ -880,7 +974,7 @@ type SchemaConfig struct {
 //	cfg := json.DefaultSchemaConfig()
 //	cfg.Type = "object"
 //	cfg.Required = []string{"name", "email"}
-//	schema := json.NewSchemaWithConfig(cfg)
+//	schema := json.NewSchema(cfg)
 func DefaultSchemaConfig() SchemaConfig {
 	return SchemaConfig{
 		AdditionalProperties: ptrBool(true),
@@ -891,9 +985,20 @@ func DefaultSchemaConfig() SchemaConfig {
 // This is a helper function for SchemaConfig optional fields.
 func ptrBool(v bool) *bool { return &v }
 
-// NewSchemaWithConfig creates a new Schema with the provided configuration.
+// NewSchema creates a new Schema with the provided configuration.
 // This is the recommended way to create configured Schema instances.
-func NewSchemaWithConfig(cfg SchemaConfig) *Schema {
+//
+// Example:
+//
+//	cfg := json.DefaultSchemaConfig()
+//	cfg.Type = "object"
+//	cfg.Required = []string{"name", "email"}
+//	schema := json.NewSchema(cfg)
+//
+// D-005 Phase 2: NewSchema replaces NewSchemaWithConfig — every other
+// constructor in this package is New*(cfg) with no suffix, so the schema
+// constructor now follows the same convention.
+func NewSchema(cfg SchemaConfig) *Schema {
 	s := &Schema{
 		Type:        cfg.Type,
 		Properties:  cfg.Properties,
@@ -958,6 +1063,16 @@ func NewSchemaWithConfig(cfg SchemaConfig) *Schema {
 	}
 
 	return s
+}
+
+// NewSchemaWithConfig creates a new Schema with the provided configuration.
+//
+// Deprecated: NewSchemaWithConfig is functionally identical to NewSchema — the
+// "WithConfig" suffix predates the unified Config convention and no other
+// constructor carries it. Use NewSchema(cfg). NewSchemaWithConfig will not be
+// removed within v1 (per D-005 the module stays on v1.x).
+func NewSchemaWithConfig(cfg SchemaConfig) *Schema {
+	return NewSchema(cfg)
 }
 
 // ============================================================================

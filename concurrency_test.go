@@ -18,6 +18,8 @@ package json
 // the read lock.
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -137,5 +139,319 @@ func TestP002_PatternLenCacheConcurrentChurn(t *testing.T) {
 
 	if got := maxDangerousPatternLen(); got < len(pattern.Pattern) {
 		t.Fatalf("post-churn maxDangerousPatternLen() = %d, want >= %d", got, len(pattern.Pattern))
+	}
+}
+
+// -----------------------------------------------------------------------------
+// P-002 round 2: concurrency stress for shared surfaces whose safety was
+// established by code review but lacked dedicated concurrent coverage. The
+// race detector is the primary oracle; functional assertions only pin
+// contracts that must hold under any interleaving.
+// -----------------------------------------------------------------------------
+
+// TestP002_ConfigProcessorCacheChurn drives getProcessorWithConfig across MORE
+// distinct configs than the cache limit (64), so concurrent calls interleave
+// LoadOrStore insertion, stale-entry CompareAndSwap/CompareAndDelete,
+// maybeEvictConfigCache, and asyncCloseProcessor of evicted instances.
+//
+// An evicted-and-closed processor may legitimately surface in a caller's hand
+// (eviction protects only the caller's own key — see maybeEvictConfigCache);
+// ErrProcessorClosed on the functional probe is therefore tolerated and simply
+// proves eviction ran.
+func TestP002_ConfigProcessorCacheChurn(t *testing.T) {
+	const distinctConfigs = 80 // > configProcessorCacheLimit (64) to force eviction
+	const callsPerGoroutine = 20
+
+	cfgs := make([]Config, distinctConfigs)
+	for i := range cfgs {
+		cfgs[i] = DefaultConfig()
+		cfgs[i].MaxCacheSize = 9000 + i
+	}
+
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := range callsPerGoroutine {
+				idx := (g*callsPerGoroutine + i) % distinctConfigs
+				p, err := getProcessorWithConfig(cfgs[idx])
+				if err != nil {
+					t.Errorf("getProcessorWithConfig(config %d): %v", idx, err)
+					return
+				}
+				if _, err := p.Get(`{"ok":true}`, "ok"); err != nil && !errors.Is(err, ErrProcessorClosed) {
+					t.Errorf("Get via cached processor %d: %v", idx, err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+}
+
+// TestP002_GlobalProcessorLifecycleChurn races package-level operations
+// against SetGlobalProcessor and ShutdownGlobalProcessor. Individual calls may
+// fail transiently (ErrProcessorClosed / ErrConcurrencyLimit / nil-processor
+// fallback) — that is the documented churn behavior; the assertions are: no
+// panic, and package-level calls recover once churn settles.
+func TestP002_GlobalProcessorLifecycleChurn(t *testing.T) {
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				_, _ = Get(`{"a":1}`, "a")
+				_, _ = Set(`{"a":1}`, "a", 2)
+			}
+		}()
+	}
+
+	for range 6 {
+		p, err := New(DefaultConfig())
+		if err != nil {
+			close(done)
+			wg.Wait()
+			t.Fatalf("New(DefaultConfig()): %v", err)
+		}
+		SetGlobalProcessor(p)
+	}
+	close(done)
+	wg.Wait()
+
+	ShutdownGlobalProcessor()
+
+	// Post-churn contract: a fresh default processor is created on demand.
+	v, err := Get(`{"k":"v"}`, "k")
+	if err != nil || v != "v" {
+		t.Fatalf("post-churn Get = %v, %v; want \"v\", <nil>", v, err)
+	}
+}
+
+// TestP002_ValidateCacheCloseChurn hammers a single processor's validation
+// cache (isValidationCached read path, cacheValidationWithKey lazy creation,
+// LRU eviction) while Close() runs concurrently: securityValidator.Close()
+// flips cacheDisabled under the write lock against in-flight validations, and
+// Processor.Close drains governed ops under the same churn.
+func TestP002_ValidateCacheCloseChurn(t *testing.T) {
+	p, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatalf("New(DefaultConfig()): %v", err)
+	}
+
+	var stop atomic.Bool
+	var wg sync.WaitGroup
+	for w := range 6 {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; !stop.Load(); i++ {
+				doc := fmt.Sprintf(`{"w%d":%d,"pad":"%s"}`, w, i%50, strings.Repeat("p", 16))
+				if _, err := p.Get(doc, fmt.Sprintf("w%d", w)); err != nil &&
+					!errors.Is(err, ErrProcessorClosed) {
+					t.Errorf("worker %d Get: %v", w, err)
+					return
+				}
+			}
+		}(w)
+	}
+
+	// Let the workers warm the validation cache, then close mid-flight.
+	time.Sleep(2 * time.Millisecond)
+	_ = p.Close()
+	stop.Store(true)
+	wg.Wait()
+}
+
+// TestP002_PathTypeCacheEvictChurn fills the sharded path-type cache past its
+// per-shard limit (16 shards × 256 entries) from multiple goroutines while a
+// concurrent clearer mirrors ShutdownGlobalProcessor's clearPathTypeCache,
+// then pins the classification contract.
+func TestP002_PathTypeCacheEvictChurn(t *testing.T) {
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := range 900 {
+				simple := fmt.Sprintf("g%d_i%d_field", g, i)
+				if getPathType(simple) != pathTypeSimple {
+					t.Errorf("getPathType(%q) != simple", simple)
+					return
+				}
+				if getPathType(simple+".nested[0]") != pathTypeComplex {
+					t.Errorf("getPathType(%q.nested[0]) != complex", simple)
+					return
+				}
+			}
+		}(g)
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 5 {
+			clearPathTypeCache()
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+
+	if getPathType("plain") != pathTypeSimple || getPathType("a.b") != pathTypeComplex {
+		t.Fatal("path type classification broken after churn")
+	}
+}
+
+// TestP002_PreParseSharedTreeContract documents and guards the P-002
+// resolution for PreParse/ParsedJSON.Data(): the tree behind Data() is the
+// parse-cache entry itself (zero-copy — copying it was measured at ~47x the
+// hit-path cost, BenchmarkPreParse_Large 1.3ms vs 28µs, an unacceptable
+// regression for this API's stated purpose), so its contract is DO NOT
+// MUTATE. What MUST hold — and what this test enforces — is that every
+// supported value-extraction path hands out safe copies, so callers never
+// need to touch the shared tree to get work done:
+//  1. GetFromParsed results are independent copies (default config): caller
+//     mutation of an extracted value cannot poison the cache.
+//  2. Concurrent read-only use (PreParse + GetFromParsed + Data() reads)
+//     stays race-clean under -race.
+func TestP002_PreParseSharedTreeContract(t *testing.T) {
+	const src = `{"user":{"name":"Alice","roles":["a","b"]},"n":1}`
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	parsed, err := p.PreParse(src)
+	if err != nil {
+		t.Fatalf("PreParse: %v", err)
+	}
+
+	// 1. Mutating an EXTRACTED result must not poison the shared tree.
+	extracted, err := p.GetFromParsed(parsed, "user")
+	if err != nil {
+		t.Fatalf("GetFromParsed(user): %v", err)
+	}
+	user := extracted.(map[string]any)
+	user["name"] = "MALLORY"
+	user["roles"].([]any)[0] = "pwned"
+
+	name, err := p.GetFromParsed(parsed, "user.name")
+	if err != nil {
+		t.Fatalf("GetFromParsed(name): %v", err)
+	}
+	if name != "Alice" {
+		t.Errorf("cache poisoned via mutated GetFromParsed result: got %v, want Alice", name)
+	}
+	role, err := p.GetFromParsed(parsed, "user.roles[0]")
+	if err != nil {
+		t.Fatalf("GetFromParsed(roles[0]): %v", err)
+	}
+	if role != "a" {
+		t.Errorf("nested slice poisoned via mutated result: got %v, want a", role)
+	}
+
+	// 2. Concurrent READ-ONLY use of the same shared tree is race-clean.
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				pj, err := p.PreParse(src)
+				if err != nil {
+					t.Errorf("concurrent PreParse: %v", err)
+					return
+				}
+				v, err := p.GetFromParsed(pj, "user.name")
+				if err != nil {
+					t.Errorf("concurrent GetFromParsed: %v", err)
+					return
+				}
+				if v != "Alice" {
+					t.Errorf("concurrent read saw poisoned value: got %v, want Alice", v)
+					return
+				}
+				_ = pj.Data() // read-only Data() access is part of the contract
+			}
+		}()
+	}
+	wg.Wait()
+
+	// CacheSharedResults=true opts into sharing of extracted RESULTS as well;
+	// the mode must keep working (correct values).
+	cfg := DefaultConfig()
+	cfg.CacheSharedResults = true
+	ps, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New(shared): %v", err)
+	}
+	defer ps.Close()
+	sp, err := ps.PreParse(src)
+	if err != nil {
+		t.Fatalf("shared PreParse: %v", err)
+	}
+	sname, err := ps.GetFromParsed(sp, "user.name")
+	if err != nil {
+		t.Fatalf("shared GetFromParsed: %v", err)
+	}
+	if sname != "Alice" {
+		t.Errorf("shared mode returned %v, want Alice", sname)
+	}
+}
+
+// TestP002_JSONLParallelEarlyReturnsJoinWorkers guards the defer-based
+// close(jobs)+wg.Wait() restructure in StreamJSONLParallelWithContext
+// (P-002 MEDIUM): every early-return path (memory limit, nesting error, parse
+// error) must close the jobs channel and join the workers. Pre-fix, a panic in
+// the feed loop skipped close(jobs) and leaked every worker permanently; the
+// explicit close+wait pairs were also a double-close hazard waiting to happen
+// on any future refactor. A regression hangs (workers never joined → blocked
+// send) or panics (double close), failing the test either way.
+func TestP002_JSONLParallelEarlyReturnsJoinWorkers(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	lines := strings.Repeat("{\"a\":1}\n", 50)
+	noop := func(int, *IterableValue) error { return nil }
+
+	// Memory-limit early return (workers spawned, fed at least one job).
+	cfg := DefaultConfig()
+	cfg.JSONLMaxMemory = 8
+	err = p.StreamJSONLParallel(strings.NewReader(lines), 4, noop, cfg)
+	if !errors.Is(err, ErrSizeLimit) {
+		t.Fatalf("mem-limit path: got %v, want ErrSizeLimit", err)
+	}
+
+	// Parse-error early return with JSONLContinueOnErr disabled.
+	bad := "{\"a\":1}\n{not json at all}\n"
+	err = p.StreamJSONLParallel(strings.NewReader(bad), 4, noop)
+	if err == nil {
+		t.Fatal("parse-error path: expected an error, got nil")
+	}
+
+	// Nesting-error early return (one deep line beyond the default cap of 200).
+	deep := "{\"a\":1}\n" + strings.Repeat("[", 300) + strings.Repeat("]", 300) + "\n"
+	err = p.StreamJSONLParallel(strings.NewReader(deep), 4, noop)
+	if err == nil {
+		t.Fatal("nesting path: expected an error, got nil")
+	}
+
+	// Normal completion still joins and returns nil.
+	if err := p.StreamJSONLParallel(strings.NewReader(lines), 4, noop); err != nil {
+		t.Fatalf("normal path: %v", err)
 	}
 }

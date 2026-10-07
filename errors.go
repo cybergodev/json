@@ -60,8 +60,17 @@ var (
 	// This includes prototype pollution patterns and other security risks.
 	ErrSecurityViolation = errors.New("security violation detected")
 
+	// ErrDuplicateKey indicates that an input object contains a repeated key.
+	// Only returned when Config.DetectDuplicateKeys is enabled; the default
+	// behavior matches encoding/json (last occurrence wins).
+	ErrDuplicateKey = errors.New("duplicate object key")
+
 	// ErrUnsupportedPath indicates that the path operation is not supported.
 	// This may occur with invalid path segments or operations.
+	//
+	// Deprecated: not currently returned by any operation (D-002 audit);
+	// unsupported segments surface as ErrInvalidPath or ErrTypeMismatch.
+	// Reserved for future use.
 	ErrUnsupportedPath = errors.New("unsupported path operation")
 
 	// errCacheDisabled indicates that caching is not enabled.

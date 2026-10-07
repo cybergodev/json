@@ -51,6 +51,75 @@ func PutStringBuilder(sb *strings.Builder) {
 }
 
 // ----------------------------------------------------------------------------
+// SORTED KEYS POOL - For SortedEntries' multi-key collect-and-sort path
+// ----------------------------------------------------------------------------
+
+// smallKeysBufSize is the map width below which SortedEntries collects keys
+// into a fixed-size stack array instead of the pool: small maps dominate real
+// JSON (nested two/three-key objects), a stack array is deterministically
+// allocation-free, and pool Get/defer/Put traffic per nested map costs more
+// than the allocation it avoids (see SortedEntries).
+const smallKeysBufSize = 8
+
+// maxPooledKeysCap bounds the key-slice capacity retained by the pool. Wider
+// maps allocate directly and are dropped after use, so one huge map cannot pin
+// a huge buffer in the pool. At 256 keys a retained buffer costs at most ~4KB,
+// which keeps even the wide-map steady state (reused exact-cap buffer) inside
+// the pool while bounding pinned memory.
+const maxPooledKeysCap = 256
+
+// sortedKeysPool pools []string buffers used to collect map keys before
+// sorting (SortedEntries' multi-key path). Profiling (P-001) showed that
+// allocation was ~30% of ALL allocated objects on the Set/Delete path, where
+// every result encode sorts the keys of a multi-key map.
+//
+// New hands out a small buffer deliberately: GetSortedKeysSlice swaps in an
+// exact-capacity buffer whenever the pooled one is smaller than the caller's
+// hint, so buffers in circulation are gradually sized to actual workloads
+// instead of every first-time Get pinning a max-size (4KB) buffer per P.
+var sortedKeysPool = sync.Pool{
+	New: func() any {
+		s := make([]string, 0, 16)
+		return &s
+	},
+}
+
+// GetSortedKeysSlice retrieves a pooled []string buffer for key collection.
+// hint is the expected number of keys; hints above maxPooledKeysCap allocate
+// directly instead of from the pool.
+func GetSortedKeysSlice(hint int) *[]string {
+	if hint > maxPooledKeysCap {
+		s := make([]string, 0, hint)
+		return &s
+	}
+	s := sortedKeysPool.Get().(*[]string)
+	if cap(*s) < hint {
+		// The pooled buffer is smaller than needed: appending would regrow it
+		// through several copy rounds, and after every GC pool clear that
+		// churn repeats (P-001: it measurably slowed 100-key map encodes).
+		// Swap in one exact-sized buffer instead.
+		ns := make([]string, 0, hint)
+		s = &ns
+	} else {
+		*s = (*s)[:0]
+	}
+	return s
+}
+
+// PutSortedKeysSlice returns a key buffer to the pool. Buffers that grew past
+// maxPooledKeysCap are discarded.
+func PutSortedKeysSlice(s *[]string) {
+	if s == nil {
+		return
+	}
+	if cap(*s) > maxPooledKeysCap {
+		return // Don't pool very large key buffers
+	}
+	*s = (*s)[:0]
+	sortedKeysPool.Put(s)
+}
+
+// ----------------------------------------------------------------------------
 // PATH SEGMENT SLICE POOL - For path parsing results
 // ----------------------------------------------------------------------------
 
@@ -124,5 +193,3 @@ func PutPathSegmentSlice(s *[]PathSegment) {
 		largePathPool.Put(s)
 	}
 }
-
-// ----------------------------------------------------------------------------

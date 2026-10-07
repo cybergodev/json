@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -185,122 +186,6 @@ func TestKeyIntern(t *testing.T) {
 		stats := ki.GetStats()
 		if stats.ShardCount == 0 {
 			t.Error("ShardCount should be positive")
-		}
-	})
-}
-
-func TestPathIntern(t *testing.T) {
-	t.Run("NewPathIntern", func(t *testing.T) {
-		pi := NewPathIntern(1000)
-		if pi == nil {
-			t.Fatal("NewPathIntern returned nil")
-		}
-	})
-
-	t.Run("Get and Set", func(t *testing.T) {
-		pi := NewPathIntern(1000)
-		segments := []PathSegment{NewPropertySegment("test")}
-		pi.Set("path1", segments)
-		v, ok := pi.Get("path1")
-		if !ok {
-			t.Error("Get should return ok=true")
-		}
-		if len(v) != 1 {
-			t.Errorf("Get returned %d segments, want 1", len(v))
-		}
-	})
-
-	t.Run("Get non-existent", func(t *testing.T) {
-		pi := NewPathIntern(1000)
-		_, ok := pi.Get("nonexistent")
-		if ok {
-			t.Error("Get should return false for non-existent key")
-		}
-	})
-
-	t.Run("Clear", func(t *testing.T) {
-		pi := NewPathIntern(1000)
-		segments := []PathSegment{NewPropertySegment("test")}
-		pi.Set("path1", segments)
-		pi.Clear()
-
-		_, ok := pi.Get("path1")
-		if ok {
-			t.Error("Get should return false after clear")
-		}
-	})
-
-	t.Run("Long path not cached", func(t *testing.T) {
-		pi := NewPathIntern(1000)
-		// Create a very long path
-		longPath := ""
-		for i := 0; i < 300; i++ {
-			longPath += "a"
-		}
-		segments := []PathSegment{NewPropertySegment("test")}
-		pi.Set(longPath, segments)
-
-		_, ok := pi.Get(longPath)
-		if ok {
-			t.Error("Long path should not be cached")
-		}
-	})
-
-	t.Run("InternKey", func(t *testing.T) {
-		k := InternKey("test_key")
-		if k == "" {
-			t.Error("InternKey should not return empty string")
-		}
-	})
-
-	t.Run("InternKeyBytes", func(t *testing.T) {
-		k := InternKeyBytes([]byte("test_key"))
-		if k == "" {
-			t.Error("InternKeyBytes should not return empty string")
-		}
-	})
-
-	t.Run("InternString", func(t *testing.T) {
-		s := InternString("test_string")
-		if s == "" {
-			t.Error("InternString should not return empty string")
-		}
-	})
-
-	t.Run("InternStringBytes", func(t *testing.T) {
-		s := InternStringBytes([]byte("test_string"))
-		if s == "" {
-			t.Error("InternStringBytes should not return empty string")
-		}
-	})
-
-	t.Run("BatchIntern", func(t *testing.T) {
-		keys := []string{"key1", "key2", "key3"}
-		result := BatchIntern(keys)
-		if len(result) != 3 {
-			t.Errorf("BatchIntern returned %d keys, want 3", len(result))
-		}
-	})
-
-	t.Run("BatchIntern empty", func(t *testing.T) {
-		result := BatchIntern([]string{})
-		if len(result) != 0 {
-			t.Errorf("BatchIntern should return empty for empty input")
-		}
-	})
-
-	t.Run("BatchInternKeys", func(t *testing.T) {
-		keys := []string{"key1", "key2", "key3"}
-		result := BatchInternKeys(keys)
-		if len(result) != 3 {
-			t.Errorf("BatchInternKeys returned %d keys, want 3", len(result))
-		}
-	})
-
-	t.Run("BatchInternKeys empty", func(t *testing.T) {
-		result := BatchInternKeys([]string{})
-		if len(result) != 0 {
-			t.Errorf("BatchInternKeys should return empty for empty input")
 		}
 	})
 }
@@ -718,63 +603,92 @@ func TestPerformArraySlice(t *testing.T) {
 	})
 }
 
+// ===========================================================================
+// String-intern boundary tests (consolidated from string_intern_boundary_test.go)
+// ===========================================================================
+
 // ============================================================================
-// IS VALID INDEX / GET SAFE ARRAY ELEMENT TESTS
+// Boundary tests for internal/string_intern.go low-coverage paths.
 // ============================================================================
 
-// TestIsValidIndex tests the IsValidIndex function
-func TestIsValidIndex(t *testing.T) {
-	tests := []struct {
-		index    int
-		length   int
-		expected bool
-	}{
-		{0, 5, true},
-		{4, 5, true},
-		{5, 5, false},
-		{-1, 5, true}, // -1 normalizes to 4
-		{-5, 5, true}, // -5 normalizes to 0
-		{-6, 5, false},
-		{0, 0, false},
+// --- KeyIntern.Size & Intern round-trip (string_intern.go:468, 0% coverage) ---
+
+func TestKeyIntern_SizeAndRoundTrip(t *testing.T) {
+	ki := NewKeyIntern()
+	if got := ki.Size(); got != 0 {
+		t.Errorf("empty interner Size = %d, want 0", got)
 	}
 
-	for _, tt := range tests {
-		t.Run("", func(t *testing.T) {
-			result := IsValidIndex(tt.index, tt.length)
-			if result != tt.expected {
-				t.Errorf("IsValidIndex(%d, %d) = %v, want %v", tt.index, tt.length, result, tt.expected)
-			}
-		})
+	a := ki.Intern("hello")
+	if a != "hello" {
+		t.Errorf("Intern(hello) = %q, want %q", a, "hello")
+	}
+	// Re-interning the same key must not grow the set.
+	ki.Intern("hello")
+	if got := ki.Size(); got != 1 {
+		t.Errorf("after duplicate Intern Size = %d, want 1", got)
+	}
+
+	ki.Intern("world")
+	if got := ki.Size(); got != 2 {
+		t.Errorf("after two unique keys Size = %d, want 2", got)
 	}
 }
 
-// TestGetSafeArrayElement tests the GetSafeArrayElement function
-func TestGetSafeArrayElement(t *testing.T) {
-	arr := []any{1, 2, 3}
+// --- InternBytes (string_intern.go:411) ---
 
-	tests := []struct {
-		name     string
-		index    int
-		expected any
-		expectOk bool
-	}{
-		{"valid index 0", 0, 1, true},
-		{"valid index 1", 1, 2, true},
-		{"valid index 2", 2, 3, true},
-		{"out of bounds positive", 5, nil, false},
-		{"negative valid", -1, 3, true},
-		{"negative out of bounds", -10, nil, false},
-	}
+// --- promoteToHotCache trim path (string_intern.go:310/327, 0% coverage) ---
+//
+// Interning more than maxHotKeys (10000) unique keys forces promoteToHotCache
+// over the threshold and invokes trimHotCache.
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, ok := GetSafeArrayElement(arr, tt.index)
-			if ok != tt.expectOk {
-				t.Errorf("GetSafeArrayElement(arr, %d) ok = %v, want %v", tt.index, ok, tt.expectOk)
-			}
-			if tt.expectOk && result != tt.expected {
-				t.Errorf("GetSafeArrayElement(arr, %d) = %v, want %v", tt.index, result, tt.expected)
-			}
-		})
+func TestKeyIntern_HotCacheTrim(t *testing.T) {
+	ki := NewKeyIntern()
+	for i := 0; i < 10000+50; i++ {
+		ki.Intern(strconvItoa(i))
 	}
+	// Must not panic and must remain internally consistent.
+	if got := ki.Size(); got != 10000+50 {
+		t.Errorf("Size = %d, want %d", got, 10000+50)
+	}
+	// A previously interned key is still resolvable (returns an equal string).
+	first := ki.Intern(strconvItoa(0))
+	if first != "0" {
+		t.Errorf("re-intern of key 0 = %q, want %q", first, "0")
+	}
+}
+
+// --- copyString force-copy path (string_intern.go:25, 60% coverage) ---
+
+func TestCopyString_LargeInput(t *testing.T) {
+	// Above maxStringCopyThreshold (8192) the function takes the force-copy
+	// branch via []byte conversion; content must be preserved.
+	s := strings.Repeat("x", 8193)
+	got := copyString(s)
+	if got != s {
+		t.Error("copyString altered content for large input")
+	}
+}
+
+// strconvItoa avoids importing strconv just for one call site.
+func strconvItoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	var b [20]byte
+	pos := len(b)
+	for i > 0 {
+		pos--
+		b[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		b[pos] = '-'
+	}
+	return string(b[pos:])
 }

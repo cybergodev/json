@@ -7,6 +7,9 @@ func IsWordChar(c byte) bool {
 
 // IsValidCacheKey validates that a cache key is valid for use.
 // Returns false if the key is empty, too long, or contains control characters.
+//
+// NOTE (P-001): no production caller — cache keys are internal.CacheKey
+// structs now, which have no string form to validate; retained for tests.
 func IsValidCacheKey(key string) bool {
 	keyLen := len(key)
 	if keyLen == 0 || keyLen > MaxCacheKeyLength {

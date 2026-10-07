@@ -409,15 +409,12 @@ func TestProcessor_FirstJSONL(t *testing.T) {
 // ============================================================================
 // JSONL WRITER TESTS
 // ============================================================================
-
-func TestNewJSONLWriter(t *testing.T) {
-	var buf bytes.Buffer
-	writer := NewJSONLWriter(&buf)
-
-	if writer == nil {
-		t.Fatal("NewJSONLWriter returned nil")
-	}
-}
+// The former TestNewJSONLWriter (nil-check only) and TestJSONLWriter_Err
+// (Err() nil after a successful write — the error path was never reached)
+// were removed in the FIX-001 consolidation: constructor and error-surface
+// coverage lives in TestJSONLWriter_Write/WriteAll/WriteRaw/Stats below and
+// in TestJSONLWriter_NilReceiver_Boundary / TestJSONLWriter_WriteErrors_Boundary
+// (boundary_test.go).
 
 func TestJSONLWriter_Write(t *testing.T) {
 	tests := []struct {
@@ -560,7 +557,7 @@ func TestJSONLWriter_WriteRaw(t *testing.T) {
 	}
 }
 
-func TestJSONLWriter_Stats(t *testing.T) {
+func TestJSONLWriter_StatsAndErr(t *testing.T) {
 	var buf bytes.Buffer
 	writer := NewJSONLWriter(&buf)
 
@@ -573,16 +570,9 @@ func TestJSONLWriter_Stats(t *testing.T) {
 	if stats.LinesProcessed != 3 {
 		t.Errorf("LinesProcessed = %d, want 3", stats.LinesProcessed)
 	}
-}
 
-func TestJSONLWriter_Err(t *testing.T) {
-	var buf bytes.Buffer
-	writer := NewJSONLWriter(&buf)
-
-	// First write succeeds
-	_ = writer.Write(map[string]any{"a": 1})
-
-	// No error yet
+	// All writes succeeded, so no sticky error is recorded. (The error path
+	// is covered by TestJSONLWriter_WriteErrors_Boundary in boundary_test.go.)
 	if writer.Err() != nil {
 		t.Errorf("Err() = %v, want nil", writer.Err())
 	}
@@ -700,6 +690,9 @@ func TestToJSONL(t *testing.T) {
 	}
 }
 
+// TestToJSONLString covers the PACKAGE-LEVEL ToJSONLString function (the
+// processor method is byte-checked by TestUnify_ToJSONL_Mirror in
+// api_unify_test.go); this row pins the wrapper's delegation output.
 func TestToJSONLString(t *testing.T) {
 	data := []any{
 		map[string]any{"name": "Alice"},
@@ -711,9 +704,9 @@ func TestToJSONLString(t *testing.T) {
 		t.Fatalf("ToJSONLString error: %v", err)
 	}
 
-	lines := strings.Count(result, "\n")
-	if lines != 2 {
-		t.Errorf("Expected 2 lines, got %d", lines)
+	want := "{\"name\":\"Alice\"}\n{\"name\":\"Bob\"}\n"
+	if result != want {
+		t.Errorf("ToJSONLString = %q, want %q", result, want)
 	}
 }
 

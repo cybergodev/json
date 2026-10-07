@@ -75,7 +75,8 @@ Automatic sanitization of JSON paths to prevent injection attacks:
 // - Excessive length (>5,000 characters)
 // - Excessive depth (>100 segments)
 // - Path traversal attempts (../, ..\, URL-encoded and overlong variants)
-// - Zero-width and Unicode lookalike characters
+// - Zero-width characters; Unicode lookalike detection applies only to file
+//   path validation, not JSON paths
 //
 // Note: script tags, eval(...) and similar dangerous patterns are detected in
 // JSON *content*, not in paths (see Dangerous Pattern Detection below).
@@ -247,26 +248,26 @@ Use schema validation for strict data validation:
 // Define a schema.
 // IMPORTANT: numeric and length constraints (MinLength, MaxLength, Minimum,
 // Maximum, MinItems, MaxItems, MultipleOf) are only enforced when the schema
-// is built with NewSchemaWithConfig. A plain struct literal cannot set the
+// is built with NewSchema. A plain struct literal cannot set the
 // internal "constraint present" flags, so such constraints are silently
-// skipped — build schemas with NewSchemaWithConfig (pointer fields mark a
+// skipped — build schemas with NewSchema (pointer fields mark a
 // constraint as explicitly set).
 minLen, maxLen := 3, 50
 zero, maxAge := 0.0, 150.0
-schema := json.NewSchemaWithConfig(json.SchemaConfig{
+schema := json.NewSchema(json.SchemaConfig{
     Type: "object",
     Properties: map[string]*json.Schema{
-        "username": json.NewSchemaWithConfig(json.SchemaConfig{
+        "username": json.NewSchema(json.SchemaConfig{
             Type:      "string",
             MinLength: &minLen,
             MaxLength: &maxLen,
             Pattern:   "^[a-zA-Z0-9_]+$",
         }),
-        "email": json.NewSchemaWithConfig(json.SchemaConfig{
+        "email": json.NewSchema(json.SchemaConfig{
             Type:   "string",
             Format: "email",
         }),
-        "age": json.NewSchemaWithConfig(json.SchemaConfig{
+        "age": json.NewSchema(json.SchemaConfig{
             Type:    "number",
             Minimum: &zero,
             Maximum: &maxAge,
@@ -368,9 +369,9 @@ _, err = processor.Get(jsonString, strings.Repeat("a.", 101))
 // ✗ Longer than 5,000 characters (fixed maxPathLength limit)
 _, err = processor.Get(jsonString, strings.Repeat("a.", 5001))
 
-// Note: Config.MaxPathDepth is currently metadata only — it feeds the
-// SecurityLimits view but is NOT enforced on JSON paths. The enforced caps
-// are the fixed 100-segment parse depth and 5,000-character length above.
+// Note: Config.MaxPathDepth is currently metadata only — it is recorded on
+// the Config but NOT enforced on JSON paths. The enforced caps are the fixed
+// 100-segment parse depth and 5,000-character length above.
 ```
 
 
@@ -527,7 +528,6 @@ Cache keys are validated to prevent injection:
 // Validation includes:
 // - Length checks
 // - Character validation
-// - Pattern matching
 // - Null byte detection
 ```
 
@@ -548,7 +548,8 @@ if err != nil {
 defer processor.Close()
 
 // Cache will automatically evict old entries when full
-// Uses LRU (Least Recently Used) eviction policy
+// Uses frequency-aware LRU eviction: among the 5 least-recently-used tail
+// candidates, the one with the lowest frequency (hits) is evicted
 ```
 
 ---
@@ -677,19 +678,19 @@ Implement schema validation for important data:
 
 ```go
 // Define strict schema for user input.
-// Built with NewSchemaWithConfig so MinLength/MaxLength are enforced (see the
+// Built with NewSchema so MinLength/MaxLength are enforced (see the
 // note under Schema Validation: struct-literal constraints are skipped).
 minLen, maxLen := 3, 50
-userSchema := json.NewSchemaWithConfig(json.SchemaConfig{
+userSchema := json.NewSchema(json.SchemaConfig{
     Type: "object",
     Properties: map[string]*json.Schema{
-        "username": json.NewSchemaWithConfig(json.SchemaConfig{
+        "username": json.NewSchema(json.SchemaConfig{
             Type:      "string",
             MinLength: &minLen,
             MaxLength: &maxLen,
             Pattern:   "^[a-zA-Z0-9_]+$",
         }),
-        "email": json.NewSchemaWithConfig(json.SchemaConfig{
+        "email": json.NewSchema(json.SchemaConfig{
             Type:   "string",
             Format: "email",
         }),
@@ -952,23 +953,23 @@ func ProcessUserJSON(userInput string) error {
     }
     defer processor.Close()
 
-    // Define strict schema (NewSchemaWithConfig so length/range constraints
+    // Define strict schema (NewSchema so length/range constraints
     // are enforced — see the note under Schema Validation)
     minLen, maxLen := 1, 100
     zero, maxAge := 0.0, 150.0
-    schema := json.NewSchemaWithConfig(json.SchemaConfig{
+    schema := json.NewSchema(json.SchemaConfig{
         Type: "object",
         Properties: map[string]*json.Schema{
-            "name": json.NewSchemaWithConfig(json.SchemaConfig{
+            "name": json.NewSchema(json.SchemaConfig{
                 Type:      "string",
                 MinLength: &minLen,
                 MaxLength: &maxLen,
             }),
-            "email": json.NewSchemaWithConfig(json.SchemaConfig{
+            "email": json.NewSchema(json.SchemaConfig{
                 Type:   "string",
                 Format: "email",
             }),
-            "age": json.NewSchemaWithConfig(json.SchemaConfig{
+            "age": json.NewSchema(json.SchemaConfig{
                 Type:    "number",
                 Minimum: &zero,
                 Maximum: &maxAge,
@@ -1010,7 +1011,7 @@ func ProcessAPIRequests() error {
         MaxNestingDepthSecurity:  30,
         EnableValidation:         true,
         EnableCache:              true,
-        MaxCacheSize:             10000,
+        MaxCacheSize:             2000, // Config validation silently clamps values above 2000 to 2000 (with a ConfigWarning)
         CacheTTL:                 10 * time.Minute,
         MaxConcurrency:           100,
     }
@@ -1090,17 +1091,17 @@ func LoadSecureConfig(configPath string) (*Config, error) {
         return nil, fmt.Errorf("failed to read config: %w", err)
     }
 
-    // Define config schema (NewSchemaWithConfig so the port range is
+    // Define config schema (NewSchema so the port range is
     // enforced — see the note under Schema Validation)
     minPort, maxPort := 1.0, 65535.0
-    configSchema := json.NewSchemaWithConfig(json.SchemaConfig{
+    configSchema := json.NewSchema(json.SchemaConfig{
         Type: "object",
         Properties: map[string]*json.Schema{
-            "database": json.NewSchemaWithConfig(json.SchemaConfig{
+            "database": json.NewSchema(json.SchemaConfig{
                 Type: "object",
                 Properties: map[string]*json.Schema{
-                    "host": json.NewSchemaWithConfig(json.SchemaConfig{Type: "string"}),
-                    "port": json.NewSchemaWithConfig(json.SchemaConfig{
+                    "host": json.NewSchema(json.SchemaConfig{Type: "string"}),
+                    "port": json.NewSchema(json.SchemaConfig{
                         Type: "number", Minimum: &minPort, Maximum: &maxPort,
                     }),
                 },
@@ -1179,7 +1180,7 @@ If you discover a security vulnerability in this library, please report it respo
 
 1. **Do NOT** open a public GitHub issue
 2. **Do NOT** disclose the vulnerability publicly until it has been addressed
-3. **DO** email security details to: [security contact email]
+3. **DO** report privately via GitHub Security Advisories: https://github.com/cybergodev/json/security/advisories/new
 4. **DO** provide detailed information about the vulnerability
 5. **DO** include steps to reproduce if possible
 
@@ -1260,7 +1261,7 @@ The library implements a multi-layered security validation system:
 
 The library detects **28 dangerous patterns** across multiple categories, plus supports custom patterns via `RegisterDangerousPattern`.
 
-> **Pattern levels:** Each pattern carries a `PatternLevel` — `PatternLevelCritical` (always block), `PatternLevelWarning` (block in strict mode), or `PatternLevelInfo` (log only, never block). All 28 built-in patterns are registered as `PatternLevelCritical`. Separately, the three prototype-pollution patterns below are members of the `criticalPatterns` set, which means they are **fully scanned regardless of JSON size** even when sampling mode is active.
+> **Pattern levels:** `PatternLevel` is currently metadata only and does not affect scanning behavior: any registered pattern (custom or global) blocks unconditionally on a match, regardless of level (including Info and Warning). `PatternLevelWarning` and `PatternLevelInfo` are reserved for future tiered enforcement. The 28 built-in patterns carry no level assignment; their behavior is equivalent to `PatternLevelCritical`. Separately, the three prototype-pollution patterns below are members of the `criticalPatterns` set, which means they are **fully scanned regardless of JSON size** even when sampling mode is active.
 
 #### Prototype Pollution Patterns (Critical — always fully scanned)
 ```go
@@ -1589,7 +1590,7 @@ func deepCopyValueWithDepth(data any, depth int) (any, error) {
 // Cache configuration:
 maxCacheKeyLength: 1024              // Maximum key length
 securityCacheHighWatermark: 8000     // Fixed threshold for validation cache (independent of MaxCacheSize)
-evictionStrategy: LRU                // Least Recently Used
+evictionStrategy: frequency-aware LRU // Evicts the lowest-frequency (hits) entry among the 5 LRU-tail candidates
 
 // Key truncation for long keys:
 func truncateCacheKey(key string) string {
@@ -1645,9 +1646,11 @@ func (r AccessResult) AsInt() (int, error) {
 #### Worker Pool Protection
 ```go
 // Parallel processing coordination:
-workerCount:   config.MaxConcurrency // Worker count driven by Config (default: 4); capped at the input length
-semaphorePool: chan struct{}         // Limit concurrent goroutines
-taskTracking:  atomic.Int32          // Track pending tasks
+workerCount:   config.MaxConcurrency // Worker count driven by Config (default: 50 with DefaultConfig; 4 is only the fallback when MaxConcurrency <= 0); capped at the input length
+semaphorePool: chan struct{}         // Limit concurrent goroutines (ParallelIterator's sem channel only)
+hasError:      atomic.Int32          // First-error flag; does not track task counts
+// Note: Processor-level in-flight operations are counted by the atomic int64
+// activeOps, a counting semaphore rather than a channel.
 
 // Error handling:
 atomic.CompareAndSwapInt32()   // First error wins
@@ -1710,8 +1713,7 @@ config := json.Config{
 
 // Performance impact:
 // - Small JSON (<4KB): No impact (always fully scanned)
-// - Large JSON (>100KB): ~10-30% overhead
-// - Very large JSON (>1MB): ~20-40% overhead
+// - Large JSON (100KB+): ~10-30% overhead
 ```
 
 ### Security Validation Cache
@@ -1749,7 +1751,7 @@ func (sv *securityValidator) getValidationCacheKey(jsonStr string) validationKey
 
 const securityCacheHighWatermark = 8000  // Fixed threshold for validation cache (independent of MaxCacheSize)
 
-func evictLRUEntries() {
+func (sv *securityValidator) evictLRUEntries() {
     // Sort by lastAccess time
     // Remove oldest 25%
     // Prevents cache thrashing
@@ -1759,7 +1761,7 @@ func evictLRUEntries() {
 #### Cache Security Guarantees
 1. **Collision Safety**: single FNV-1a key plus exact-input comparison on every hit — a hash collision cannot skip validation
 2. **Memory Protection**: Proactive eviction at 8,000 entries prevents OOM
-3. **Timing Safety**: LRU updates are batched to reduce lock contention
+3. **Timing Safety**: The validation-cache read path never updates timestamps (avoiding a write lock on hits); lastAccess is refreshed only on writes and re-validation. Batched MoveToFront updates apply to the result cache (internal/cache.go), not this cache
 
 ### Optimized Security Scanning
 
@@ -1824,10 +1826,15 @@ func (sv *securityValidator) hasSuspiciousCharacterDensity(jsonStr string) bool 
 ```go
 const (
     maxPathLength  = 5000     // Maximum path characters
-    maxPathDepth   = 50       // Default maximum path segments (Config.MaxPathDepth)
+    maxPathDepth   = 100      // Maximum path segments (internal fixed limit)
     maxArrayIndex  = 1000000  // Maximum array index value
 )
 ```
+
+> **Note:** `Config.MaxPathDepth` (default 50, `DefaultMaxPathDepth` in
+> config.go) is metadata only - recorded on the config but never enforced in
+> any path validation. The enforced limits are the internal fixed values
+> above: 5,000 path characters, 100 path segments, array index 1,000,000.
 
 #### Path Security Checks
 ```go
@@ -1842,7 +1849,8 @@ const (
 //    Security checks (validatePathSecurity, applied to all paths):
 //    - Null byte detection
 //    - Path traversal detection (../, encoded/overlong variants)
-//    - Zero-width and Unicode lookalike character detection
+//    - Zero-width character detection
+//    - Unicode lookalike detection (file-path layer only, file.go; not applied to JSON paths)
 //    - Repeated separator detection (:::, [[[, }}})
 ```
 
@@ -1851,8 +1859,11 @@ const (
 The library detects invisible Unicode characters that could bypass pattern
 matching. See the canonical list under
 [Zero-Width Character Detection](#zero-width-character-detection) above \u2014 the
-same `containsZeroWidthChars` function is used in both the input-validation and
-path-validation layers. It covers zero-width characters (`\u200B\u2013\u200F`),
+`containsZeroWidthChars` function is used only in the path-validation layer
+(`validatePathSecurity`, security.go); the JSON content-validation layer
+(`validateJSONSecurity`) does not detect zero-width characters; it checks
+only null bytes, `\uXXXX` normalization, and dangerous patterns. It covers
+zero-width characters (`\u200B\u2013\u200F`),
 directional marks, the BOM (`\uFEFF`), format characters (`\u2060\u2013\u2064`,
 `\u206A\u2013\u206F`, `\u2066\u2013\u2069`), soft hyphen (`\u00AD`), combining grapheme
 joiner (`\u034F`), Arabic letter mark (`\u061C`), Jamo fillers (`\u115F`,

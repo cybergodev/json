@@ -12,7 +12,7 @@ import (
 
 // ============================================================================
 // GLOBAL PATH SEGMENT CACHE
-// PERFORMANCE v2: Uses sync.Map for lock-free reads with size limit and LRU eviction
+// PERFORMANCE: Uses sync.Map for lock-free reads with size limit and LRU eviction
 // SECURITY: Thread-safe by design using sync.Map
 // FIX: Added size limit to prevent memory leak from unbounded cache growth
 // ============================================================================
@@ -24,7 +24,11 @@ const (
 	pathCacheEvictCount    = 1000  // Number of entries to evict when limit reached
 )
 
-// pathCacheEntry wraps cached segments with access time for LRU eviction
+// pathCacheEntry wraps cached segments with access time for LRU eviction.
+// Stored in the sync.Map BY POINTER: CompareAndSwap (used by the read path's
+// access-time refresh) requires comparable values, and the struct itself is
+// not comparable (slice field). Pointer identity is also the exact-match
+// semantics the refresh wants.
 type pathCacheEntry struct {
 	segments   []PathSegment
 	lastAccess int64
@@ -48,15 +52,23 @@ func getCachedPathSegments(path string) ([]PathSegment, bool) {
 		return nil, false
 	}
 	if v, ok := pathSegmentCache.Load(path); ok {
-		entry, ok := v.(pathCacheEntry)
-		if !ok {
+		entry, ok := v.(*pathCacheEntry)
+		if !ok || entry == nil {
 			return nil, false
 		}
 		// PERFORMANCE: Update access time only every ~1 second to avoid
 		// time.Now() syscall on every cache hit. Approximate LRU is sufficient.
 		now := time.Now().UnixNano()
 		if now-entry.lastAccess > int64(time.Second) {
-			pathSegmentCache.Store(path, pathCacheEntry{
+			// RACE FIX (D-002): a plain Store here re-created the entry after
+			// a concurrent eviction deleted it — without incrementing
+			// pathCacheSize. Each occurrence permanently under-counted by
+			// one, and once the counter drifted below pathCacheMaxSize,
+			// eviction (triggered only at count >= max) never ran again:
+			// unbounded growth of this process-global cache. CAS replaces
+			// the entry only if it is still the one we loaded; if eviction
+			// won the race, skip the refresh entirely.
+			pathSegmentCache.CompareAndSwap(path, entry, &pathCacheEntry{
 				segments:   entry.segments,
 				lastAccess: now,
 			})
@@ -83,17 +95,27 @@ func setCachedPathSegments(path string, segments []PathSegment) {
 	copied := make([]PathSegment, len(segments))
 	copy(copied, segments)
 
-	// Wrap in entry for LRU tracking
-	entry := pathCacheEntry{
+	// Wrap in entry for LRU tracking (stored by pointer — see type comment)
+	entry := &pathCacheEntry{
 		segments:   copied,
 		lastAccess: time.Now().UnixNano(),
 	}
 
-	// Only increment counter for new entries, not overwrites
-	if _, loaded := pathSegmentCache.LoadOrStore(path, entry); !loaded {
+	// Only increment counter for new entries, not overwrites.
+	if existing, loaded := pathSegmentCache.LoadOrStore(path, entry); !loaded {
 		atomic.AddInt64(&pathCacheSize, 1)
 	} else {
-		pathSegmentCache.Store(path, entry) // Update existing entry with fresh timestamp
+		// RACE FIX (D-002/R9 m9): CAS instead of a plain Store — a concurrent
+		// eviction may have deleted the entry between LoadOrStore and this
+		// update, and Store would resurrect it WITHOUT incrementing
+		// pathCacheSize. Each such occurrence permanently under-counted by one,
+		// and once the counter drifted below pathCacheMaxSize, eviction (which
+		// only triggers at count >= max) never ran again — unbounded growth of
+		// this process-global cache. CAS replaces the entry only if it is still
+		// the one we loaded; if eviction won the race, skip the refresh
+		// entirely (the write-side mirror of the read-side CAS fix in
+		// getCachedPathSegments).
+		pathSegmentCache.CompareAndSwap(path, existing, entry)
 	}
 }
 
@@ -116,7 +138,7 @@ func evictPathCacheEntries() {
 	candidates := make([]evictionCandidate, 0, pathCacheMaxSize/10) // Estimate
 
 	pathSegmentCache.Range(func(key, value any) bool {
-		if entry, ok := value.(pathCacheEntry); ok {
+		if entry, ok := value.(*pathCacheEntry); ok && entry != nil {
 			candidates = append(candidates, evictionCandidate{
 				path:       func() string { s, _ := key.(string); return s }(),
 				lastAccess: entry.lastAccess,
@@ -283,17 +305,6 @@ const (
 	FlagHasStep
 )
 
-// Public API aliases for flag constants (backward compatibility)
-// These provide more descriptive names for the public API
-const (
-	PathFlagNegative = FlagIsNegative // Indicates negative array index
-	PathFlagWildcard = FlagIsWildcard // Indicates wildcard segment
-	PathFlagFlat     = FlagIsFlat     // Indicates flat extraction mode
-	PathFlagHasStart = FlagHasStart   // Indicates slice has start value
-	PathFlagHasEnd   = FlagHasEnd     // Indicates slice has end value
-	PathFlagHasStep  = FlagHasStep    // Indicates slice has step value
-)
-
 // PathSegment represents a single segment in a JSON path
 // Optimized to avoid pointer allocations by using direct values and bit flags
 type PathSegment struct {
@@ -454,21 +465,18 @@ func NewExtractSegmentWithFlat(key string, flat bool) PathSegment {
 	}
 }
 
-// NewWildcardSegment creates a wildcard segment
-func NewWildcardSegment() PathSegment {
-	return PathSegment{
-		Type:  WildcardSegment,
-		Flags: FlagIsWildcard,
-	}
-}
-
 // emptyPathSegments is a cached empty slice for empty/root paths
 // PERFORMANCE: Avoids repeated allocations for common empty path case
 var emptyPathSegments = make([]PathSegment, 0)
 
 // ParsePath parses a JSON path string into segments
-// PERFORMANCE v3: Added sync.Map-based cache for lock-free reads
-// PERFORMANCE v2: Added fast path for simple single-property access
+// PERFORMANCE: Added sync.Map-based cache for lock-free reads
+// PERFORMANCE: Added fast path for simple single-property access
+//
+// CONCURRENCY (P-002): results are cached process-wide. The returned slice may
+// be shared across goroutines via that cache — callers MUST NOT modify its
+// elements. Appending is safe: cached slices are stored with cap == len, so an
+// append reallocates instead of writing into the shared backing array.
 func ParsePath(path string) ([]PathSegment, error) {
 	if path == "" {
 		return emptyPathSegments, nil
@@ -479,7 +487,7 @@ func ParsePath(path string) ([]PathSegment, error) {
 		return emptyPathSegments, nil
 	}
 
-	// PERFORMANCE v3: Check cache first (lock-free)
+	// PERFORMANCE: Check cache first (lock-free)
 	if segments, ok := getCachedPathSegments(path); ok {
 		return segments, nil
 	}
@@ -547,7 +555,7 @@ func ParseComplexSegment(part string) ([]PathSegment, error) {
 
 // parseDotNotation parses dot notation paths like "user.name" or "users[0].name"
 // PERFORMANCE: Pre-calculates segment count to avoid slice growth allocations
-// PERFORMANCE v2: Added fast paths for common simple cases (1-2 segments, no brackets)
+// PERFORMANCE: Added fast paths for common simple cases (1-2 segments, no brackets)
 // ESCAPE: Handles \. \\ \[ \] \{ \} escape sequences
 // SECURITY: Enforces MaxPathParseDepth limit to prevent stack overflow attacks
 func parseDotNotation(path string) ([]PathSegment, error) {
@@ -592,6 +600,14 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 		for i := 0; i <= pathLen; i++ {
 			if i == pathLen || path[i] == '.' {
 				part := path[start:i]
+				start = i + 1
+				if part == "" {
+					// Drop empty parts (".a", "a.", "a..b") so this fast path
+					// agrees with SplitPathIntoSegments, which skips them —
+					// previously Get(".a") emitted PropertySegment("") and
+					// returned nil while Set(".a") wrote "a" (D-002).
+					continue
+				}
 				// Numeric index, bare wildcard ("*"), or property name.
 				if index, ok := ParseIntFast(part); ok {
 					var flags PathSegmentFlags
@@ -614,11 +630,10 @@ func parseDotNotation(path string) ([]PathSegment, error) {
 						Key:  part,
 					}
 				}
-				start = i + 1
 				idx++
 			}
 		}
-		return segments, nil
+		return segments[:idx], nil
 	}
 
 	// Pre-calculate segment count for better allocation
@@ -961,9 +976,12 @@ func parseComplexSegment(part string) ([]PathSegment, error) {
 		// handled above), so nextSpecial is always > 0: consume the property
 		// name up to the next special character and loop.
 		propertyName := remaining[:nextSpecial]
+		// Unescape like the sibling branches (parsePropertyWithArray and
+		// parseDotNotation): `a\.b{x}` must look up the literal key "a.b",
+		// not "a\.b" (D-002).
 		segments = append(segments, PathSegment{
 			Type: PropertySegment,
-			Key:  propertyName,
+			Key:  UnescapePathSegment(propertyName),
 		})
 		remaining = remaining[nextSpecial:]
 	}

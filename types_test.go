@@ -155,9 +155,6 @@ func TestConfigConstantsComprehensive(t *testing.T) {
 		helper.AssertTrue(config.MaxPathDepth > 0)
 		helper.AssertTrue(config.MaxConcurrency > 0)
 		helper.AssertTrue(config.MaxNestingDepthSecurity >= 0)
-
-		limits := config.getSecurityLimits()
-		helper.AssertNotNil(limits)
 	})
 
 	t.Run("ConfigPresets", func(t *testing.T) {
@@ -202,32 +199,6 @@ func TestConfigConstantsComprehensive(t *testing.T) {
 		helper.AssertTrue(maxPathLength > 0)
 	})
 
-	t.Run("GlobalProcessor", func(t *testing.T) {
-		p, _ := New(DefaultConfig())
-		SetGlobalProcessor(p)
-		ShutdownGlobalProcessor()
-	})
-}
-
-// TestConfig_GetSecurityLimits tests Config.GetSecurityLimits method
-func TestConfig_GetSecurityLimits(t *testing.T) {
-	config := &Config{
-		MaxNestingDepthSecurity:   100,
-		MaxSecurityValidationSize: 1024 * 1024,
-		MaxObjectKeys:             1000,
-		MaxArrayElements:          10000,
-		MaxJSONSize:               10 * 1024 * 1024,
-		MaxPathDepth:              50,
-	}
-
-	limits := config.getSecurityLimits()
-
-	if limits.MaxNestingDepth != 100 {
-		t.Errorf("GetSecurityLimits max_nesting_depth = %v, want 100", limits.MaxNestingDepth)
-	}
-	if limits.MaxJSONSize != 10*1024*1024 {
-		t.Errorf("GetSecurityLimits max_json_size = %v, want %d", limits.MaxJSONSize, 10*1024*1024)
-	}
 }
 
 // TestconvertToBool tests boolean conversion
@@ -890,41 +861,6 @@ func TestEncodeConfig_Clone_Zero(t *testing.T) {
 // TestErrorClassifier tests error classification functionality
 
 // TestErrorHandling comprehensive error handling tests
-func TestErrorHandling(t *testing.T) {
-	helper := newTestHelper(t)
-
-	t.Run("ErrorTypes", func(t *testing.T) {
-		testData := `{"name": "John", "age": 30}`
-
-		tests := []struct {
-			name    string
-			path    string
-			wantErr bool
-			errType error
-		}{
-			{"ValidPath", "name", false, nil},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				_, err := Get(testData, tt.path)
-				if tt.wantErr {
-					helper.AssertError(err)
-					if tt.errType != nil {
-						var jsonErr *JsonsError
-						if errors.As(err, &jsonErr) {
-							helper.AssertEqual(tt.errType, jsonErr.Err)
-						}
-					}
-				} else {
-					helper.AssertNoError(err)
-				}
-			})
-		}
-	})
-}
-
-// TestErrorMessages verifies error messages are helpful
 func TestErrorMessages(t *testing.T) {
 	helper := newTestHelper(t)
 
@@ -1209,13 +1145,6 @@ func TestHealthCheckSystem(t *testing.T) {
 	})
 }
 
-// TestInvalidArrayIndex tests the InvalidArrayIndex constant
-func TestInvalidArrayIndex(t *testing.T) {
-	if internal.ArrayIndexInvalid != -999999 {
-		t.Errorf("ArrayIndexInvalid = %d, want -999999", internal.ArrayIndexInvalid)
-	}
-}
-
 // TestInvalidUnmarshalError tests the InvalidUnmarshalError type
 func TestInvalidUnmarshalError(t *testing.T) {
 	// Test nil type
@@ -1241,47 +1170,6 @@ func TestInvalidUnmarshalError(t *testing.T) {
 }
 
 // TestIteratorAdvancedFeatures tests advanced iterator functionality
-func TestIteratorAdvancedFeatures(t *testing.T) {
-	helper := newTestHelper(t)
-
-	t.Run("IterableValueGetPath", func(t *testing.T) {
-		testData := `{"user": {"name": "Alice", "profile": {"age": 25}}}`
-		processor, _ := New()
-		defer processor.Close()
-
-		var data map[string]any
-		processor.Parse(testData, &data)
-
-		iv := &IterableValue{data: data}
-
-		// Test nested path access using dot notation
-		profile := iv.GetObject("user")
-		helper.AssertNotNil(profile)
-		age, ok := profile["profile"].(map[string]any)
-		helper.AssertTrue(ok)
-		helper.AssertEqual(float64(25), age["age"])
-	})
-
-	t.Run("ForeachNestedWithPaths", func(t *testing.T) {
-		testData := `{
-			"users": [
-				{"name": "Alice", "roles": ["admin", "user"]},
-				{"name": "Bob", "roles": ["user"]}
-			]
-		}`
-
-		// Test that Foreach correctly iterates over the root object
-		callCount := 0
-		Foreach(testData, func(key any, item *IterableValue) {
-			callCount++
-		})
-
-		// Should be called once for the root object
-		helper.AssertTrue(callCount >= 1)
-	})
-}
-
-// TestMarshalerError tests the MarshalerError type
 func TestMarshalerError(t *testing.T) {
 	type TestType struct{}
 	testType := reflect.TypeOf(TestType{})
@@ -1962,9 +1850,12 @@ func TestResourceManager(t *testing.T) {
 			helper.AssertNoError(err)
 		}
 
-		// Verify no memory leaks
+		// The 100 Gets above must be reflected in the operation counter
+		// (the former `>= 0` check could never fail).
 		stats := processor.GetStats()
-		helper.AssertTrue(stats.OperationCount >= 0)
+		if stats.OperationCount < 100 {
+			t.Errorf("OperationCount = %d after 100 successful Gets, want >= 100", stats.OperationCount)
+		}
 	})
 }
 
@@ -1980,110 +1871,22 @@ func TestRootDataTypeConversionError(t *testing.T) {
 	if err.Error() != expectedMsg {
 		t.Errorf("Error() = %q, want %q", err.Error(), expectedMsg)
 	}
-
-	// Test nil error - verify nil pointer behavior is correct
-	// Note: This test verifies that an uninitialized error pointer is nil
-	// which is always true in Go. The test exists for documentation purposes.
-	var nilErr *rootDataTypeConversionError //nolint:staticcheck // nilness check: intentionally testing nil
-	_ = nilErr                              // use the variable to avoid compiler warnings
 }
 
-// TestSchemaComprehensive consolidates TestSchema, TestSchema_AllConstraints,
-// TestSchema_ArrayConstraints, TestSchema_ExclusiveConstraints,
-// TestSchema_NumericConstraints, TestSchema_StringConstraints,
-// and TestSchema_DefaultSchema into a single table-driven test.
+// TestSchemaComprehensive pins DefaultSchema's zero-constraint contract.
+// The former "constraint fields" / "mutable constraint updates" /
+// "exclusive with numeric constraints" subtests asserted Go struct-literal
+// semantics (write a field, read it back) and were removed (FIX-001).
 func TestSchemaComprehensive(t *testing.T) {
-	t.Run("constraint fields", func(t *testing.T) {
-		tests := []struct {
-			name         string
-			minLen       int
-			maxLen       int
-			minimum      float64
-			maximum      float64
-			minItems     int
-			maxItems     int
-			exclusiveMin bool
-			exclusiveMax bool
-		}{
-			{"all set positive", 5, 100, 0, 1000, 1, 10, true, true},
-			{"all set negative range", 5, 50, -100, 100, 1, 10, false, false},
-			{"zero values", 0, 0, 0, 0, 0, 0, false, false},
-			{"large values", 100, 10000, -1e6, 1e9, 0, 100000, true, false},
+	s := DefaultSchema()
+	if s == nil {
+		t.Fatal("DefaultSchema() returned nil")
+	}
+	for _, set := range []bool{s.hasMinLength, s.hasMaxLength, s.hasMinimum, s.hasMaximum, s.hasMinItems, s.hasMaxItems} {
+		if set {
+			t.Error("DefaultSchema should have no constraints set")
 		}
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				s := &Schema{
-					MinLength: tt.minLen, hasMinLength: true,
-					MaxLength: tt.maxLen, hasMaxLength: true,
-					Minimum: tt.minimum, hasMinimum: true,
-					Maximum: tt.maximum, hasMaximum: true,
-					MinItems: tt.minItems, hasMinItems: true,
-					MaxItems: tt.maxItems, hasMaxItems: true,
-					ExclusiveMinimum: tt.exclusiveMin,
-					ExclusiveMaximum: tt.exclusiveMax,
-				}
-				if !s.hasMinLength || s.MinLength != tt.minLen {
-					t.Errorf("MinLength = %d, has=%v, want %d", s.MinLength, s.hasMinLength, tt.minLen)
-				}
-				if !s.hasMaxLength || s.MaxLength != tt.maxLen {
-					t.Errorf("MaxLength = %d, has=%v, want %d", s.MaxLength, s.hasMaxLength, tt.maxLen)
-				}
-				if !s.hasMinimum || s.Minimum != tt.minimum {
-					t.Errorf("Minimum = %v, has=%v, want %v", s.Minimum, s.hasMinimum, tt.minimum)
-				}
-				if !s.hasMaximum || s.Maximum != tt.maximum {
-					t.Errorf("Maximum = %v, has=%v, want %v", s.Maximum, s.hasMaximum, tt.maximum)
-				}
-				if !s.hasMinItems || s.MinItems != tt.minItems {
-					t.Errorf("MinItems = %d, has=%v, want %d", s.MinItems, s.hasMinItems, tt.minItems)
-				}
-				if !s.hasMaxItems || s.MaxItems != tt.maxItems {
-					t.Errorf("MaxItems = %d, has=%v, want %d", s.MaxItems, s.hasMaxItems, tt.maxItems)
-				}
-				if s.ExclusiveMinimum != tt.exclusiveMin {
-					t.Errorf("ExclusiveMinimum = %v, want %v", s.ExclusiveMinimum, tt.exclusiveMin)
-				}
-				if s.ExclusiveMaximum != tt.exclusiveMax {
-					t.Errorf("ExclusiveMaximum = %v, want %v", s.ExclusiveMaximum, tt.exclusiveMax)
-				}
-			})
-		}
-	})
-
-	t.Run("DefaultSchema has no constraints", func(t *testing.T) {
-		s := DefaultSchema()
-		if s == nil {
-			t.Fatal("DefaultSchema() returned nil")
-		}
-		for _, set := range []bool{s.hasMinLength, s.hasMaxLength, s.hasMinimum, s.hasMaximum, s.hasMinItems, s.hasMaxItems} {
-			if set {
-				t.Error("DefaultSchema should have no constraints set")
-			}
-		}
-	})
-
-	t.Run("mutable constraint updates", func(t *testing.T) {
-		s := &Schema{MinLength: 10, MaxLength: 100}
-		s.hasMinLength = true
-		s.hasMaxLength = true
-		s.MinLength = 5
-		s.MaxLength = 50
-		if s.MinLength != 5 || s.MaxLength != 50 {
-			t.Errorf("MinLength/MaxLength not updated correctly: %d/%d", s.MinLength, s.MaxLength)
-		}
-	})
-
-	t.Run("exclusive with numeric constraints", func(t *testing.T) {
-		s := &Schema{Minimum: 10, Maximum: 100, ExclusiveMinimum: true, ExclusiveMaximum: true}
-		s.hasMinimum = true
-		s.hasMaximum = true
-		if s.Minimum != 10 || s.Maximum != 100 {
-			t.Errorf("Minimum/Maximum should be preserved: %v/%v", s.Minimum, s.Maximum)
-		}
-		if !s.ExclusiveMinimum || !s.ExclusiveMaximum {
-			t.Error("Exclusive flags should be true")
-		}
-	})
+	}
 }
 
 // TestSyntaxError tests the SyntaxError type

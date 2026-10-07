@@ -74,6 +74,48 @@ func (n Number) MarshalJSON() ([]byte, error) {
 	return []byte(n), nil
 }
 
+// UnmarshalJSON stores the raw number literal, matching encoding/json's
+// special-casing of its own json.Number: decoding `42` into a *Number
+// succeeds without any UseNumber-style setup. Previously both
+// Unmarshal(data, &n) and Decoder.Decode(&n) failed with "cannot unmarshal
+// number into Go value of type json.Number", breaking the drop-in
+// replacement for the standard `var n json.Number; dec.Decode(&n)` pattern
+// (D-002). JSON null is a no-op (zero Number), per the Unmarshaler contract.
+func (n *Number) UnmarshalJSON(b []byte) error {
+	s := string(b)
+	if s == "null" {
+		*n = ""
+		return nil
+	}
+	if !internal.IsValidJSONNumber(s) {
+		return fmt.Errorf("json: cannot unmarshal %s into Go value of type json.Number", jsonKindOfLiteral(b))
+	}
+	*n = Number(s)
+	return nil
+}
+
+// jsonKindOfLiteral names the JSON kind of a raw literal for error messages,
+// mirroring encoding/json's UnmarshalTypeError wording.
+func jsonKindOfLiteral(b []byte) string {
+	if len(b) == 0 {
+		return "value"
+	}
+	switch b[0] {
+	case '"':
+		return "string"
+	case '{':
+		return "object"
+	case '[':
+		return "array"
+	case 't', 'f':
+		return "bool"
+	case 'n':
+		return "null"
+	default:
+		return "number"
+	}
+}
+
 // isSpace reports whether the character is a JSON whitespace character.
 func isSpace(c byte) bool {
 	return internal.IsSpace(c)
@@ -161,10 +203,18 @@ func (enc *Encoder) Encode(v any) error {
 	}
 
 	// PERFORMANCE: Fast path for simple types with no custom encoding
-	// Avoids Config creation and EncodeWithConfig overhead for common cases
-	if enc.indent == "" && enc.prefix == "" {
+	// Avoids Config creation and Encode overhead for common cases.
+	// D-002: the fast encoder honors NONE of the processor's encoding
+	// options (FloatPrecision, CustomEscapes, EscapeUnicode, ...), so it may
+	// only run when the processor's config leaves every such option at its
+	// default — otherwise a FloatPrecision=2 processor emitted full precision
+	// for simple values and rounded values for complex ones.
+	if enc.indent == "" && enc.prefix == "" && encodingFastPathEligible(&processor.config) {
 		// Try fast encoder directly
 		encoder := internal.GetEncoder()
+		if processor.config.MaxDepth > 0 {
+			encoder.SetMaxEncodeDepth(processor.config.MaxDepth)
+		}
 		err := encoder.EncodeValue(v)
 		if err == nil {
 			data := encoder.Bytes()
@@ -207,7 +257,7 @@ func (enc *Encoder) Encode(v any) error {
 	}
 
 	// Encode the value using internal method that accepts pre-built config
-	jsonStr, err := processor.EncodeWithConfig(v, config)
+	jsonStr, err := processor.Encode(v, config)
 	if err != nil {
 		return err
 	}
@@ -493,6 +543,15 @@ func (dec *Decoder) readStringValue(buf *bytes.Buffer) ([]byte, error) {
 	for {
 		b, err := dec.buf.ReadByte()
 		if err != nil {
+			if err == io.EOF {
+				// The opening quote was already consumed (readValue step 1),
+				// so EOF here means the string is truncated mid-value — NOT a
+				// clean end-of-stream. Returning bare io.EOF would be
+				// indistinguishable from "no more values" and make streaming
+				// callers silently drop the final value; stdlib returns
+				// io.ErrUnexpectedEOF here (D-002).
+				return nil, fmt.Errorf("unexpected EOF in JSON string: %w", io.ErrUnexpectedEOF)
+			}
 			return nil, err
 		}
 		dec.offset++
@@ -550,7 +609,9 @@ func (dec *Decoder) readContainerValue(buf *bytes.Buffer, openChar byte) ([]byte
 		b, err := dec.buf.ReadByte()
 		if err != nil {
 			if err == io.EOF && buf.Len() > 0 {
-				return nil, fmt.Errorf("unexpected EOF in JSON container")
+				// Wrap with %w so errors.Is(err, io.ErrUnexpectedEOF) matches,
+				// consistent with readStringValue's truncation error (D-002).
+				return nil, fmt.Errorf("unexpected EOF in JSON container: %w", io.ErrUnexpectedEOF)
 			}
 			return nil, err
 		}
@@ -821,15 +882,15 @@ func (dec *Decoder) parseSurrogatePair(high rune) (rune, error) {
 func (dec *Decoder) parseBoolean(first byte) (bool, error) {
 	if first == 't' {
 		expected := "rue"
-		for _, expected_char := range expected {
+		for _, expectedChar := range expected {
 			b, err := dec.buf.ReadByte()
 			if err != nil {
 				return false, err
 			}
 			dec.offset++
-			if b != byte(expected_char) {
+			if b != byte(expectedChar) {
 				return false, &SyntaxError{
-					msg: fmt.Sprintf("invalid character '%c' in literal true (expecting '%c')", b, expected_char),
+					msg: fmt.Sprintf("invalid character '%c' in literal true (expecting '%c')", b, expectedChar),
 					// Offset includes the offending byte, matching encoding/json.
 					Offset: dec.offset,
 				}
@@ -839,15 +900,15 @@ func (dec *Decoder) parseBoolean(first byte) (bool, error) {
 	}
 
 	expected := "alse"
-	for _, expected_char := range expected {
+	for _, expectedChar := range expected {
 		b, err := dec.buf.ReadByte()
 		if err != nil {
 			return false, err
 		}
 		dec.offset++
-		if b != byte(expected_char) {
+		if b != byte(expectedChar) {
 			return false, &SyntaxError{
-				msg: fmt.Sprintf("invalid character '%c' in literal false (expecting '%c')", b, expected_char),
+				msg: fmt.Sprintf("invalid character '%c' in literal false (expecting '%c')", b, expectedChar),
 				// Offset includes the offending byte, matching encoding/json.
 				Offset: dec.offset,
 			}
@@ -948,21 +1009,103 @@ func (p *Processor) validateDepth(value any, maxDepth, currentDepth int) error {
 				return err
 			}
 		}
+		return nil
 	case []any:
 		for _, val := range v {
 			if err := p.validateDepth(val, maxDepth, currentDepth+1); err != nil {
 				return err
 			}
 		}
+		return nil
 	case map[any]any:
 		for _, val := range v {
 			if err := p.validateDepth(val, maxDepth, currentDepth+1); err != nil {
 				return err
 			}
 		}
+		return nil
+	case nil, bool, float64, string, json.Number, Number,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, float32:
+		// JSON leaf values: no container recursion, skip the reflective walk
+		// below (hot path — every leaf of every document passes here).
+		return nil
 	}
 
+	// D-002 (M17): typed containers (structs, typed slices/maps, pointers)
+	// previously fell through here and bypassed the depth cap entirely — a
+	// 150-deep struct chain encoded fine while a 150-deep []any chain was
+	// rejected, for the same configured MaxDepth. Walk them reflectively,
+	// with a pointer-identity visited set so cyclic graphs cannot loop
+	// (recursion is additionally bounded by maxDepth).
+	return validateDepthReflect(value, maxDepth, currentDepth, nil)
+}
+
+// validateDepthReflect walks non-JSON-native container kinds for
+// validateDepth. visited tracks in-progress pointers (identity, not deep
+// equality) to guard against cyclic structures; a shared map is threaded
+// through the walk and only allocated when a pointer is first seen.
+func validateDepthReflect(value any, maxDepth, currentDepth int, visited map[any]bool) error {
+	if currentDepth > maxDepth {
+		return &JsonsError{
+			Op:      "validate_depth",
+			Message: fmt.Sprintf("data structure depth %d exceeds maximum %d", currentDepth, maxDepth),
+			Err:     ErrDepthLimit,
+		}
+	}
+
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if v.IsNil() {
+			return nil
+		}
+		// Cycle guard: only pointer identities are tracked (interfaces re-box
+		// and would never match).
+		if v.Kind() == reflect.Pointer {
+			key := v.Interface()
+			if visited[key] {
+				return nil
+			}
+			if visited == nil {
+				visited = make(map[any]bool, 8)
+			}
+			visited[key] = true
+		}
+		return validateDepthReflect(v.Elem().Interface(), maxDepth, currentDepth, visited)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if err := validateDepthReflect(fieldValue(v, i), maxDepth, currentDepth+1, visited); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			if err := validateDepthReflect(v.Index(i).Interface(), maxDepth, currentDepth+1, visited); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		// Map KEYS cannot be containers in JSON-producing trees; walk values.
+		iter := v.MapRange()
+		for iter.Next() {
+			if err := validateDepthReflect(iter.Value().Interface(), maxDepth, currentDepth+1, visited); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// fieldValue returns struct field i as an any, tolerating unexported fields
+// (they are skipped: they cannot carry JSON-marshaled data without an
+// exported accessor, and Interface() would panic on them).
+func fieldValue(v reflect.Value, i int) any {
+	f := v.Field(i)
+	if !f.CanInterface() {
+		return nil
+	}
+	return f.Interface()
 }
 
 // needsCustomEncodingOpts checks if the encoding options require custom encoding logic
@@ -992,7 +1135,7 @@ func needsCustomEncodingOpts(cfg Config) bool {
 //
 // NOTE: like encoding/json.Marshal, the output is always HTML-escaped: a
 // supplied cfg.EscapeHTML = false is overridden on this path. Use
-// EncodeWithConfig when caller-controlled escaping is required.
+// Encode when caller-controlled escaping is required.
 //
 // Errors:
 //   - ErrProcessorClosed: processor has been closed
@@ -1008,7 +1151,7 @@ func (p *Processor) Marshal(value any, cfg ...Config) ([]byte, error) {
 	// Uses HTML escaping to match encoding/json behavior
 	// Encodes directly to []byte to avoid string round-trip
 	if len(cfg) == 0 {
-		if result, ok := fastEncodeSimpleToBytes(value); ok {
+		if result, ok := p.fastEncodeSimpleToBytes(value, p.config.MaxDepth); ok {
 			// Same MaxJSONSize enforcement as encodeWithConfigToBytes' fast
 			// path — previously this early return skipped it, so Marshal
 			// without cfg accepted output the with-cfg form rejects.
@@ -1023,10 +1166,18 @@ func (p *Processor) Marshal(value any, cfg ...Config) ([]byte, error) {
 		}
 	}
 
-	// Fallback: encode directly to []byte, avoiding []byte->string->[]byte round-trip
-	config := getConfigOrDefault(cfg...)
-	config.EscapeHTML = true
-	return p.encodeWithConfigToBytes(value, config)
+	// Fallback: encode directly to []byte, avoiding []byte->string->[]byte round-trip.
+	// D-002/R10: no-cfg starts from the processor's baked configuration (D-006)
+	// — getConfigOrDefault forced DefaultConfig values, which (with M1's
+	// effectiveEncodeMaxSize) bypassed the baked MaxJSONSize and ignored baked
+	// encoding options on custom processors. EscapeHTML is still forced below
+	// (the documented Marshal contract: output is always HTML-escaped).
+	base := p.config
+	if len(cfg) > 0 {
+		base = cfg[0]
+	}
+	base.EscapeHTML = true
+	return p.encodeWithConfigToBytes(value, base)
 }
 
 // MarshalIndent converts any Go value to indented JSON bytes (similar to json.MarshalIndent)
@@ -1037,7 +1188,17 @@ func (p *Processor) Marshal(value any, cfg ...Config) ([]byte, error) {
 //   - ErrSizeLimit: encoded output exceeds MaxJSONSize
 //   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func (p *Processor) MarshalIndent(value any, prefix, indent string, cfg ...Config) ([]byte, error) {
-	encOpts := DefaultConfig()
+	// Nil/closed guard BEFORE reading p.config below (D-002/R10: the baked
+	// base made this the first p dereference; checkClosed keeps the
+	// nil-receiver contract every public method honors).
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+	// D-002/R10: no-cfg starts from the processor's baked configuration
+	// (D-006) — the previous DefaultConfig() base ignored baked encoding
+	// options and, with M1's effectiveEncodeMaxSize, the baked MaxJSONSize.
+	// The prefix and indent arguments still override the Config fields.
+	encOpts := p.config
 	if len(cfg) > 0 {
 		encOpts = cfg[0]
 	}
@@ -1072,6 +1233,13 @@ func (p *Processor) Unmarshal(data []byte, value any, cfg ...Config) error {
 	// consistency with Parse — which always validates — then delegate to
 	// encoding/json to avoid string conversion overhead. Without this check the
 	// drop-in Unmarshal signature bypassed all security validation.
+	//
+	// NOTE (D-002/R11 m1): this branch is deliberately NOT wired into
+	// beginGovernedOp (the cfg branch below is, via governed Parse). It touches
+	// no mutable processor state beyond the mutex-guarded securityValidator,
+	// and gating the encoding/json drop-in on the MaxConcurrency semaphore
+	// would newly reject calls that have always succeeded — an accepted,
+	// documented divergence rather than a behavioral change.
 	if len(cfg) == 0 {
 		if err := p.validateInput(string(data)); err != nil {
 			return err
@@ -1102,8 +1270,10 @@ func (p *Processor) EncodeStream(values any, cfg ...Config) (string, error) {
 	if err := p.checkClosed(); err != nil {
 		return "", err
 	}
-	config := getConfigOrDefault(cfg...)
-	return p.EncodeWithConfig(values, config)
+	// Variadic passthrough: with no cfg, Encode resolves the processor's baked
+	// configuration (D-006 — previously getConfigOrDefault forced DefaultConfig,
+	// ignoring baked encoding options on a custom processor).
+	return p.Encode(values, cfg...)
 }
 
 // EncodeBatch encodes multiple key-value pairs as a JSON object.
@@ -1122,8 +1292,9 @@ func (p *Processor) EncodeBatch(pairs map[string]any, cfg ...Config) (string, er
 	if err := p.checkClosed(); err != nil {
 		return "", err
 	}
-	config := getConfigOrDefault(cfg...)
-	return p.EncodeWithConfig(pairs, config)
+	// Variadic passthrough: with no cfg, Encode resolves the processor's baked
+	// configuration (D-006 — see EncodeStream).
+	return p.Encode(pairs, cfg...)
 }
 
 // EncodeFields encodes struct fields selectively based on field names.
@@ -1143,19 +1314,18 @@ func (p *Processor) EncodeFields(value any, fields []string, cfg ...Config) (str
 	if err := p.checkClosed(); err != nil {
 		return "", err
 	}
-	processor := p
 
 	// First convert to JSON and parse back to get map representation
 	config := DefaultConfig()
 	config.Pretty = false
-	tempJSON, err := processor.EncodeWithConfig(value, config)
+	tempJSON, err := p.Encode(value, config)
 	if err != nil {
 		return "", err
 	}
 
 	// Parse to any and convert to map
 	var anyData any
-	err = processor.Parse(tempJSON, &anyData)
+	err = p.Parse(tempJSON, &anyData)
 	if err != nil {
 		return "", err
 	}
@@ -1178,35 +1348,51 @@ func (p *Processor) EncodeFields(value any, fields []string, cfg ...Config) (str
 		}
 	}
 
-	finalConfig := DefaultConfig()
-	if len(cfg) > 0 {
-		finalConfig = cfg[0]
-	}
-	return processor.EncodeWithConfig(filtered, finalConfig)
+	// Variadic passthrough — the final encode honors cfg when supplied,
+	// otherwise the processor's baked encoding options (D-006; the two
+	// DefaultConfig() round-trip steps above are deliberate normalization).
+	return p.Encode(filtered, cfg...)
 }
 
 // EncodeWithConfig converts any Go value to JSON string with full configuration control.
+//
+// Deprecated: EncodeWithConfig is functionally identical to Encode — the name
+// predates Encode accepting an optional trailing Config. Use Encode(value, cfg).
+// EncodeWithConfig will not be removed within v1 (per D-005 the module stays
+// on v1.x).
+//
+// Errors: see Encode.
+func (p *Processor) EncodeWithConfig(value any, cfg ...Config) (string, error) {
+	return p.Encode(value, cfg...)
+}
+
+// Encode converts any Go value to JSON string with full configuration control.
 // PERFORMANCE: Uses FastEncoder for simple types to avoid reflection overhead.
+//
+// The optional trailing Config selects the encoding behavior for this call —
+// Pretty, Indent, EscapeHTML, SortKeys, FloatPrecision, CustomEscapes, and the
+// depth/size limits. Omitted, the processor's baked configuration applies
+// (DefaultConfig for a processor from New()).
 //
 // Example:
 //
 //	// Default configuration
-//	result, err := processor.EncodeWithConfig(data)
+//	result, err := processor.Encode(data)
 //
 //	// With custom configuration
 //	cfg := json.DefaultConfig()
 //	cfg.Pretty = true
-//	result, err := processor.EncodeWithConfig(data, cfg)
+//	result, err := processor.Encode(data, cfg)
 //
 //	// With preset configuration
-//	result, err := processor.EncodeWithConfig(data, json.PrettyConfig())
+//	result, err := processor.Encode(data, json.PrettyConfig())
 //
 // Errors:
 //   - ErrProcessorClosed: processor has been closed
 //   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: value cannot be encoded
 //   - ErrSizeLimit: encoded output exceeds MaxJSONSize
 //   - ErrDepthLimit: encoding exceeds the maximum nesting depth
-func (p *Processor) EncodeWithConfig(value any, cfg ...Config) (string, error) {
+func (p *Processor) Encode(value any, cfg ...Config) (string, error) {
 	b, err := p.encodeWithConfigToBytes(value, cfg...)
 	if err != nil {
 		return "", err
@@ -1220,7 +1406,7 @@ func (p *Processor) encodeWithConfigToBytes(value any, cfg ...Config) ([]byte, e
 	// Concurrency governance: register as an in-flight op so a concurrent Close()
 	// (e.g. cache eviction of a config-cached processor) drains via waitForActiveOps
 	// rather than tearing down resources mid-encode. This is the single funnel for all
-	// encode entry points (Marshal/MarshalIndent/EncodeWithConfig, and via those
+	// encode entry points (Marshal/MarshalIndent/Encode, and via those
 	// EncodeStream/EncodeBatch), none of which are reached from within an already-
 	// governed op, so acquiring here is never nested. In unlimited-concurrency mode
 	// (the default) acquireSemaphore is a no-op, so the cost is two atomic ops.
@@ -1233,9 +1419,71 @@ func (p *Processor) encodeWithConfigToBytes(value any, cfg ...Config) ([]byte, e
 	if len(cfg) > 0 {
 		config = cfg[0]
 	} else {
-		config = DefaultConfig()
+		// No-cfg: the processor's baked configuration applies (doc.go contract).
+		// D-006: previously DefaultConfig(), so New(cfg).Encode(v) ignored the
+		// baked encoding options (Pretty, EscapeHTML, FloatPrecision, MaxDepth)
+		// and diverged from json.Encode(v, cfg).
+		config = p.config
 	}
 
+	return p.encodeConfiguredToBytes(value, config)
+}
+
+// effectiveEncodeMaxSize returns the output-size cap for an encode operation:
+// a positive per-call config value wins; otherwise the processor's baked limit
+// applies. D-002/R8 (M1): every size check previously read p.config.MaxJSONSize,
+// so a cfg-supplied MaxJSONSize was silently ignored on encoded output despite
+// the doc.go contract ("its security limits take effect on that call"). Mirrors
+// effectiveReadMaxSize in file.go.
+func (p *Processor) effectiveEncodeMaxSize(config Config) int64 {
+	if config.MaxJSONSize > 0 {
+		return config.MaxJSONSize
+	}
+	return p.config.MaxJSONSize
+}
+
+// checkMutationOutputSize enforces the effective MaxJSONSize cap on a mutation
+// operation's re-encoded output (Set/SetMultiple/Delete/ForeachReturn).
+// D-002/R11 (M2, option A): the encode funnel gained this check in R8 M1, but
+// the mutation paths re-marshal their modified documents via
+// internal.FastMarshalToString and silently skipped it — Set could return
+// output that the with-cfg Encode of the same configuration rejects. Only the
+// SIZE is enforced: output bytes stay byte-identical to the previous
+// FastMarshalToString behavior (notably, no HTML escaping), and depth is
+// deliberately not re-checked (the parse already bounded the tree at
+// MaxNestingDepthSecurity).
+func (p *Processor) checkMutationOutputSize(result string, maxJSONSize int64, op, path string) error {
+	if int64(len(result)) > maxJSONSize {
+		return &JsonsError{
+			Op:      op,
+			Path:    path,
+			Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", len(result), maxJSONSize),
+			Err:     ErrSizeLimit,
+		}
+	}
+	return nil
+}
+
+// mutationOutputMaxSize resolves the output cap for a mutation operation. It
+// mirrors the no-cfg rule the mutation paths already use for CreatePaths
+// (D-006): with no cfg the processor's baked limit applies; a supplied cfg
+// REPLACES it. options is the prepareOptions-validated per-call config, so its
+// value is always positive (Config.Validate clamps non-positive to 1MB).
+// effectiveEncodeMaxSize cannot be reused here — in the no-cfg case it would
+// pick the shared default singleton's 100MB instead of the processor's baked
+// limit (D-002/R11 M2).
+func (p *Processor) mutationOutputMaxSize(options *Config, hasCfg bool) int64 {
+	if hasCfg {
+		return options.MaxJSONSize
+	}
+	return p.config.MaxJSONSize
+}
+
+// encodeConfiguredToBytes is the non-governed core of encodeWithConfigToBytes:
+// config is already resolved (per-call cfg or the processor's baked config) and
+// the caller holds the governed-op slot. Extracted so buffer-writing callers
+// (see encodeConfiguredToBuffer) can share the exact same encode funnel.
+func (p *Processor) encodeConfiguredToBytes(value any, config Config) ([]byte, error) {
 	// needsCustomEncodingOpts is pure; compute once and reuse on the full-encode
 	// branch below to avoid a second evaluation of the same config.
 	customOpts := needsCustomEncodingOpts(config)
@@ -1244,11 +1492,11 @@ func (p *Processor) encodeWithConfigToBytes(value any, cfg ...Config) ([]byte, e
 	// needsCustomEncodingOpts returns true for it, so the fast path is always
 	// the HTML-escaped encoding (which FastEncoder applies by post-processing).
 	if !config.Pretty && !customOpts {
-		if result, ok := fastEncodeSimpleToBytes(value); ok {
-			if int64(len(result)) > p.config.MaxJSONSize {
+		if result, ok := p.fastEncodeSimpleToBytes(value, config.MaxDepth); ok {
+			if maxJSONSize := p.effectiveEncodeMaxSize(config); int64(len(result)) > maxJSONSize {
 				return nil, &JsonsError{
 					Op:      "encode_with_config",
-					Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", len(result), p.config.MaxJSONSize),
+					Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", len(result), maxJSONSize),
 					Err:     ErrSizeLimit,
 				}
 			}
@@ -1281,10 +1529,10 @@ func (p *Processor) encodeWithConfigToBytes(value any, cfg ...Config) ([]byte, e
 		}
 	}
 
-	if int64(len(result)) > p.config.MaxJSONSize {
+	if maxJSONSize := p.effectiveEncodeMaxSize(config); int64(len(result)) > maxJSONSize {
 		return nil, &JsonsError{
 			Op:      "encode_with_config",
-			Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", len(result), p.config.MaxJSONSize),
+			Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", len(result), maxJSONSize),
 			Err:     ErrSizeLimit,
 		}
 	}
@@ -1292,16 +1540,75 @@ func (p *Processor) encodeWithConfigToBytes(value any, cfg ...Config) ([]byte, e
 	return result, nil
 }
 
+// encodingFastPathEligible reports whether every processor encoding option
+// that the fast encoder does NOT honor is at its default. The fast encoder
+// (internal.FastEncoder) fixes escaping, precision, and inclusion behavior at
+// stdlib defaults, so running it with a non-default option silently ignores
+// that option (D-002: a processor configured with FloatPrecision=2 emitted
+// full precision here, while Encode rounded). Pretty/Indent/Prefix
+// are handled by the caller's enc.indent/enc.prefix check plus !Pretty here.
+func encodingFastPathEligible(cfg *Config) bool {
+	return !cfg.Pretty &&
+		cfg.EscapeHTML &&
+		cfg.FloatPrecision < 0 &&
+		!cfg.FloatTruncate &&
+		cfg.CustomEscapes == nil &&
+		cfg.CustomEncoder == nil &&
+		len(cfg.CustomTypeEncoders) == 0 &&
+		!cfg.EscapeUnicode &&
+		!cfg.EscapeSlash &&
+		!cfg.DisableEscaping &&
+		cfg.EscapeNewlines &&
+		cfg.EscapeTabs &&
+		cfg.IncludeNulls
+}
+
+// isJSONNativeValue reports whether the value is a type the fast encoder
+// handles without its stdlib fallback (and therefore with its own depth cap).
+func isJSONNativeValue(value any) bool {
+	switch value.(type) {
+	case nil, bool, float64, string, json.Number, Number,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, float32,
+		map[string]any, []any:
+		return true
+	}
+	return false
+}
+
 // fastEncodeSimpleToBytes encodes simple types directly to []byte, avoiding a
 // []byte -> string -> []byte round-trip when the caller needs bytes
-// (encodeWithConfigToBytes fast path, Marshal). Output is always
-// HTML-escaped, matching encoding/json.
-// Returns (nil, false) if the value needs the full encoder.
+// (encodeConfiguredToBytes fast path, Marshal). Output is always
+// HTML-escaped, matching encoding/json. Returns (nil, false) if the value
+// needs the full encoder.
+//
+// maxDepth is the effective Config.MaxDepth (D-002): the fast encoder
+// previously always used the package-wide nesting bound, silently accepting
+// trees the config'd encoder rejects. n <= 0 keeps the package default.
+//
 // PERFORMANCE: Uses append(nil, data...) which is optimized by the compiler
 // into a single allocation (runtime.memmove) without the explicit make+copy.
-func fastEncodeSimpleToBytes(value any) ([]byte, bool) {
+//
+// Typed (non-JSON-native) roots are depth-pre-walked here: the encoder's
+// internal stdlib fallback for such values has no cap of its own. KNOWN
+// LIMITATION: a typed value NESTED inside a JSON-native root (e.g.
+// map[string]any{"x": deepStructChain}) is not pre-walked — only the
+// FastEncoder's own container cap (SetMaxEncodeDepth) applies to the native
+// layers around it.
+func (p *Processor) fastEncodeSimpleToBytes(value any, maxDepth int) ([]byte, bool) {
+	if !isJSONNativeValue(value) && maxDepth > 0 {
+		if err := p.validateDepth(value, maxDepth, 0); err != nil {
+			// Return false: the full path re-runs validateDepth and surfaces
+			// the proper typed error.
+			return nil, false
+		}
+	}
+
 	encoder := internal.GetEncoder()
 	defer internal.PutEncoder(encoder)
+	if maxDepth > 0 {
+		encoder.SetMaxEncodeDepth(maxDepth)
+	}
 
 	err := encoder.EncodeValue(value)
 	if err != nil {
@@ -1311,7 +1618,12 @@ func fastEncodeSimpleToBytes(value any) ([]byte, bool) {
 	data := encoder.Bytes()
 	if internal.NeedsHTMLEscapeBytes(data) {
 		escaped := internal.HTMLEscapeBytes(data)
-		// escaped is already a fresh []byte, return directly
+		// P-002 doc fix: escaped is NOT guaranteed fresh — below the pool cap
+		// threshold it aliases an htmlEscapeBytesPool backing array. It is
+		// deliberately NOT returned to the pool: the slice escapes to the
+		// caller, forfeiting the buffer to the GC. Do not add a PutHTMLEscapeBytes
+		// here (double-ownership of pool memory) and do not assume exclusive
+		// ownership of the input's aliasing properties.
 		return escaped, true
 	}
 
@@ -1320,35 +1632,130 @@ func fastEncodeSimpleToBytes(value any) ([]byte, bool) {
 	return append([]byte(nil), data...), true
 }
 
-// Encode converts any Go value to JSON string.
-//
-// Deprecated: Encode is functionally identical to EncodeWithConfig (it forwards
-// directly to it). Use EncodeWithConfig instead. Encode will be removed in a
-// future major version.
-//
-// Errors: see EncodeWithConfig.
-func (p *Processor) Encode(value any, config ...Config) (string, error) {
-	var cfg Config
-	if len(config) > 0 {
-		cfg = config[0]
-	} else {
-		cfg = DefaultConfig()
+// fastEncodeSimpleToBuffer is fastEncodeSimpleToBytes writing into dst instead
+// of returning a fresh []byte: the pooled encoder's output is copied straight
+// into the caller's accumulation buffer, so the per-item clone allocation
+// (and its memmove) disappears (P-001). Eligibility, depth handling, and the
+// (nil, false)-style fallback contract are identical to fastEncodeSimpleToBytes.
+func (p *Processor) fastEncodeSimpleToBuffer(value any, maxDepth int, dst *bytes.Buffer) bool {
+	if !isJSONNativeValue(value) && maxDepth > 0 {
+		if err := p.validateDepth(value, maxDepth, 0); err != nil {
+			// Return false: the full path re-runs validateDepth and surfaces
+			// the proper typed error (see fastEncodeSimpleToBytes).
+			return false
+		}
 	}
-	return p.EncodeWithConfig(value, cfg)
+
+	encoder := internal.GetEncoder()
+	defer internal.PutEncoder(encoder)
+	if maxDepth > 0 {
+		encoder.SetMaxEncodeDepth(maxDepth)
+	}
+
+	if err := encoder.EncodeValue(value); err != nil {
+		return false
+	}
+
+	data := encoder.Bytes()
+	if internal.NeedsHTMLEscapeBytes(data) {
+		internal.HTMLEscapeBytesTo(dst, data)
+		return true
+	}
+	dst.Write(data)
+	return true
+}
+
+// encodeConfiguredToBuffer appends the JSON encoding of value to dst — the
+// buffer-writing counterpart of encodeConfiguredToBytes, used by ToJSONL so a
+// batch of items is encoded into one shared output buffer instead of one
+// transient []byte per item. Funnel parity with encodeConfiguredToBytes: same
+// fast-path eligibility, same depth validation, same custom-opts fallback, and
+// the same per-item MaxJSONSize enforcement (measured on the bytes appended
+// for this item). Callers must already hold the governed-op slot — this helper
+// never acquires governance itself.
+func (p *Processor) encodeConfiguredToBuffer(value any, config Config, dst *bytes.Buffer) error {
+	start := dst.Len()
+	// D-002/R8 (M1): resolve the effective per-item cap once (per-call cfg
+	// wins, else the processor's baked limit).
+	maxJSONSize := p.effectiveEncodeMaxSize(config)
+
+	// needsCustomEncodingOpts is pure; compute once and reuse on the full-encode
+	// branch below to avoid a second evaluation of the same config.
+	customOpts := needsCustomEncodingOpts(config)
+
+	// Fast path for simple types (see encodeConfiguredToBytes; the
+	// EscapeHTML==false case never reaches here for the same reasons).
+	if !config.Pretty && !customOpts {
+		if p.fastEncodeSimpleToBuffer(value, config.MaxDepth, dst) {
+			return p.checkEncodedBufferSize(dst, start, maxJSONSize)
+		}
+	}
+
+	if config.MaxDepth > 0 {
+		if err := p.validateDepth(value, config.MaxDepth, 0); err != nil {
+			return err
+		}
+	}
+
+	var result []byte
+	var err error
+
+	if customOpts {
+		encoder := newCustomEncoder(config)
+		defer encoder.Close()
+		result, err = encoder.EncodeToBytes(value)
+	} else {
+		result, err = internal.MarshalJSONToBytes(value, config.Pretty, config.Prefix, config.Indent)
+	}
+
+	if err != nil {
+		return &JsonsError{
+			Op:      "encode_with_config",
+			Message: "failed to encode value",
+			Err:     err,
+		}
+	}
+
+	dst.Write(result)
+	return p.checkEncodedBufferSize(dst, start, maxJSONSize)
+}
+
+// checkEncodedBufferSize enforces the per-item MaxJSONSize bound for
+// buffer-accumulated encodings: written is the number of bytes appended to dst
+// since start. maxJSONSize is the caller-resolved effective cap
+// (effectiveEncodeMaxSize — D-002/R8 M1), mirroring the size check
+// encodeConfiguredToBytes applies to its returned []byte, including the error
+// shape.
+func (p *Processor) checkEncodedBufferSize(dst *bytes.Buffer, start int, maxJSONSize int64) error {
+	if n := int64(dst.Len() - start); n > maxJSONSize {
+		return &JsonsError{
+			Op:      "encode_with_config",
+			Message: fmt.Sprintf("encoded JSON size %d exceeds maximum %d", n, maxJSONSize),
+			Err:     ErrSizeLimit,
+		}
+	}
+	return nil
 }
 
 // EncodePretty converts any Go value to pretty-formatted JSON string
 // This is a convenience method that matches the package-level EncodePretty signature
 //
-// Errors: see EncodeWithConfig.
-func (p *Processor) EncodePretty(value any, config ...Config) (string, error) {
-	var cfg Config
-	if len(config) > 0 {
-		cfg = config[0]
+// Errors: see Encode.
+func (p *Processor) EncodePretty(value any, cfg ...Config) (string, error) {
+	var config Config
+	if len(cfg) > 0 {
+		// Caller-supplied cfg passes through unchanged (historical contract:
+		// EncodePretty does not force Pretty on an explicit cfg).
+		config = cfg[0]
 	} else {
-		cfg = PrettyConfig()
+		// No-cfg: the processor's baked configuration with Pretty forced
+		// (D-006 — previously PrettyConfig(), which ignored a custom
+		// processor's baked Indent/escaping). For a default processor this
+		// is byte-identical to PrettyConfig(): DefaultConfig sets Indent "  ".
+		config = p.config
+		config.Pretty = true
 	}
-	return p.EncodeWithConfig(value, cfg)
+	return p.Encode(value, config)
 }
 
 // customEncoder provides advanced JSON encoding with configurable options
@@ -1478,6 +1885,16 @@ func (e *customEncoder) encodeValue(value any) error {
 	// Pointer-receiver MarshalJSON on an addressable value (encoding/json calls
 	// it on the addressable form). v is non-addressable here, so detect the
 	// method via the pointer type and invoke on an addressable copy.
+	//
+	// KNOWN LIMITATION (D-002/R11 m6): for a NON-addressable root value whose
+	// type implements MarshalJSON only on the POINTER receiver, encoding/json
+	// does NOT call the method at all — newTypeEncoder selects the addressable
+	// form only for struct fields/slice elements, and a boxed root value falls
+	// through to plain struct encoding. This encoder calls it on a fresh copy,
+	// so such values encode differently here than under stdlib (and any state
+	// the method mutates does not persist). Matching stdlib exactly would drop
+	// what is usually the user's intent, so the divergence is documented rather
+	// than changed; it only applies to values that reach this custom encoder.
 	if v.IsValid() && v.CanInterface() && reflect.PointerTo(v.Type()).Implements(marshalerType) {
 		if m, ok := addressablePointer(v).Interface().(marshaler); ok {
 			data, err := m.MarshalJSON()
@@ -1782,12 +2199,13 @@ func (e *customEncoder) escapeRune(r rune) error {
 		}
 	case 0x2028, 0x2029:
 		// U+2028/U+2029 are valid JSON but terminate lines in JavaScript;
-		// encoding/json escapes them whenever HTML escaping is enabled.
-		if e.config.EscapeHTML {
-			e.writeUnicodeEscape(r)
-		} else {
-			e.buffer.WriteRune(r)
-		}
+		// encoding/json escapes them UNCONDITIONALLY — even under
+		// SetEscapeHTML(false) — because emitting them raw reintroduces the
+		// JSONP line-termination risk (see encoding/json encode.go: "It is
+		// valid JSON to escape them, so we do so unconditionally"). The old
+		// EscapeHTML-only condition here diverged from stdlib and silently
+		// un-escaped these line terminators (D-002).
+		e.writeUnicodeEscape(r)
 	default:
 		if r < 0x20 {
 			e.writeUnicodeEscape(r)

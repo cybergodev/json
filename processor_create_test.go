@@ -87,11 +87,15 @@ func TestProcessorSetCreate(t *testing.T) {
 		}
 	})
 
-	t.Run("EmptyPathCreatesNothing", func(t *testing.T) {
-		// Set with empty path on a valid JSON should either error or return unchanged.
-		_, err := p.SetCreate(`{"a":1}`, "", 42)
-		// Behavior depends on implementation; just ensure no panic.
-		_ = err
+	t.Run("EmptyPathReplacesDocument", func(t *testing.T) {
+		// GEN-001: a root path replaces the whole document with the value.
+		result, err := p.SetCreate(`{"a":1}`, "", 42)
+		if err != nil {
+			t.Fatalf("expected root replacement, got error: %v", err)
+		}
+		if result != "42" {
+			t.Errorf("expected document replaced with 42, got %s", result)
+		}
 	})
 
 	t.Run("DeepNestedPathCreation", func(t *testing.T) {
@@ -539,7 +543,3 @@ func TestProcessorDeleteClean(t *testing.T) {
 		}
 	})
 }
-
-// ============================================================================
-// Verify JSON structure helper (used across test files)
-// ============================================================================

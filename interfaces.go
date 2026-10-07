@@ -18,15 +18,10 @@ import (
 // CustomEncoder provides custom JSON encoding capability.
 // Implement this interface to replace the default encoder entirely.
 //
-// Example:
-//
-//	type UpperCaseEncoder struct{}
-//	func (e *UpperCaseEncoder) Encode(value any) (string, error) {
-//	    // Custom encoding logic
-//	}
-//
-//	cfg := json.DefaultConfig()
-//	cfg.CustomEncoder = &UpperCaseEncoder{}
+// Deprecated: not wired — Config.CustomEncoder is never invoked by the
+// encoding pipeline, so implementations of this interface have no effect.
+// The interface is retained only for v1 API compatibility. Implement
+// json.Marshaler (or encoding.TextMarshaler) on your types instead.
 type CustomEncoder interface {
 	// Encode converts a Go value to JSON string.
 	// Returns an error if value cannot be encoded.
@@ -34,20 +29,12 @@ type CustomEncoder interface {
 }
 
 // TypeEncoder handles encoding for specific reflect.Types.
-// Register via Config.CustomTypeEncoders map.
 //
-// Example:
-//
-//	type TimeEncoder struct{}
-//	func (e *TimeEncoder) Encode(v reflect.Value) (string, error) {
-//	    t := v.Interface().(time.Time)
-//	    return `"` + t.Format(time.RFC3339) + `"`, nil
-//	}
-//
-//	cfg := json.DefaultConfig()
-//	cfg.CustomTypeEncoders = map[reflect.Type]json.TypeEncoder{
-//	    reflect.TypeOf(time.Time{}): &TimeEncoder{},
-//	}
+// Deprecated: not wired — Config.CustomTypeEncoders is never consulted by
+// the encoding pipeline, so implementations of this interface have no
+// effect. The interface is retained only for v1 API compatibility.
+// Implement json.Marshaler (or encoding.TextMarshaler) on your types
+// instead.
 type TypeEncoder interface {
 	// Encode converts a specific type to its JSON representation.
 	// Return the JSON string (including quotes for strings) or an error.
@@ -59,17 +46,11 @@ type TypeEncoder interface {
 // =============================================================================
 
 // Validator validates JSON input before processing.
-// Implement this interface to add custom validation logic.
 //
-// Example:
-//
-//	type SizeValidator struct { MaxSize int64 }
-//	func (v *SizeValidator) Validate(jsonStr string) error {
-//	    if int64(len(jsonStr)) > v.MaxSize {
-//	        return fmt.Errorf("JSON exceeds max size: %d", v.MaxSize)
-//	    }
-//	    return nil
-//	}
+// Deprecated: not wired — validators registered via Config.CustomValidators
+// or AddValidator are never executed by any public operation. The interface
+// is retained only for v1 API compatibility. Use Hook (Config.AddHook,
+// Before) for pre-operation checks.
 type Validator interface {
 	// Validate checks JSON string for issues.
 	// Returns nil if valid, or an error describing the problem.
@@ -78,13 +59,28 @@ type Validator interface {
 
 // validationChain runs multiple validators in sequence.
 // Stops at the first error encountered.
+//
+// NOTE (D-002/R8 M5): no production caller — Config.CustomValidators are
+// deprecated and never executed (see the Validator interface doc); retained
+// for tests/future use.
 type validationChain []Validator
 
 // Validate executes all validators in order, stopping at first error.
+// Recovers from panics to prevent a misbehaving validator from crashing the
+// processor (SEC-003), mirroring hookChain.executeBefore.
 func (vc validationChain) Validate(jsonStr string) error {
 	for _, v := range vc {
-		if err := v.Validate(jsonStr); err != nil {
-			return err
+		var validatorErr error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					validatorErr = fmt.Errorf("validator panicked: %v", r)
+				}
+			}()
+			validatorErr = v.Validate(jsonStr)
+		}()
+		if validatorErr != nil {
+			return validatorErr
 		}
 	}
 	return nil
@@ -169,6 +165,13 @@ type HookContext struct {
 	Value any
 
 	// Config is the active configuration.
+	//
+	// P-002: this points at a pooled per-call Config and is valid only for the
+	// duration of the operation. Hooks MUST NOT retain the pointer past the
+	// call (e.g., queue it for async logging) — once the operation returns the
+	// object's reference fields are cleared and it is recycled into the pool,
+	// then overwritten by an unrelated call. Copy out any fields a hook needs
+	// to keep.
 	Config *Config
 
 	// StartTime is when the operation started (set before After is called).
@@ -396,16 +399,24 @@ type PathParser interface {
 // =============================================================================
 
 // newPropertySegment creates a property access segment.
+//
+// NOTE (D-002/R8 M5): no production caller — parsing builds segments via
+// struct literals; retained for tests/future use.
 func newPropertySegment(key string) PathSegment {
 	return internal.NewPropertySegment(key)
 }
 
 // newArraySliceSegment creates an array slice segment.
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func newArraySliceSegment(start, end, step int, hasStart, hasEnd, hasStep bool) PathSegment {
 	return internal.NewArraySliceSegment(start, end, step, hasStart, hasEnd, hasStep)
 }
 
 // newAppendSegment creates an append segment.
+//
+// NOTE (D-002/R8 M5): no production caller — parseArrayAccess builds the
+// segment directly; retained for tests/future use.
 func newAppendSegment() PathSegment {
 	return internal.PathSegment{
 		Type: internal.AppendSegment,

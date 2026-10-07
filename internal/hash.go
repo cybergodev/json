@@ -55,7 +55,7 @@ func HashString(h uint64, s string) uint64 {
 
 // HashStringFNV1a computes FNV-1a hash for a string (full scan).
 // This is a fast, non-cryptographic hash function suitable for cache keys.
-// PERFORMANCE v3: Optimized with small-string fast path and improved loop structure.
+// PERFORMANCE: Optimized with small-string fast path and improved loop structure.
 func HashStringFNV1a(s string) uint64 {
 	h := FNVOffsetBasis
 	n := len(s)
@@ -87,7 +87,7 @@ func HashStringFNV1a(s string) uint64 {
 
 // HashBytesFNV1a computes FNV-1a hash for a byte slice.
 // This is a fast, non-cryptographic hash function suitable for cache keys.
-// PERFORMANCE v2: Uses 8-byte batch loading for ~40% improvement.
+// PERFORMANCE: Uses 8-byte batch loading for ~40% improvement.
 func HashBytesFNV1a(b []byte) uint64 {
 	h := FNVOffsetBasis
 	n := len(b)

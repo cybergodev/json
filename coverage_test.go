@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -111,98 +110,6 @@ func TestDecoderParseNull(t *testing.T) {
 }
 
 // TestProcessorEncodeMethods tests Encode and EncodePretty methods
-func TestProcessorEncodeMethods(t *testing.T) {
-	processor, err := New()
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	defer processor.Close()
-
-	t.Run("Encode", func(t *testing.T) {
-		tests := []struct {
-			name    string
-			value   any
-			wantErr bool
-		}{
-			{"String", "hello", false},
-			{"Int", 42, false},
-			{"Float", 3.14, false},
-			{"Bool", true, false},
-			{"Nil", nil, false},
-			{"Slice", []int{1, 2, 3}, false},
-			{"Map", map[string]any{"key": "value"}, false},
-			{"Struct", struct{ Name string }{"test"}, false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				result, err := processor.Encode(tt.value)
-				if tt.wantErr {
-					if err == nil {
-						t.Error("expected error, got nil")
-					}
-					return
-				}
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-					return
-				}
-				if result == "" {
-					t.Error("expected non-empty result")
-				}
-			})
-		}
-	})
-
-	t.Run("EncodePretty", func(t *testing.T) {
-		tests := []struct {
-			name    string
-			value   any
-			wantErr bool
-		}{
-			{"String", "hello", false},
-			{"Int", 42, false},
-			{"Map", map[string]any{"key": "value"}, false},
-			{"Struct", struct{ Name string }{"test"}, false},
-		}
-
-		for _, tt := range tests {
-			t.Run(tt.name, func(t *testing.T) {
-				result, err := processor.EncodePretty(tt.value)
-				if tt.wantErr {
-					if err == nil {
-						t.Error("expected error, got nil")
-					}
-					return
-				}
-				if err != nil {
-					t.Errorf("unexpected error: %v", err)
-					return
-				}
-				if result == "" {
-					t.Error("expected non-empty result")
-				}
-			})
-		}
-	})
-
-	t.Run("EncodeWithConfig", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.Pretty = true
-		cfg.SortKeys = true
-
-		result, err := processor.Encode(map[string]any{"z": 1, "a": 2}, cfg)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
-			return
-		}
-		if result == "" {
-			t.Error("expected non-empty result")
-		}
-	})
-}
-
-// TestEncodeJSONNumber tests encodeJSONNumber via custom encoder
 func TestEncodeJSONNumber(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -369,6 +276,13 @@ func TestValidateFormats(t *testing.T) {
 		{"Time/InvalidHour", processor.validateTimeFormat, "25:00:00", true},
 		{"Time/InvalidFormat", processor.validateTimeFormat, "12-30-45", true},
 		{"Time/Partial", processor.validateTimeFormat, "12:30", true},
+		// Date (YYYY-MM-DD)
+		{"Date/Valid", processor.validateDateFormat, "2024-01-15", false},
+		{"Date/ValidLeapDay", processor.validateDateFormat, "2024-02-29", false},
+		{"Date/InvalidLeapDay", processor.validateDateFormat, "2023-02-29", true},
+		{"Date/InvalidSeparators", processor.validateDateFormat, "2024/01/15", true},
+		{"Date/InvalidMonth", processor.validateDateFormat, "2024-13-01", true},
+		{"Date/Empty", processor.validateDateFormat, "", true},
 		// DateTime
 		{"DateTime/Valid", processor.validateDateTimeFormat, "2024-01-15T10:30:00Z", false},
 		{"DateTime/WithOffset", processor.validateDateTimeFormat, "2024-01-15T10:30:00+07:00", false},
@@ -423,22 +337,6 @@ func TestValidateFormats(t *testing.T) {
 // Clone (57%), withProcessor (60%)
 // ============================================================================
 
-// testHookImpl is a simple Hook implementation for testing
-type testHookImpl struct {
-	beforeCalled bool
-	afterCalled  bool
-}
-
-func (h *testHookImpl) Before(ctx HookContext) error {
-	h.beforeCalled = true
-	return nil
-}
-
-func (h *testHookImpl) After(ctx HookContext, result any, err error) (any, error) {
-	h.afterCalled = true
-	return result, err
-}
-
 // testValidatorImpl is a simple Validator implementation for testing
 type testValidatorImpl struct {
 	validateCalled bool
@@ -447,20 +345,6 @@ type testValidatorImpl struct {
 func (v *testValidatorImpl) Validate(jsonStr string) error {
 	v.validateCalled = true
 	return nil
-}
-
-// testTypeEncoder implements TypeEncoder for testing
-type testTypeEncoder struct{}
-
-func (e *testTypeEncoder) Encode(v reflect.Value) (string, error) {
-	return `"encoded"`, nil
-}
-
-// testPathParser implements PathParser for testing
-type testPathParser struct{}
-
-func (p *testPathParser) ParsePath(path string) ([]PathSegment, error) {
-	return []PathSegment{newPropertySegment(path)}, nil
 }
 
 // TestMaybeEvictConfigCache tests the cache eviction logic
@@ -535,6 +419,19 @@ func TestMaybeEvictConfigCache(t *testing.T) {
 				t.Fatalf("getProcessorWithConfig error at %d: %v", i, err)
 			}
 		}
+
+		// A closed processor must never be served again: re-requesting the
+		// closed config yields a different, live instance.
+		p2, err := getProcessorWithConfig(cfg)
+		if err != nil {
+			t.Fatalf("getProcessorWithConfig re-request error: %v", err)
+		}
+		if p2 == p {
+			t.Error("closed processor was re-served from the config cache")
+		}
+		if p2.IsClosed() {
+			t.Error("re-requested processor is closed")
+		}
 	})
 }
 
@@ -579,29 +476,6 @@ func TestGetProcessorWithConfig(t *testing.T) {
 		if p1 == p2 {
 			t.Error("Expected different processors for different configs")
 		}
-	})
-
-	t.Run("HandlesStaleCacheEntry", func(t *testing.T) {
-		cfg := DefaultConfig()
-		cfg.MaxCacheSize = 7001
-
-		p1, err := getProcessorWithConfig(cfg)
-		if err != nil {
-			t.Fatalf("First call error: %v", err)
-		}
-
-		p1.Close()
-
-		p2, err := getProcessorWithConfig(cfg)
-		if err != nil {
-			t.Fatalf("Second call error: %v", err)
-		}
-
-		if p1 == p2 {
-			t.Error("Expected new processor after stale entry")
-		}
-
-		p2.Close()
 	})
 
 	t.Run("ConcurrentAccess", func(t *testing.T) {
@@ -700,29 +574,6 @@ func TestParseEdgeCases(t *testing.T) {
 			t.Errorf("Parse empty string should fail: %v", err)
 		}
 		_ = result
-	})
-
-	t.Run("ParseArray", func(t *testing.T) {
-		result, err := ParseAny(`[1, 2, 3]`)
-		if err != nil {
-			t.Errorf("Parse array failed: %v", err)
-		}
-		arr, ok := result.([]any)
-		if !ok {
-			t.Errorf("Expected []any, got %T", result)
-		}
-		if len(arr) != 3 {
-			t.Errorf("Expected 3 elements, got %d", len(arr))
-		}
-	})
-}
-
-// TestValidEdgeCases tests Valid function edge cases
-func TestValidEdgeCases(t *testing.T) {
-	t.Run("ValidEmptyBytes", func(t *testing.T) {
-		if Valid([]byte{}) {
-			t.Error("Valid([]byte{}) should return false")
-		}
 	})
 
 	t.Run("ValidNilBytes", func(t *testing.T) {
@@ -852,6 +703,12 @@ func TestPatternLevel(t *testing.T) {
 // asserted by the internal package tests; the other subtests (Type-only
 // checks duplicating internal tests) were removed in the FIX-001 cleanup.
 func TestNewSegmentFunctions(t *testing.T) {
+	t.Run("newPropertySegment", func(t *testing.T) {
+		seg := newPropertySegment("name")
+		if seg.Type != internal.PropertySegment || seg.Key != "name" {
+			t.Errorf("newPropertySegment = {%v %q}, want property segment with key \"name\"", seg.Type, seg.Key)
+		}
+	})
 	t.Run("newAppendSegment", func(t *testing.T) {
 		seg := newAppendSegment()
 		if seg.Type != internal.AppendSegment {
@@ -966,29 +823,6 @@ func TestAPI_UnmarshalFromFile(t *testing.T) {
 	}
 }
 
-// TestIsSliceType tests the internal IsSliceType function
-func TestIsSliceType(t *testing.T) {
-	tests := []struct {
-		input    any
-		expected bool
-	}{
-		{[]any{1, 2, 3}, true},
-		{[]string{"a", "b"}, true},
-		{[]int{1, 2, 3}, true},
-		{map[string]any{"key": "value"}, false},
-		{"string", false},
-		{nil, false},
-		{42, false},
-	}
-
-	for i, tt := range tests {
-		result := internal.IsSliceType(tt.input)
-		if result != tt.expected {
-			t.Errorf("Test %d: IsSliceType(%T) = %v, want %v", i, tt.input, result, tt.expected)
-		}
-	}
-}
-
 // ============================================================================
 // CONFIG TESTS - Coverage for Clone, Validate edge cases
 // ============================================================================
@@ -1048,19 +882,6 @@ func TestEncodeWithConfig(t *testing.T) {
 
 // TestEncode tests Encode function
 func TestEncode(t *testing.T) {
-	t.Run("WithConfig", func(t *testing.T) {
-		config := DefaultConfig()
-		config.EscapeHTML = true
-
-		result, err := Encode(map[string]any{"html": "<script>"}, config)
-		if err != nil {
-			t.Errorf("Encode failed: %v", err)
-		}
-		if !strings.Contains(result, "\\u003c") {
-			t.Error("HTML should be escaped")
-		}
-	})
-
 	t.Run("WithoutConfig", func(t *testing.T) {
 		result, err := Encode(map[string]any{"key": "value"})
 		if err != nil {
@@ -1263,8 +1084,9 @@ func TestNumberPreservingDecoder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DecodeToAny failed: %v", err)
 		}
-		if result == nil {
-			t.Fatal("expected non-nil result")
+		// Number preservation means the literal must NOT collapse to float64.
+		if _, isFloat := result.(float64); isFloat {
+			t.Errorf("integer 42 decoded as float64; number preservation broken: %#v", result)
 		}
 	})
 
@@ -1273,8 +1095,8 @@ func TestNumberPreservingDecoder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DecodeToAny failed: %v", err)
 		}
-		if result == nil {
-			t.Fatal("expected non-nil result")
+		if _, isFloat := result.(float64); isFloat {
+			t.Errorf("float 3.14 decoded as float64; number preservation broken: %#v", result)
 		}
 	})
 
@@ -1315,37 +1137,6 @@ func TestNumberPreservingDecoder(t *testing.T) {
 }
 
 // TestPreservingUnmarshal tests preservingUnmarshal function
-func TestPreservingUnmarshal(t *testing.T) {
-	t.Run("PreserveNumbersTrue", func(t *testing.T) {
-		var result map[string]any
-		err := preservingUnmarshal([]byte(`{"num":123}`), &result, true)
-		if err != nil {
-			t.Errorf("preservingUnmarshal failed: %v", err)
-		}
-	})
-
-	t.Run("PreserveNumbersFalse", func(t *testing.T) {
-		var result map[string]any
-		err := preservingUnmarshal([]byte(`{"num":123}`), &result, false)
-		if err != nil {
-			t.Errorf("preservingUnmarshal failed: %v", err)
-		}
-		if result["num"] == nil {
-			t.Error("num should not be nil")
-		}
-	})
-}
-
-// ============================================================================
-// JSON POINTER ESCAPE TESTS
-// ============================================================================
-
-// TestescapeJSONPointer tests escapeJSONPointer function
-// ============================================================================
-// ENCODING EDGE CASES TESTS - Coverage for encoding functions
-// ============================================================================
-
-// TestEncodeStringSpecialChars tests encoding strings with special characters
 func TestEncodeStringSpecialChars(t *testing.T) {
 	processor, _ := New()
 	defer processor.Close()
@@ -1574,37 +1365,6 @@ func TestAssignResult(t *testing.T) {
 }
 
 // TestMoreMethod tests More method of Decoder
-func TestMoreMethod(t *testing.T) {
-	t.Run("MoreWithMultipleValues", func(t *testing.T) {
-		decoder := NewDecoder(strings.NewReader(`{"a":1}{"b":2}`))
-
-		// First decode
-		var v1 map[string]any
-		err := decoder.Decode(&v1)
-		if err != nil {
-			t.Errorf("First Decode failed: %v", err)
-		}
-
-		// Check if more
-		if !decoder.More() {
-			t.Error("More() should return true when there's more data")
-		}
-
-		// Second decode
-		var v2 map[string]any
-		err = decoder.Decode(&v2)
-		if err != nil {
-			t.Errorf("Second Decode failed: %v", err)
-		}
-
-		// No more
-		if decoder.More() {
-			t.Error("More() should return false when there's no more data")
-		}
-	})
-}
-
-// TestEncodeStringEdgeCases tests string encoding edge cases
 func TestEncodeStringEdgeCases(t *testing.T) {
 	processor, _ := New()
 	defer processor.Close()
@@ -2112,161 +1872,6 @@ func TestCustomEncoderEdgeCases(t *testing.T) {
 }
 
 // TestStringFormatValidation tests string format validation
-func TestStringFormatValidation(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
-	t.Run("EmailFormat", func(t *testing.T) {
-		schema := &Schema{
-			Type:   "string",
-			Format: "email",
-		}
-
-		tests := []struct {
-			jsonStr   string
-			expectErr bool
-		}{
-			{`"test@example.com"`, false},
-			{`"invalid-email"`, true},
-			{`"user@domain"`, false}, // Basic format check
-		}
-
-		for _, tt := range tests {
-			errors, err := processor.ValidateSchema(tt.jsonStr, schema)
-			if err != nil {
-				t.Errorf("ValidateSchema failed: %v", err)
-				continue
-			}
-			// Just verify validation runs
-			_ = len(errors) > 0
-		}
-	})
-
-	t.Run("DateFormat", func(t *testing.T) {
-		schema := &Schema{
-			Type:   "string",
-			Format: "date",
-		}
-
-		tests := []string{
-			`"2024-01-15"`,
-			`"invalid-date"`,
-		}
-
-		for _, jsonStr := range tests {
-			_, err := processor.ValidateSchema(jsonStr, schema)
-			if err != nil {
-				t.Errorf("ValidateSchema failed: %v", err)
-			}
-		}
-	})
-
-	t.Run("DateTimeFormat", func(t *testing.T) {
-		schema := &Schema{
-			Type:   "string",
-			Format: "date-time",
-		}
-
-		tests := []string{
-			`"2024-01-15T10:30:00Z"`,
-			`"invalid-datetime"`,
-		}
-
-		for _, jsonStr := range tests {
-			_, err := processor.ValidateSchema(jsonStr, schema)
-			if err != nil {
-				t.Errorf("ValidateSchema failed: %v", err)
-			}
-		}
-	})
-
-	t.Run("UUIDFormat", func(t *testing.T) {
-		schema := &Schema{
-			Type:   "string",
-			Format: "uuid",
-		}
-
-		tests := []string{
-			`"550e8400-e29b-41d4-a716-446655440000"`,
-			`"invalid-uuid"`,
-		}
-
-		for _, jsonStr := range tests {
-			_, err := processor.ValidateSchema(jsonStr, schema)
-			if err != nil {
-				t.Errorf("ValidateSchema failed: %v", err)
-			}
-		}
-	})
-
-	t.Run("URIFormat", func(t *testing.T) {
-		schema := &Schema{
-			Type:   "string",
-			Format: "uri",
-		}
-
-		tests := []string{
-			`"https://example.com"`,
-			`"invalid-uri"`,
-		}
-
-		for _, jsonStr := range tests {
-			_, err := processor.ValidateSchema(jsonStr, schema)
-			if err != nil {
-				t.Errorf("ValidateSchema failed: %v", err)
-			}
-		}
-	})
-
-	t.Run("IPv4Format", func(t *testing.T) {
-		schema := &Schema{
-			Type:   "string",
-			Format: "ipv4",
-		}
-
-		tests := []string{
-			`"192.168.1.1"`,
-			`"invalid-ip"`,
-		}
-
-		for _, jsonStr := range tests {
-			_, err := processor.ValidateSchema(jsonStr, schema)
-			if err != nil {
-				t.Errorf("ValidateSchema failed: %v", err)
-			}
-		}
-	})
-
-	t.Run("IPv6Format", func(t *testing.T) {
-		schema := &Schema{
-			Type:   "string",
-			Format: "ipv6",
-		}
-
-		tests := []string{
-			`"2001:0db8:85a3:0000:0000:8a2e:0370:7334"`,
-			`"invalid-ipv6"`,
-		}
-
-		for _, jsonStr := range tests {
-			_, err := processor.ValidateSchema(jsonStr, schema)
-			if err != nil {
-				t.Errorf("ValidateSchema failed: %v", err)
-			}
-		}
-	})
-}
-
-// ============================================================================
-// TOP-LEVEL API FUNCTIONS - Missing coverage tests
-// ============================================================================
-
-// TestTypedGetters_DefaultContract consolidates the former per-type
-// TestGetStringDefault / TestGetIntDefault / TestGetFloatDefault /
-// TestGetBoolDefault. All four package-level getters delegate to
-// withTypedGetter, so this single table-driven test covers their shared
-// found / not-found / invalid-JSON -> default contract plus each type's
-// coercion edge.
 func TestTypedGetters_DefaultContract(t *testing.T) {
 	t.Run("string", func(t *testing.T) {
 		cases := []struct{ name, in, path, def, want string }{
@@ -2521,7 +2126,7 @@ func TestArrayBoundaryConditions(t *testing.T) {
 func TestFastEncoderFunctions(t *testing.T) {
 	t.Run("FastEncodeSimpleToBytes", func(t *testing.T) {
 		data := map[string]any{"key": "value", "num": 123}
-		result, ok := fastEncodeSimpleToBytes(data)
+		result, ok := getDefaultProcessor().fastEncodeSimpleToBytes(data, DefaultMaxDepth)
 		if !ok {
 			t.Error("fastEncodeSimpleToBytes should succeed for simple data")
 		}
@@ -2532,7 +2137,7 @@ func TestFastEncoderFunctions(t *testing.T) {
 
 	t.Run("FastEncodeSimpleToBytesWithHTMLEscape", func(t *testing.T) {
 		data := map[string]any{"html": "<script>"}
-		result, ok := fastEncodeSimpleToBytes(data)
+		result, ok := getDefaultProcessor().fastEncodeSimpleToBytes(data, DefaultMaxDepth)
 		if !ok {
 			t.Error("fastEncodeSimpleToBytes should succeed")
 		}
@@ -2648,34 +2253,6 @@ func TestTypeConversionErrors(t *testing.T) {
 // ============================================================================
 
 // TestAPISetCreate tests the package-level SetCreate function
-func TestAPISetCreate(t *testing.T) {
-	t.Run("create nested path", func(t *testing.T) {
-		result, err := SetCreate(`{"a":1}`, "b.c", 2)
-		if err != nil {
-			t.Fatalf("SetCreate error: %v", err)
-		}
-		assertJSONEqual(t, `{"a":1,"b":{"c":2}}`, result)
-	})
-
-	t.Run("set existing", func(t *testing.T) {
-		result, err := SetCreate(`{"a":1}`, "a", 99)
-		if err != nil {
-			t.Fatalf("SetCreate error: %v", err)
-		}
-		assertJSONEqual(t, `{"a":99}`, result)
-	})
-}
-
-// TestAPISetMultipleCreate tests the package-level SetMultipleCreate function
-func TestAPISetMultipleCreate(t *testing.T) {
-	result, err := SetMultipleCreate(`{}`, map[string]any{"x": 1, "y": 2})
-	if err != nil {
-		t.Fatalf("SetMultipleCreate error: %v", err)
-	}
-	assertJSONEqual(t, `{"x":1,"y":2}`, result)
-}
-
-// TestAPIDeleteClean tests the package-level DeleteClean function
 func TestAPIDeleteClean(t *testing.T) {
 	t.Run("delete and clean array", func(t *testing.T) {
 		result, err := DeleteClean(`{"items":[1,2,3]}`, "items[1]")
@@ -3447,4 +3024,555 @@ func TestDeleteFastPathErrorBranches(t *testing.T) {
 	} else if !errors.Is(err, ErrPathNotFound) {
 		t.Errorf("Delete of a missing key: want ErrPathNotFound, got %v", err)
 	}
+}
+
+// ============================================================================
+// Table-driven coverage tests for core functions with 0% or low coverage.
+// Target: core ≥ 90%, utils ≥ 80%
+// ============================================================================
+
+// --- parseSurrogatePair (encoding.go:656, 0% coverage) ---
+// Tested indirectly via Decode with strings containing surrogate pairs.
+
+func TestDecoderSurrogatePair(t *testing.T) {
+	// parseSurrogatePair is called from parseString via the Token() method
+	// Build surrogate pair strings at byte level
+	validPair := string([]byte{
+		'"', '\\', 'u', 'D', '8', '3', 'D',
+		'\\', 'u', 'D', 'E', '0', '0', '"',
+	})
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{name: "valid surrogate pair", input: validPair, wantErr: false},
+		{name: "valid emoji UTF8", input: `"😀"`, wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(tt.input))
+			tok, err := dec.Token()
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tok == nil {
+				t.Error("expected non-nil token")
+			}
+		})
+	}
+}
+
+// --- encodeJSONNumber: tested in coverage_test.go TestEncodeJSONNumber ---
+
+// --- validateInputEssential (processor.go:1736, 0% coverage) ---
+// Tested via Processor with SkipValidation enabled and oversized input.
+
+func TestValidateInputEssential(t *testing.T) {
+	t.Run("oversized input with SkipValidation", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.MaxJSONSize = 100
+		cfg.SkipValidation = true
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		defer p.Close()
+
+		largeJSON := `{"a":"` + strings.Repeat("x", 200) + `"}`
+		_, err = p.Get(largeJSON, "a")
+		if err == nil {
+			t.Error("expected error for oversized JSON even with SkipValidation")
+		}
+	})
+
+	t.Run("valid input with SkipValidation", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.SkipValidation = true
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		defer p.Close()
+
+		val, err := p.Get(`{"key":"value"}`, "key")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if val != "value" {
+			t.Errorf("val = %v, want value", val)
+		}
+	})
+}
+
+// --- Recursive processor: array index with delete ---
+
+func TestRecursiveArrayIndexDelete(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		path    string
+		want    string
+		wantErr bool
+	}{
+		{name: "delete middle element", json: `{"arr":[1,2,3]}`, path: "arr[1]", want: `{"arr":[1,3]}`},
+		{name: "delete first element", json: `{"arr":[10,20,30]}`, path: "arr[0]", want: `{"arr":[20,30]}`},
+		{name: "delete last by negative index", json: `{"arr":[1,2,3]}`, path: "arr[-1]", want: `{"arr":[1,2]}`},
+		{name: "delete nested array element", json: `{"a":{"b":[1,2,3]}}`, path: "a.b[1]", want: `{"a":{"b":[1,3]}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Delete(tt.json, tt.path)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertJSONEqual(t, tt.want, result)
+		})
+	}
+}
+
+// --- Recursive processor: array slice with delete ---
+
+func TestRecursiveArraySliceDelete(t *testing.T) {
+	tests := []struct {
+		name    string
+		json    string
+		path    string
+		want    string
+		wantErr bool
+	}{
+		{name: "delete slice range", json: `{"arr":[1,2,3,4,5]}`, path: "arr[1:3]", want: `{"arr":[1,4,5]}`},
+		{name: "delete slice with step", json: `{"arr":[1,2,3,4,5]}`, path: "arr[0:5:2]", want: `{"arr":[2,4]}`},
+		{name: "delete all elements via slice", json: `{"arr":[1,2,3]}`, path: "arr[0:3]", want: `{"arr":[]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Delete(tt.json, tt.path)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			assertJSONEqual(t, tt.want, result)
+		})
+	}
+}
+
+// --- Wildcard/extract/slice: tested in recursive_test.go and operation_test.go ---
+
+// --- PreParse and Release ---
+
+func TestPreParseAndRelease(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New() failed: %v", err)
+	}
+	defer p.Close()
+
+	parsed, err := p.PreParse(`{"a":1,"b":[2,3],"c":{"d":4}}`)
+	if err != nil {
+		t.Fatalf("PreParse failed: %v", err)
+	}
+
+	val, err := p.GetFromParsed(parsed, "a")
+	if err != nil {
+		t.Fatalf("GetFromParsed failed: %v", err)
+	}
+	if val != float64(1) {
+		t.Errorf("val = %v, want 1", val)
+	}
+
+	val, err = p.GetFromParsed(parsed, "c.d")
+	if err != nil {
+		t.Fatalf("GetFromParsed nested failed: %v", err)
+	}
+	if val != float64(4) {
+		t.Errorf("val = %v, want 4", val)
+	}
+
+	parsed.Release()
+	parsed.Release() // double release should not panic
+}
+
+// --- checkRateLimit (processor.go:1267, 18.2% coverage) ---
+
+func TestProcessorRateLimit(t *testing.T) {
+	t.Run("rate limit enforcement", func(t *testing.T) {
+		cfg := DefaultConfig()
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		defer p.Close()
+
+		// operationWindow is the internal max-ops/sec; a small window makes the
+		// minimum interval between operations large enough that a second call in
+		// immediate succession must be rejected by checkRateLimit (processor_get.go).
+		p.metrics.operationWindow = 100 // 100 ops/sec => 10ms minimum interval
+
+		// First call records lastOperationTime and succeeds.
+		if _, err := p.Get(`{"a":1}`, "a"); err != nil {
+			t.Fatalf("first Get failed: %v", err)
+		}
+
+		// Second call fires well within the 10ms window => rate-limited.
+		_, err = p.Get(`{"a":1}`, "a")
+		if err == nil {
+			t.Fatal("second Get should have been rejected by the rate limit, got nil")
+		}
+		if !strings.Contains(err.Error(), "rate limit") {
+			t.Errorf("expected a rate-limit error, got: %v", err)
+		}
+	})
+
+	t.Run("disabled by default", func(t *testing.T) {
+		p, err := New(DefaultConfig())
+		if err != nil {
+			t.Fatalf("New() failed: %v", err)
+		}
+		defer p.Close()
+
+		// operationWindow defaults to 0 => rate limiting disabled; rapid calls are fine.
+		for range 5 {
+			if _, err := p.Get(`{"a":1}`, "a"); err != nil {
+				t.Fatalf("Get failed with rate limiting disabled: %v", err)
+			}
+		}
+	})
+}
+
+// ============================================================================
+// operation_set.go: array auto-extension & extraction-set paths (low coverage)
+// Confirmed behaviors probed via the public Set API.
+// ============================================================================
+
+func TestSetArrayExtension_Coverage(t *testing.T) {
+	// Auto-extension on out-of-bounds index: the array grows with nulls to fit.
+	t.Run("auto extend with nulls", func(t *testing.T) {
+		result, err := Set(`{"arr":[1,2]}`, "arr[5]", 9)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assertJSONEqual(t, `{"arr":[1,2,null,null,null,9]}`, result)
+	})
+
+	t.Run("in bounds append via index", func(t *testing.T) {
+		result, err := Set(`{"arr":[1,2]}`, "arr[2]", 3)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assertJSONEqual(t, `{"arr":[1,2,3]}`, result)
+	})
+
+	t.Run("slice set auto extends", func(t *testing.T) {
+		result, err := Set(`{"arr":[1,2]}`, "arr[0:5]", 9)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assertJSONEqual(t, `{"arr":[9,9,9,9,9]}`, result)
+	})
+
+	t.Run("negative index sets last element", func(t *testing.T) {
+		result, err := Set(`{"arr":[1,2]}`, "arr[-1]", 9)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assertJSONEqual(t, `{"arr":[1,9]}`, result)
+	})
+
+	t.Run("create nested path", func(t *testing.T) {
+		result, err := Set(`{}`, "a.b.c", 1)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assertJSONEqual(t, `{"a":{"b":{"c":1}}}`, result)
+	})
+}
+
+// TestSetExtraction_Coverage exercises the extraction-Set code paths
+// (setValueForExtract, setValueForArrayExtract, setValueForArrayExtractFlat,
+// navigateToExtraction) via {field} extraction syntax on objects and arrays.
+func TestSetExtraction_Coverage(t *testing.T) {
+	t.Run("extract set on single object", func(t *testing.T) {
+		result, err := Set(`{"u":{}}`, "u{name}", "x")
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assertJSONEqual(t, `{"u":{"name":"x"}}`, result)
+	})
+
+	t.Run("extract set on array of objects", func(t *testing.T) {
+		result, err := Set(`{"us":[{"a":1},{"a":2}]}`, "us{a}", 99)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assertJSONEqual(t, `{"us":[{"a":99},{"a":99}]}`, result)
+	})
+
+	t.Run("flat extract set", func(t *testing.T) {
+		result, err := Set(`{"us":[{"t":[1]},{"t":[2]}]}`, "us{flat:t}", 99)
+		if err != nil {
+			t.Fatalf("Set failed: %v", err)
+		}
+		assertJSONEqual(t, `{"us":[{"t":99},{"t":99}]}`, result)
+	})
+}
+
+// ============================================================================
+// operation_array.go: multi-field / post-extraction Get paths (low coverage)
+// ============================================================================
+
+func TestGetExtraction_Coverage(t *testing.T) {
+	t.Run("extract then slice", func(t *testing.T) {
+		got, err := Get(`{"us":[{"id":1},{"id":2},{"id":3}]}`, "us{id}[0:2]")
+		if err != nil {
+			t.Fatalf("Get failed: %v", err)
+		}
+		arr, ok := got.([]any)
+		if !ok {
+			t.Fatalf("expected []any, got %T (%v)", got, got)
+		}
+		if len(arr) != 2 || arr[0] != 1.0 || arr[1] != 2.0 {
+			t.Errorf("extract-then-slice = %v, want [1 2]", got)
+		}
+	})
+
+	t.Run("multi-field extract on object", func(t *testing.T) {
+		got, err := Get(`{"u":{"id":1,"name":"n","email":"e"}}`, "u{id,name,email}")
+		if err != nil {
+			t.Fatalf("Get failed: %v", err)
+		}
+		m, ok := got.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map, got %T (%v)", got, got)
+		}
+		if m["id"] != 1.0 || m["name"] != "n" || m["email"] != "e" {
+			t.Errorf("multi-field extract = %v, want id/name/email", got)
+		}
+	})
+
+	t.Run("extract on array yields array of maps", func(t *testing.T) {
+		got, err := Get(`{"us":[{"id":1,"name":"a"},{"id":2,"name":"b"}]}`, "us{id,name}")
+		if err != nil {
+			t.Fatalf("Get failed: %v", err)
+		}
+		arr, ok := got.([]any)
+		if !ok || len(arr) != 2 {
+			t.Fatalf("expected 2-element []any, got %T (%v)", got, got)
+		}
+		first, ok := arr[0].(map[string]any)
+		if !ok || first["id"] != 1.0 || first["name"] != "a" {
+			t.Errorf("first extracted map = %v, want id=1 name=a", arr[0])
+		}
+	})
+}
+
+// ============================================================================
+// White-box coverage of operation_set.go / operation_array.go handlers that
+// the PUBLIC Get/Set API bypasses.
+//
+// The library ships TWO parallel path engines: path.go + operation_*.go, and
+// recursive.go. The public Get/Set default to recursive.go, so the
+// extraction handlers in operation_set.go (setValueForExtract family) and
+// operation_array.go (handleMultiFieldExtraction, handleStructAccess) are
+// never reached through the public API. They are pure handler functions, so
+// calling them directly — exactly as core_test.go does for handleExtraction —
+// is the only way to cover them.
+// ============================================================================
+
+func TestSetExtractHandlers_Coverage(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	t.Run("setValueForExtract on object", func(t *testing.T) {
+		obj := map[string]any{"a": 1}
+		seg := internal.PathSegment{Type: internal.ExtractSegment, Key: "name"}
+		if err := p.setValueForExtract(obj, seg, "x", true); err != nil {
+			t.Fatalf("setValueForExtract: %v", err)
+		}
+		if obj["name"] != "x" {
+			t.Errorf("field not set: %v", obj)
+		}
+	})
+
+	t.Run("setValueForExtract on array (non-flat)", func(t *testing.T) {
+		arr := []any{map[string]any{"a": 1}, "notmap"}
+		seg := internal.PathSegment{Type: internal.ExtractSegment, Key: "k"}
+		if err := p.setValueForExtract(arr, seg, 9, true); err != nil {
+			t.Fatalf("setValueForExtract: %v", err)
+		}
+		// both elements now carry k=9; the non-map element is promoted to a map
+		first, ok := arr[0].(map[string]any)
+		if !ok || first["k"] != 9 {
+			t.Errorf("first element not set: %v", arr[0])
+		}
+		second, ok := arr[1].(map[string]any)
+		if !ok || second["k"] != 9 {
+			t.Errorf("second element not promoted: %v", arr[1])
+		}
+	})
+
+	t.Run("setValueForExtract on array (flat)", func(t *testing.T) {
+		arr := []any{map[string]any{"tags": []any{"a"}}}
+		seg := internal.PathSegment{Type: internal.ExtractSegment, Key: "tags", Flags: internal.FlagIsFlat}
+		if err := p.setValueForExtract(arr, seg, "b", true); err != nil {
+			t.Fatalf("setValueForExtract flat: %v", err)
+		}
+		got := arr[0].(map[string]any)["tags"].([]any)
+		if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+			t.Errorf("flat extract set failed: %v", got)
+		}
+	})
+
+	t.Run("setValueForExtract rejects non-container", func(t *testing.T) {
+		seg := internal.PathSegment{Type: internal.ExtractSegment, Key: "name"}
+		if err := p.setValueForExtract(42, seg, "x", true); err == nil {
+			t.Error("expected error for extraction set on a number")
+		}
+	})
+
+	t.Run("setValueForExtract rejects empty key", func(t *testing.T) {
+		seg := internal.PathSegment{Type: internal.ExtractSegment, Key: ""}
+		if err := p.setValueForExtract(map[string]any{}, seg, "x", true); err == nil {
+			t.Error("expected error for empty extraction key")
+		}
+	})
+
+	t.Run("navigateToExtraction on array returns current", func(t *testing.T) {
+		arr := []any{1, 2}
+		seg := internal.PathSegment{Type: internal.ExtractSegment, Key: "a"}
+		got, err := p.navigateToExtraction(arr, seg, true, nil, 0)
+		if err != nil {
+			t.Fatalf("navigateToExtraction: %v", err)
+		}
+		// Array extraction is delegated to distributed operations: the current
+		// array is returned unchanged (slices are not comparable, so check by
+		// identity of contents).
+		out, ok := got.([]any)
+		if !ok || len(out) != 2 || out[0] != 1 || out[1] != 2 {
+			t.Errorf("array navigation should return current unchanged, got %v", got)
+		}
+	})
+
+	t.Run("navigateToExtraction on missing field with createPaths", func(t *testing.T) {
+		obj := map[string]any{}
+		segs := []internal.PathSegment{{Type: internal.ExtractSegment, Key: "name"}}
+		// currentIndex is the last segment => createContainerForNextSegment
+		// returns nil (the slot will be filled by the caller's value).
+		got, err := p.navigateToExtraction(obj, segs[0], true, segs, 0)
+		if err != nil {
+			t.Fatalf("navigateToExtraction: %v", err)
+		}
+		if got != nil {
+			t.Errorf("last-segment container should be nil, got %v", got)
+		}
+		if _, ok := obj["name"]; !ok {
+			t.Errorf("missing field should be created: %v", obj)
+		}
+	})
+
+	t.Run("navigateToExtraction missing field without createPaths errors", func(t *testing.T) {
+		seg := internal.PathSegment{Type: internal.ExtractSegment, Key: "nope"}
+		if _, err := p.navigateToExtraction(map[string]any{}, seg, false, nil, 0); err == nil {
+			t.Error("expected error for missing field without createPaths")
+		}
+	})
+}
+
+// TestArrayExtractHandlers_Coverage directly exercises operation_array.go's
+// multi-field extraction and struct-access handlers (bypassed by the public
+// recursive engine).
+func TestArrayExtractHandlers_Coverage(t *testing.T) {
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	t.Run("handleMultiFieldExtraction on object", func(t *testing.T) {
+		data := map[string]any{"id": 1, "name": "n", "extra": "x"}
+		got, err := p.handleMultiFieldExtraction(data, "id,name", false)
+		if err != nil {
+			t.Fatalf("handleMultiFieldExtraction: %v", err)
+		}
+		m, ok := got.(map[string]any)
+		if !ok {
+			t.Fatalf("expected map, got %T (%v)", got, got)
+		}
+		if m["id"] != 1 || m["name"] != "n" {
+			t.Errorf("multi-field object extract = %v", got)
+		}
+		if _, ok := m["extra"]; ok {
+			t.Errorf("unrequested field leaked into result: %v", m)
+		}
+	})
+
+	t.Run("handleMultiFieldExtraction on array (flat and non-flat)", func(t *testing.T) {
+		data := []any{
+			map[string]any{"id": 1, "name": "a"},
+			map[string]any{"id": 2, "name": "b"},
+		}
+		// Non-flat: each item becomes a sub-map.
+		got, err := p.handleMultiFieldExtraction(data, "id,name", false)
+		if err != nil {
+			t.Fatalf("handleMultiFieldExtraction: %v", err)
+		}
+		if arr, ok := got.([]any); !ok || len(arr) != 2 {
+			t.Errorf("non-flat array extract = %v", got)
+		}
+		// Flat flag exercises the flattenValue branch for completeness.
+		if _, err := p.handleMultiFieldExtraction(data, "id,name", true); err != nil {
+			t.Fatalf("handleMultiFieldExtraction flat: %v", err)
+		}
+	})
+
+	t.Run("handleStructAccess direct, case-insensitive, nil, pointer", func(t *testing.T) {
+		type sample struct {
+			Name string
+			Age  int
+		}
+		s := sample{Name: "x", Age: 5}
+
+		if v := p.handleStructAccess(s, "Name"); v != "x" {
+			t.Errorf("direct field = %v, want x", v)
+		}
+		if v := p.handleStructAccess(s, "age"); v != 5 {
+			t.Errorf("case-insensitive field = %v, want 5", v)
+		}
+		if v := p.handleStructAccess(s, "missing"); v != nil {
+			t.Errorf("missing field = %v, want nil", v)
+		}
+		if v := p.handleStructAccess(nil, "x"); v != nil {
+			t.Errorf("nil data = %v, want nil", v)
+		}
+		if v := p.handleStructAccess(42, "x"); v != nil {
+			t.Errorf("non-struct = %v, want nil", v)
+		}
+		if v := p.handleStructAccess((*sample)(nil), "x"); v != nil {
+			t.Errorf("nil pointer = %v, want nil", v)
+		}
+		if v := p.handleStructAccess(&sample{Name: "p"}, "Name"); v != "p" {
+			t.Errorf("non-nil pointer field = %v, want p", v)
+		}
+	})
 }

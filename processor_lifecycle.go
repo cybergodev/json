@@ -35,50 +35,68 @@ func (p *Processor) Close() error {
 		// read/write them (getCachedResult/setCachedResult), and tearing them down
 		// mid-flight races. Leave resources intact and mark CloseTimedOut so new
 		// ops are rejected (IsClosed() returns true) while the in-flight ones
-		// finish against undisturbed state. cleanupOnce prevents a later Close()
-		// from re-entering, so full teardown waits until the processor is idle or
-		// process exit / ShutdownGlobalProcessor. Correctness over the previous
-		// unconditional teardown, which raced in-flight ops against cache teardown.
+		// finish against undisturbed state.
 		if !p.waitForActiveOps(closeOperationTimeout) {
 			atomic.StoreInt32(&p.state, processorStateCloseTimedOut)
+			// D-002: if the last in-flight op raced this store and finished
+			// between the timeout and the state write, no endGovernedOp will
+			// fire the deferred teardown below — finish it here. (Mirrors
+			// beginGovernedOp's double-check pattern.)
+			if atomic.LoadInt64(&p.activeOps) == 0 {
+				p.finishDeferredTeardown()
+			}
 			return
 		}
 
 		// All in-flight operations have drained — safe to release resources.
-
-		// Safely close cache: cancels cleanup goroutines and clears data
-		if p.cache != nil {
-			p.cache.Close()
-		}
-
-		// Close security validator to release its cache
-		if p.securityValidator != nil {
-			p.securityValidator.Close()
-		}
-
-		// Reset resource tracking
-		if p.resources != nil {
-			atomic.StoreInt32(&p.resources.memoryPressure, 0)
-			atomic.StoreInt64(&p.resources.lastMemoryCheck, 0)
-			atomic.StoreInt64(&p.resources.lastPoolReset, 0)
-		}
-
-		// Release hook references to allow GC of captured closures
-		p.hooksMu.Lock()
-		p.hooks = nil
-		p.hasHooks.Store(false)
-		p.hooksMu.Unlock()
-
-		// NOTE: Global caches (pathTypeCache, structEncoderCache) are NOT cleared
-		// here because they are shared across ALL processor instances. Clearing them
-		// in individual Close() would invalidate caches for other active processors.
-		// Use ShutdownGlobalProcessor() for complete cleanup at application shutdown.
-
-		// Resources fully released.
-		atomic.StoreInt32(&p.state, processorStateClosed)
+		p.releaseProcessorResources()
 	})
 
 	return nil
+}
+
+// finishDeferredTeardown runs the resource release exactly once after a
+// CloseTimedOut drain, from whichever side observes idle first: the last
+// in-flight operation's endGovernedOp, or Close's post-timeout recheck.
+func (p *Processor) finishDeferredTeardown() {
+	p.deferredTeardownOnce.Do(func() {
+		p.releaseProcessorResources()
+	})
+}
+
+// releaseProcessorResources tears down the processor's own resources. It may
+// only run once every in-flight operation has completed (see Close).
+func (p *Processor) releaseProcessorResources() {
+	// Safely close cache: cancels cleanup goroutines and clears data
+	if p.cache != nil {
+		p.cache.Close()
+	}
+
+	// Close security validator to release its cache
+	if p.securityValidator != nil {
+		p.securityValidator.Close()
+	}
+
+	// Reset resource tracking
+	if p.resources != nil {
+		atomic.StoreInt32(&p.resources.memoryPressure, 0)
+		atomic.StoreInt64(&p.resources.lastMemoryCheck, 0)
+		atomic.StoreInt64(&p.resources.lastPoolReset, 0)
+	}
+
+	// Release hook references to allow GC of captured closures
+	p.hooksMu.Lock()
+	p.hooks = nil
+	p.hasHooks.Store(false)
+	p.hooksMu.Unlock()
+
+	// NOTE: Global caches (pathTypeCache, structEncoderCache) are NOT cleared
+	// here because they are shared across ALL processor instances. Clearing them
+	// in individual Close() would invalidate caches for other active processors.
+	// Use ShutdownGlobalProcessor() for complete cleanup at application shutdown.
+
+	// Resources fully released.
+	atomic.StoreInt32(&p.state, processorStateClosed)
 }
 
 // waitForActiveOps blocks until all in-flight operations (registered via
@@ -177,6 +195,40 @@ func (p *Processor) snapshotHooks() hookChain {
 	hc := hookChain(p.hooks)
 	p.hooksMu.Unlock()
 	return hc
+}
+
+// delegateForPerCallParser builds a one-shot processor for a per-call
+// Config.CustomPathParser (D-002/M33). The path-parsing funnels read the
+// PROCESSOR-level parser only, so a parser arriving solely through a call's
+// cfg would be ignored; delegating the whole operation to a processor built
+// from that cfg honors it with the same semantics the package-level API
+// already guarantees via its cache bypass. Returns (nil, nil) when no
+// delegation is needed. Callers own the returned processor's Close (safe and
+// immediate: it never has in-flight ops of its own).
+func (p *Processor) delegateForPerCallParser(options *Config) (*Processor, error) {
+	if options == nil || options.CustomPathParser == nil || p.config.CustomPathParser != nil {
+		return nil, nil
+	}
+	return New(*options.Clone())
+}
+
+// hooksForOptions returns the hook chain for an operation: the processor's
+// installed hooks plus any hooks supplied through the per-call Config.
+//
+// D-002: cfg.Hooks always take effect via New (they are installed as
+// processor hooks), so package-level calls built from cfg run them — but the
+// per-call form p.Get(s, path, cfgWithHooks) silently ignored the same field
+// while it still participated in config hashing and cache keys. Honoring
+// per-call hooks here makes both layers behave identically.
+func (p *Processor) hooksForOptions(options *Config) hookChain {
+	hc := p.snapshotHooks()
+	if options == nil || len(options.Hooks) == 0 {
+		return hc
+	}
+	merged := make(hookChain, 0, len(hc)+len(options.Hooks))
+	merged = append(merged, hc...)
+	merged = append(merged, options.Hooks...)
+	return merged
 }
 
 // GetConfig returns a copy of the processor configuration

@@ -35,7 +35,7 @@ var simpleFirstCharTable = [256]bool{
 }
 
 // isSimplePropertyAccess checks if path is a simple single-level property access.
-// PERFORMANCE v2: Uses lookup tables instead of 4-range branch per byte.
+// PERFORMANCE: Uses lookup tables instead of 4-range branch per byte.
 // Benchmarks show ~40% improvement over the range-check version.
 func isSimplePropertyAccess(path string) bool {
 	n := len(path)

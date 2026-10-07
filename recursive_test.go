@@ -192,12 +192,13 @@ func TestRecursiveProcessor_SetOperation_Table(t *testing.T) {
 	defer processor.Close()
 
 	tests := []struct {
-		name     string
-		data     any
-		path     string
-		value    any
-		wantErr  bool
-		validate func(t *testing.T, data any)
+		name           string
+		data           any
+		path           string
+		value          any
+		wantErr        bool
+		validate       func(t *testing.T, data any)
+		validateResult func(t *testing.T, result any)
 	}{
 		{
 			name:  "set simple property",
@@ -243,11 +244,18 @@ func TestRecursiveProcessor_SetOperation_Table(t *testing.T) {
 			},
 		},
 		{
-			name:    "set root should fail",
-			data:    map[string]any{"key": "value"},
-			path:    "",
-			value:   "newroot",
-			wantErr: true,
+			// GEN-001: root Set replaces the document; the new root arrives as
+			// the operation result (the in-place data cannot express it).
+			name:  "set root replaces document",
+			data:  map[string]any{"key": "value"},
+			path:  "",
+			value: "newroot",
+			validateResult: func(t *testing.T, result any) {
+				t.Helper()
+				if result != "newroot" {
+					t.Errorf("root set result = %v, want newroot", result)
+				}
+			},
 		},
 		{
 			name:    "set nonexistent path without createPaths",
@@ -282,13 +290,16 @@ func TestRecursiveProcessor_SetOperation_Table(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := rp.ProcessRecursively(tt.data, tt.path, opSet, tt.value)
+			result, err := rp.ProcessRecursively(tt.data, tt.path, opSet, tt.value)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ProcessRecursively() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if tt.validate != nil && err == nil {
 				tt.validate(t, tt.data)
+			}
+			if tt.validateResult != nil && err == nil {
+				tt.validateResult(t, result)
 			}
 		})
 	}
@@ -467,11 +478,11 @@ func TestRecursiveProcessor_CreatePaths_Table(t *testing.T) {
 			},
 		},
 		{
-			name:    "create path with array slice extension succeeds",
+			name:    "out-of-range slice errors explicitly instead of silent clamp",
 			data:    map[string]any{"arr": []any{1}},
 			path:    "arr[0:5]",
 			value:   99,
-			wantErr: false,
+			wantErr: true,
 		},
 	}
 
@@ -693,9 +704,13 @@ func TestRecursiveProcessor_NilInput(t *testing.T) {
 	defer processor.Close()
 
 	t.Run("nil data with get", func(t *testing.T) {
-		_, err := rp.ProcessRecursively(nil, "path", opGet, nil)
-		// Should not panic; error is acceptable
-		t.Logf("nil data get error: %v", err)
+		result, err := rp.ProcessRecursively(nil, "path", opGet, nil)
+		if err != nil {
+			t.Errorf("get on nil data: unexpected error %v", err)
+		}
+		if result != nil {
+			t.Errorf("get on nil data: result = %v, want nil", result)
+		}
 	})
 
 	t.Run("nil data with set", func(t *testing.T) {
@@ -707,8 +722,9 @@ func TestRecursiveProcessor_NilInput(t *testing.T) {
 
 	t.Run("nil data with delete", func(t *testing.T) {
 		_, err := rp.ProcessRecursively(nil, "path", opDelete, nil)
-		// Should not panic
-		t.Logf("nil data delete error: %v", err)
+		if err == nil {
+			t.Error("expected error for delete on nil data")
+		}
 	})
 }
 
@@ -1149,13 +1165,14 @@ func TestRecursiveProcessor_DistributedArrayOps(t *testing.T) {
 			},
 		}
 
-		// {name} extracts names from array, [0] gets first element
+		// {name} extracts names from the array, [0] takes the first element.
 		result, err := rp.ProcessRecursively(data, "users{name}[0]", opGet, nil)
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
-		// Result should contain extracted names processed with index
-		t.Logf("result: %v (%T)", result, result)
+		if result != "Alice" {
+			t.Errorf("users{name}[0] = %#v, want \"Alice\"", result)
+		}
 	})
 
 	t.Run("extract then slice", func(t *testing.T) {
@@ -1170,10 +1187,19 @@ func TestRecursiveProcessor_DistributedArrayOps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
-		if result == nil {
-			t.Error("expected non-nil result")
+		// Extraction collects the vals arrays; the slice applies to the
+		// COLLECTED array (selecting 2 of 2 here), not to each element.
+		arr, ok := result.([]any)
+		if !ok {
+			t.Fatalf("result is %T, want []any", result)
 		}
-		t.Logf("result: %v (%T)", result, result)
+		if len(arr) != 2 {
+			t.Fatalf("len = %d, want 2", len(arr))
+		}
+		first, ok := arr[0].([]any)
+		if !ok || len(first) != 5 || first[0] != 1 {
+			t.Errorf("arr[0] = %#v, want the unmodified [1 2 3 4 5]", arr[0])
+		}
 	})
 
 	t.Run("delete via extract then slice", func(t *testing.T) {
@@ -1726,10 +1752,10 @@ func TestRecursive_DistributedArrayIndex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get error: %v", err)
 		}
-		// Returns the first sub-array element
-		t.Logf("result: %v (%T)", result, result)
-		if result == nil {
-			t.Error("expected non-nil result")
+		// Plain indexing: the first sub-array itself.
+		sub, ok := result.([]any)
+		if !ok || len(sub) != 2 || sub[0] != 1.0 || sub[1] != 2.0 {
+			t.Errorf("matrix[0] = %#v, want [1 2]", result)
 		}
 	})
 
@@ -1809,10 +1835,7 @@ func TestRecursive_WildcardArray(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Set error: %v", err)
 		}
-		if result == "" {
-			t.Error("result should not be empty")
-		}
-		t.Logf("set wildcard result: %s", result)
+		assertJSONEqual(t, `{"items":[0,0,0]}`, result)
 	})
 
 	t.Run("delete all array elements", func(t *testing.T) {
@@ -1859,23 +1882,19 @@ func TestRecursive_WildcardMap(t *testing.T) {
 	t.Run("set all map values", func(t *testing.T) {
 		json := `{"data":{"a":1,"b":2}}`
 		result, err := Set(json, "data[*]", 9)
-		// Wildcard set on map values may not be supported — log behavior
 		if err != nil {
-			t.Logf("Set wildcard on map error (expected): %v", err)
-		} else {
-			t.Logf("Set wildcard on map result: %s", result)
+			t.Fatalf("Set error: %v", err)
 		}
+		assertJSONEqual(t, `{"data":{"a":9,"b":9}}`, result)
 	})
 
 	t.Run("delete all map values", func(t *testing.T) {
 		json := `{"data":{"a":1,"b":2}}`
 		result, err := Delete(json, "data[*]")
-		// Wildcard delete on map values may not be supported — log behavior
 		if err != nil {
-			t.Logf("Delete wildcard on map error (expected): %v", err)
-		} else {
-			t.Logf("Delete wildcard on map result: %s", result)
+			t.Fatalf("Delete error: %v", err)
 		}
+		assertJSONEqual(t, `{"data":{}}`, result)
 	})
 
 	t.Run("wildcard map with nested path", func(t *testing.T) {
@@ -2036,11 +2055,14 @@ func TestRecursive_Extract_Boundary(t *testing.T) {
 }
 
 // TestRecursive_EmptyPath_Boundary exercises ProcessRecursivelyWithOptions
-// empty-path handling (recursive.go): Set/Delete with an empty path must error.
+// empty-path handling (recursive.go): Set with an empty path replaces the
+// whole document (GEN-001); Delete with an empty path must still error.
 func TestRecursive_EmptyPath_Boundary(t *testing.T) {
-	if _, err := Set(`{"a":1}`, "", 99); err == nil {
-		t.Error("expected error for Set with empty path")
+	result, err := Set(`{"a":1}`, "", 99)
+	if err != nil {
+		t.Fatalf("expected root Set to replace the document, got error: %v", err)
 	}
+	assertJSONEqual(t, `99`, result)
 	if _, err := Delete(`{"a":1}`, ""); err == nil {
 		t.Error("expected error for Delete with empty path")
 	}

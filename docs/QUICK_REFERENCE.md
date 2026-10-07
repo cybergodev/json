@@ -125,10 +125,13 @@ result, err := json.SetMultiple(data, updates, cfg)
 // Delete field
 result, err := json.Delete(data, "user.temp")
 
-// Delete and cleanup null values
+// Delete and strip ALL null values from the resulting document
+// (note: plain Delete already removes the target cleanly; CleanupNulls
+// additionally removes every null in the document, including
+// pre-existing ones unrelated to the deleted path)
 cfg := json.DefaultConfig()
 cfg.CleanupNulls = true
-result, err := json.Delete(data, "user.temp", cfg)
+result, err = json.Delete(data, "user.temp", cfg)
 ```
 
 ---
@@ -138,10 +141,13 @@ result, err := json.Delete(data, "user.temp", cfg)
 ### Basic Iteration (Read-only)
 
 ```go
-json.Foreach(data, func(key any, item *json.IterableValue) {
+// ForeachWithError is the recommended form (the void Foreach is deprecated —
+// it drops errors; "." iterates the root, matching Foreach's behavior)
+err := json.ForeachWithError(data, ".", func(key any, item *json.IterableValue) error {
     name := item.GetString("name")
     age := item.GetInt("age")
     fmt.Printf("Key: %v, Name: %s, Age: %d\n", key, name, age)
+    return nil
 })
 ```
 
@@ -179,9 +185,11 @@ for _, path := range pathsToUpdate {
 ### Nested Iteration (Read-only)
 
 ```go
-// Recursively iterate through all nested levels
-json.ForeachNested(data, func(key any, item *json.IterableValue) {
+// Recursively iterate through all nested levels (ForeachNestedWithError —
+// the void ForeachNested is deprecated because it drops errors)
+err := json.ForeachNestedWithError(data, func(key any, item *json.IterableValue) error {
     fmt.Printf("Key: %v, Value: %v\n", key, item.Get(""))
+    return nil
 })
 ```
 
@@ -260,6 +268,8 @@ json.ForeachWithPath(data, basePath, func(key any, item *json.IterableValue) {
 | `{flat:field}` | Flatten extract | `users{flat:skills}` | All skills (flat)   |
 
 ### Path Examples
+
+Note: `Get` returns the decoded Go value (`map[string]any`, `[]any`, `string`, `float64`, ...) — not JSON text. The `Result:` comments below show the conceptual selected value.
 
 ```go
 data := `{
@@ -362,7 +372,7 @@ config.CacheTTL = 10 * time.Minute     // Default is 5 minutes
 config.MaxJSONSize = 50 * 1024 * 1024  // Default is 100MB; tighten to your payload size
 config.MaxPathDepth = 50               // Default is 50; shown for clarity
 config.CreatePaths = true              // Already true by default; lets Set create missing keys
-config.CleanupNulls = true             // Default is false; removes nulls left after Delete
+config.CleanupNulls = true             // Default is false; when true, Delete output contains no nulls at all (every null in the document is removed, including pre-existing ones)
 processor, err := json.New(config)
 if err != nil {
     log.Fatal(err)
@@ -388,7 +398,7 @@ cfg := json.DefaultConfig()
 cfg.CreatePaths = true
 result, err := json.Set(data, "new.path", value, cfg)
 
-// Pattern 2: Cleanup nulls after Delete
+// Pattern 2: Delete and strip all nulls from the document
 cfg := json.DefaultConfig()
 cfg.CleanupNulls = true
 result, err := json.Delete(data, "path", cfg)
@@ -397,12 +407,12 @@ result, err := json.Delete(data, "path", cfg)
 cfg := json.DefaultConfig()
 cfg.Pretty = true
 cfg.Indent = "  "
-result, err := json.EncodeWithConfig(data, cfg)
+result, err := json.Encode(data, cfg)
 
 // Pattern 4: Compact output (no nulls)
 cfg := json.DefaultConfig()
 cfg.IncludeNulls = false
-result, err := json.EncodeWithConfig(data, cfg)
+result, err := json.Encode(data, cfg)
 ```
 
 ### Performance Monitoring
@@ -427,16 +437,16 @@ fmt.Printf("Health status: %v\n", health.Healthy)
 ```go
 // NOTE: length/range constraints (MinLength, MaxLength, Minimum, Maximum,
 // MinItems, MaxItems, MultipleOf) are enforced only when the schema is built
-// with NewSchemaWithConfig — a struct literal cannot set the internal
+// with NewSchema — a struct literal cannot set the internal
 // "constraint present" flags, so such constraints are silently skipped.
 minLen, maxLen := 1, 100
 zero, maxAge := 0.0, 150.0
-schema := json.NewSchemaWithConfig(json.SchemaConfig{
+schema := json.NewSchema(json.SchemaConfig{
     Type: "object",
     Properties: map[string]*json.Schema{
-        "name":  json.NewSchemaWithConfig(json.SchemaConfig{Type: "string", MinLength: &minLen, MaxLength: &maxLen}),
-        "age":   json.NewSchemaWithConfig(json.SchemaConfig{Type: "number", Minimum: &zero, Maximum: &maxAge}),
-        "email": json.NewSchemaWithConfig(json.SchemaConfig{Type: "string", Format: "email"}),
+        "name":  json.NewSchema(json.SchemaConfig{Type: "string", MinLength: &minLen, MaxLength: &maxLen}),
+        "age":   json.NewSchema(json.SchemaConfig{Type: "number", Minimum: &zero, Maximum: &maxAge}),
+        "email": json.NewSchema(json.SchemaConfig{Type: "string", Format: "email"}),
     },
     Required: []string{"name", "age"},
 })

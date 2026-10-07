@@ -14,14 +14,29 @@ import "encoding/json"
 import "github.com/cybergodev/json"
 ```
 
-**Most code requires no changes.** See notes below for edge cases.
+**Most code requires no changes.** A few deliberate security-hardening differences apply when processing untrusted input — see [Security-Hardening Differences](#security-hardening-differences-d-002) below.
+
+### Security-Hardening Differences (D-002)
+
+The no-config calls to `Unmarshal` and `Valid` (and the output cap in `Marshal`) intentionally differ from `encoding/json` when the input is untrusted:
+
+- Input larger than `Config.MaxJSONSize` (default 100MB) → `ErrSizeLimit` (`Marshal` output is capped the same way).
+- Dangerous-pattern substrings in string values (e.g. `"__proto__"`, `"<script"`) → security violation; `encoding/json` accepts them as plain data.
+- Invalid UTF-8 in string values → rejected; `encoding/json` replaces it with U+FFFD.
+
+Pass `SkipValidation: true` in a `Config` for stdlib-exact behavior on trusted input.
+
+### Path-Operation Differences (GEN-001)
+
+- `Set` with a root path (`""`, `"."`, or the JSON Pointer root `"/"`) replaces the entire document with the value. It previously failed with "cannot set root value". Code that relied on the error should check the path before calling. Root `Delete` is still rejected — replace the document via `Set` instead.
+- `Config.DetectDuplicateKeys` (opt-in, default off) rejects input objects with repeated keys via `ErrDuplicateKey`. stdlib semantics (last occurrence wins) remain the default and apply to escape-encoding variants of the same key even when the option is on.
 
 ### Extended Signatures (Backward-Compatible)
 
 The following functions accept an optional `cfg ...Config` trailing parameter in addition to the standard `encoding/json` signatures. Calls without the extra argument work identically:
 
-- `Marshal(v any, cfg ...Config) ([]byte, error)`
-- `Unmarshal(data []byte, v any, cfg ...Config) error`
+- `Marshal(value any, cfg ...Config) ([]byte, error)`
+- `Unmarshal(data []byte, value any, cfg ...Config) error`
 - `MarshalIndent(v any, prefix, indent string, cfg ...Config) ([]byte, error)`
 - `Valid(data []byte, cfg ...Config) bool`
 - `Compact(dst *bytes.Buffer, src []byte, cfg ...Config) error`
@@ -36,13 +51,15 @@ These are backward-compatible: existing call sites compile without changes. Howe
 
 | Function                                                             | Status | Notes                                 |
 |----------------------------------------------------------------------|--------|---------------------------------------|
-| `Marshal(v any, cfg ...Config) ([]byte, error)`                                     | ✅      | Identical behavior and output (extended with optional `Config`)         |
-| `Unmarshal(data []byte, v any, cfg ...Config) error`                                | ✅      | Identical behavior and error handling (extended with optional `Config`) |
+| `Marshal(value any, cfg ...Config) ([]byte, error)`                                     | ✅*     | Byte-compatible output for typical values; one deliberate difference (D-002): output capped at `Config.MaxJSONSize` (default 100MB) → `ErrSizeLimit` |
+| `Unmarshal(data []byte, value any, cfg ...Config) error`                                | ✅*     | Signature-compatible; the no-config call adds security hardening (D-002) — see [Security-Hardening Differences](#security-hardening-differences-d-002). `SkipValidation: true` for stdlib-exact behavior |
 | `MarshalIndent(v any, prefix, indent string, cfg ...Config) ([]byte, error)`        | ✅      | Same formatting rules (extended with optional `Config`)                 |
-| `Valid(data []byte, cfg ...Config) bool`                                            | ✅      | Same validation logic (extended with optional `Config`)                 |
+| `Valid(data []byte, cfg ...Config) bool`                                            | ✅*     | Not purely syntactic (D-002): syntactically valid JSON that exceeds `MaxJSONSize`, contains invalid UTF-8, or carries a dangerous pattern returns `false`; use `encoding/json.Valid` for syntax-only checks |
 | `Compact(dst *bytes.Buffer, src []byte, cfg ...Config) error`                       | ✅      | Identical whitespace removal (extended with optional `Config`) |
 | `Indent(dst *bytes.Buffer, src []byte, prefix, indent string, cfg ...Config) error` | ✅      | Same indentation behavior (extended with optional `Config`)    |
 | `HTMLEscape(dst *bytes.Buffer, src []byte, cfg ...Config)`                          | ✅      | Same HTML escaping rules (extended with optional `Config`)     |
+
+\* ✅\* = signature-compatible with documented security-hardening differences (see [Security-Hardening Differences](#security-hardening-differences-d-002)).
 
 ## Fully Compatible Types
 
@@ -58,7 +75,7 @@ These are backward-compatible: existing call sites compile without changes. Howe
 | `(*Encoder).SetIndent(prefix, indent string)` | ✅      | Same indentation control   |
 | `(*Decoder).Decode(v any) error`              | ✅      | Same decoding behavior     |
 | `(*Decoder).UseNumber()`                      | ✅      | Same number handling       |
-| `(*Decoder).DisallowUnknownFields()`          | ✅      | Fully functional; implemented in this package's own streaming Decoder (not a wrapper around `encoding/json`) |
+| `(*Decoder).DisallowUnknownFields()`          | ⚠️      | Known limitation: enforced only on the `UseNumber()` path; on the default decode path it is currently a no-op (`Config.DisallowUnknown` is not consumed by `Processor.Unmarshal`) |
 | `(*Decoder).More() bool`                      | ✅      | Same stream state checking |
 | `(*Decoder).Token() (Token, error)`           | ✅      | Same token parsing         |
 | `(*Decoder).Buffered() io.Reader`             | ✅      | Same buffer access         |
@@ -95,6 +112,7 @@ In addition to standard library errors, the library provides:
 | `ValidationError`| Schema validation error (`Path`, `Message`) |
 
 **Extended Error Variables:**
+
 | Variable | Description |
 |----------|-------------|
 | `ErrSizeLimit` | JSON size exceeds configured limit |
@@ -102,13 +120,13 @@ In addition to standard library errors, the library provides:
 | `ErrSecurityViolation` | Potentially dangerous content detected |
 | `ErrProcessorClosed` | Operation on closed processor |
 | `ErrConcurrencyLimit` | Concurrent operation count exceeds limit |
-| `ErrOperationTimeout` | Operation exceeded timeout duration |
+| `ErrOperationTimeout` | Operation exceeded timeout duration *(deprecated — not currently returned by any operation; reserved for future use)* |
 | `ErrInvalidJSON` | Input is not valid JSON |
 | `ErrInvalidPath` | Path has an invalid format |
 | `ErrPathNotFound` | Requested path does not exist |
 | `ErrTypeMismatch` | Value does not match the target type |
-| `ErrUnsupportedPath` | Path operation is not supported |
-| `ErrResourceExhausted` | System resources exhausted |
+| `ErrUnsupportedPath` | Path operation is not supported *(deprecated — not currently returned by any operation; unsupported segments surface as `ErrInvalidPath` or `ErrTypeMismatch`)* |
+| `ErrResourceExhausted` | System resources exhausted *(deprecated — not currently returned by any operation; reserved for future use)* |
 
 ## Fully Compatible Interfaces
 
@@ -154,21 +172,27 @@ decoder.Decode(&result)
 ```
 
 ### Error Handling
+
+The error type returned by the top-level `Unmarshal` depends on where parsing fails:
+
+- **Structure/security precheck failures** (e.g. input `` `invalid` ``) return this package's `*JsonsError`.
+- **Syntax errors in input that passes the precheck** (e.g. `` `{"a":1,}` ``) are delegated to `encoding/json` and return the standard library's `*encoding/json.SyntaxError`.
+
 ```go
-// The top-level Unmarshal delegates to encoding/json.Unmarshal,
-// so the returned error is *encoding/json.SyntaxError, NOT this
-// package's *json.SyntaxError. Use errors.As for portable matching:
-err := json.Unmarshal([]byte(`invalid`), &result)
+// Match the standard library type for portable syntax-error handling
+// (import stdjson "encoding/json"):
+err := json.Unmarshal([]byte(`{"a":1,}`), &result)
 if err != nil {
-    // Safe: works regardless of which SyntaxError type is returned
-    var syntaxErr *json.SyntaxError
+    var syntaxErr *stdjson.SyntaxError
     if errors.As(err, &syntaxErr) {
         fmt.Printf("Syntax error at offset %d: %v", syntaxErr.Offset, syntaxErr)
     }
+    // errors.As against this package's own *json.SyntaxError returns
+    // false here: the top-level fast path returns the stdlib type.
 }
 ```
 
-> **Warning:** A direct type assertion like `err.(*json.SyntaxError)` will fail when using this package's top-level `Unmarshal`, because the actual error returned is `*encoding/json.SyntaxError` (a different Go type). Always use `errors.As` for portable error matching. This does not apply to errors returned from `Processor` methods, which use this package's own error types.
+> **Warning:** Do not target this package's `*json.SyntaxError` when matching errors from the top-level `Unmarshal` — you will get `*JsonsError` (precheck failures) or the standard library's `*encoding/json.SyntaxError` (syntax errors), never this package's `*SyntaxError`. Errors returned from `Processor` methods do use this package's own error types.
 
 ## Bonus Features
 
@@ -183,15 +207,15 @@ Beyond standard compatibility, our library also provides:
 - **Advanced Encoding**: `json.EncodeStream()`, `json.EncodeBatch()`, `json.EncodeFields()`
 - **File Operations**: `json.LoadFromFile()`, `json.SaveToFile()`, `json.MarshalToFile()`
 - **Schema Validation**: `json.ValidateSchema()` with comprehensive schema support
-- **Data Utilities**: `json.CompareJSON()`, `json.MergeJSON()` (note: `deepCopy` is unexported; deep copy is performed internally by operations like `Set` and `MergeJSON`)
+- **Data Utilities**: `json.CompareJSON()`, `json.MergeJSON()` (note: `deepCopy` is unexported; deep copy is performed internally by operations like `Get` (cache isolation) and the `Foreach*` family — `Set` mutates the parsed tree in place and `MergeJSON` builds a new tree)
 
 ## Compatibility Guarantee
 
 We guarantee:
 
-1. **API Compatibility**: All standard `encoding/json` public APIs are present and behave equivalently. Some functions accept an optional `cfg ...Config` trailing parameter (see Extended Signatures above).
-2. **Behavioral Compatibility**: Semantically equivalent output for same input (JSON object key ordering may differ, which is compliant with JSON specification)
-3. **Error Compatibility**: Same error types; messages are semantically equivalent (minor formatting details may differ). Note that top-level `Unmarshal` (on the no-`cfg` fast path) delegates to `encoding/json.Unmarshal` and returns `*encoding/json.SyntaxError` (not this package's type); use `errors.As` for portable matching. `Marshal` does not produce `SyntaxError` (syntax errors are a decode concern); it returns this package's own `*UnsupportedTypeError` / `*MarshalerError`, or a wrapped `*JsonsError`.
+1. **API Compatibility**: All standard `encoding/json` public APIs are present and behave equivalently, with one known gap: **`RawMessage` is not exported by this package** — reference `encoding/json.RawMessage` explicitly where needed (values of that type are still accepted by `Marshal`/`Encode`). Some functions accept an optional `cfg ...Config` trailing parameter (see Extended Signatures above).
+2. **Behavioral Compatibility**: Semantically equivalent output for same input (JSON object key ordering may differ, which is compliant with JSON specification), except for the documented security-hardening differences (see [Security-Hardening Differences](#security-hardening-differences-d-002))
+3. **Error Compatibility**: Same error types; messages are semantically equivalent (minor formatting details may differ). Note that top-level `Unmarshal` returns this package's `*JsonsError` when the structure/security precheck fails, and the standard library's `*encoding/json.SyntaxError` for syntax errors in input that passes the precheck — use `errors.As` with the stdlib types for portable matching. `Marshal` does not produce `SyntaxError` (syntax errors are a decode concern); for unsupported types it returns a wrapped `*JsonsError` whose leaf error is the standard library's `*UnsupportedTypeError` / `*MarshalerError` (this package's same-named types appear only on custom-encoder paths).
 4. **Performance Compatibility**: Same or better performance
 5. **Version Compatibility**: Requires Go 1.25.0+ (as specified in `go.mod`)
 

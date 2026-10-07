@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"encoding/json"
 	"errors"
 	"maps"
 	"slices"
@@ -15,13 +14,13 @@ import (
 var (
 	// ErrPathNotFound indicates the requested path does not exist.
 	// Initialized to match root package sentinel via SetErrorSentinels.
-	ErrPathNotFound error = errors.New("path not found")
+	ErrPathNotFound = errors.New("path not found")
 	// ErrTypeMismatch indicates a type mismatch during path navigation.
 	// Initialized to match root package sentinel via SetErrorSentinels.
-	ErrTypeMismatch error = errors.New("type mismatch")
+	ErrTypeMismatch = errors.New("type mismatch")
 	// ErrInvalidPath indicates an invalid path format.
 	// Initialized to match root package sentinel via SetErrorSentinels.
-	ErrInvalidPath error = errors.New("invalid path format")
+	ErrInvalidPath = errors.New("invalid path format")
 )
 
 // errorSentinelsOnce ensures SetErrorSentinels writes values exactly once,
@@ -32,7 +31,11 @@ var errorSentinelsOnce sync.Once
 // The root package calls this during initialization to ensure errors.Is() works
 // correctly across package boundaries. Without this, users cannot match internal
 // errors against the public json.ErrPathNotFound, json.ErrTypeMismatch, etc.
-// Safe for concurrent use — only the first call takes effect.
+//
+// Concurrent calls are serialized (only the first takes effect, via sync.Once),
+// but a concurrent READ of the sentinel vars racing the FIRST write is still a
+// data race — call it before concurrent use begins, as the root package does
+// from its init() (P-002 note).
 func SetErrorSentinels(pathNotFound, typeMismatch, invalidPath error) {
 	errorSentinelsOnce.Do(func() {
 		if pathNotFound != nil {
@@ -78,16 +81,6 @@ func CompilePath(path string) (*CompiledPath, error) {
 	return compilePathUnchecked(path)
 }
 
-// CompilePathUnsafe compiles a path without validation.
-//
-// SECURITY WARNING: This bypasses all security checks including null byte detection,
-// path traversal prevention, and zero-width character detection. Only use when the
-// path string is provably safe (e.g., a hardcoded constant or a path produced by
-// the library itself). Never use with user-supplied input.
-func CompilePathUnsafe(path string) (*CompiledPath, error) {
-	return compilePathUnchecked(path)
-}
-
 // compilePathUnchecked is the shared implementation for CompilePath and CompilePathUnsafe.
 func compilePathUnchecked(path string) (*CompiledPath, error) {
 	segments, err := ParsePath(path)
@@ -129,11 +122,6 @@ func (cp *CompiledPath) Segments() []PathSegment {
 	return cp.segments
 }
 
-// Hash returns the pre-computed hash of the path
-func (cp *CompiledPath) Hash() uint64 {
-	return cp.hash
-}
-
 // Path returns the original path string
 func (cp *CompiledPath) Path() string {
 	return cp.path
@@ -161,15 +149,6 @@ func (cp *CompiledPath) IsEmpty() bool {
 
 // Get retrieves a value from parsed JSON data using the compiled path
 func (cp *CompiledPath) Get(data any) (any, error) {
-	return cp.navigate(data)
-}
-
-// GetFromRaw retrieves a value from raw JSON bytes using the compiled path
-func (cp *CompiledPath) GetFromRaw(raw []byte) (any, error) {
-	var data any
-	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, err
-	}
 	return cp.navigate(data)
 }
 
@@ -247,6 +226,15 @@ func (cp *CompiledPath) navigate(data any) (any, error) {
 			default:
 				return nil, NewPathError("", "wildcard requires array or object", ErrTypeMismatch)
 			}
+
+		default:
+			// D-002: Extract ({a,b}), Append ([+]), and other segment types
+			// previously fell through SILENTLY — the segment was skipped and
+			// GetCompiled returned the value from before it (e.g. the whole
+			// array for "items{name}"), a wrong result with no error. Reject
+			// explicitly instead; use the recursive engine (Get) for those
+			// segment types.
+			return nil, NewPathError(segment.Key, "unsupported segment type for compiled path: "+segment.TypeString(), ErrInvalidPath)
 		}
 	}
 
@@ -394,11 +382,11 @@ type CompiledPathCache struct {
 var globalCompiledPathCache = NewCompiledPathCache(1000)
 
 // NewCompiledPathCache creates a new compiled path cache
-func NewCompiledPathCache(max int) *CompiledPathCache {
+func NewCompiledPathCache(maxSize int) *CompiledPathCache {
 	return &CompiledPathCache{
-		paths: make(map[string]*CompiledPath, max),
-		order: make([]string, 0, max),
-		max:   max,
+		paths: make(map[string]*CompiledPath, maxSize),
+		order: make([]string, 0, maxSize),
+		max:   maxSize,
 	}
 }
 

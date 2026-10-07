@@ -575,6 +575,48 @@ func TestForeachFileChunked(t *testing.T) {
 			t.Errorf("Expected 2 batches before error, got %d", batches)
 		}
 	})
+
+	// Non-array root must be rejected (folded from TestForeachFileChunked_NonArray).
+	t.Run("NonArrayRoot", func(t *testing.T) {
+		dir := t.TempDir()
+		path := dir + "/obj.json"
+		if err := os.WriteFile(path, []byte(`{"key": "value"}`), 0o644); err != nil {
+			t.Fatalf("WriteFile error: %v", err)
+		}
+
+		if err := processor.ForeachFileChunked(path, 10, func(chunk []*IterableValue) error {
+			return nil
+		}); err == nil {
+			t.Error("expected error for non-array root in ForeachFileChunked")
+		}
+	})
+
+	// chunkSize <= 0 falls back to the default (folded from
+	// TestForeachFileChunked_DefaultChunkSize).
+	t.Run("DefaultChunkSize", func(t *testing.T) {
+		dir := t.TempDir()
+		path := dir + "/arr.json"
+		items := make([]string, 150)
+		for i := range items {
+			items[i] = fmt.Sprintf(`{"id": %d}`, i)
+		}
+		content := "[" + strings.Join(items, ",") + "]"
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile error: %v", err)
+		}
+
+		var totalItems int
+		err := processor.ForeachFileChunked(path, 0, func(chunk []*IterableValue) error {
+			totalItems += len(chunk)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("ForeachFileChunked error: %v", err)
+		}
+		if totalItems != 150 {
+			t.Errorf("totalItems = %d, want 150", totalItems)
+		}
+	})
 }
 
 // ============================================================================
@@ -606,146 +648,7 @@ func TestForeachFileNested(t *testing.T) {
 	}
 }
 
-// TestForeachFileChunked_NonArray tests ForeachFileChunked with non-array root
-func TestForeachFileChunked_NonArray(t *testing.T) {
-	p, _ := New()
-	defer p.Close()
-
-	dir := t.TempDir()
-	path := dir + "/obj.json"
-	content := `{"key": "value"}`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile error: %v", err)
-	}
-
-	err := p.ForeachFileChunked(path, 10, func(chunk []*IterableValue) error {
-		return nil
-	})
-	if err == nil {
-		t.Error("expected error for non-array root in ForeachFileChunked")
-	}
-}
-
-// TestForeachFileChunked_DefaultChunkSize tests ForeachFileChunked with chunkSize <= 0
-func TestForeachFileChunked_DefaultChunkSize(t *testing.T) {
-	p, _ := New()
-	defer p.Close()
-
-	dir := t.TempDir()
-	path := dir + "/arr.json"
-	items := make([]string, 150)
-	for i := range items {
-		items[i] = fmt.Sprintf(`{"id": %d}`, i)
-	}
-	content := "[" + strings.Join(items, ",") + "]"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile error: %v", err)
-	}
-
-	var totalItems int
-	err := p.ForeachFileChunked(path, 0, func(chunk []*IterableValue) error {
-		totalItems += len(chunk)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("ForeachFileChunked error: %v", err)
-	}
-	if totalItems != 150 {
-		t.Errorf("totalItems = %d, want 150", totalItems)
-	}
-}
-
-// TestPackageLevel_ForeachFile tests the package-level ForeachFile wrapper
-func TestPackageLevel_ForeachFile(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/test.json"
-	content := `[1, 2, 3]`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile error: %v", err)
-	}
-
-	var count int
-	err := ForeachFile(path, func(key any, item *IterableValue) error {
-		count++
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("ForeachFile error: %v", err)
-	}
-	if count != 3 {
-		t.Errorf("count = %d, want 3", count)
-	}
-}
-
-// TestPackageLevel_ForeachFileWithPath tests the package-level wrapper
-func TestPackageLevel_ForeachFileWithPath(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/test.json"
-	content := `{"users": [{"name": "A"}, {"name": "B"}]}`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile error: %v", err)
-	}
-
-	var count int
-	err := ForeachFileWithPath(path, "users", func(key any, item *IterableValue) error {
-		count++
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("ForeachFileWithPath error: %v", err)
-	}
-	if count != 2 {
-		t.Errorf("count = %d, want 2", count)
-	}
-}
-
-// TestPackageLevel_ForeachFileChunked tests the package-level wrapper
-func TestPackageLevel_ForeachFileChunked(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/test.json"
-	content := `[1, 2, 3, 4, 5]`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile error: %v", err)
-	}
-
-	var chunks int
-	err := ForeachFileChunked(path, 2, func(chunk []*IterableValue) error {
-		chunks++
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("ForeachFileChunked error: %v", err)
-	}
-	if chunks != 3 {
-		t.Errorf("chunks = %d, want 3", chunks)
-	}
-}
-
-// TestPackageLevel_ForeachFileNested tests the package-level wrapper
-func TestPackageLevel_ForeachFileNested(t *testing.T) {
-	dir := t.TempDir()
-	path := dir + "/test.json"
-	content := `{"items": [{"x": 1}, {"x": 2}]}`
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatalf("WriteFile error: %v", err)
-	}
-
-	var count int
-	err := ForeachFileNested(path, func(key any, item *IterableValue) error {
-		count++
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("ForeachFileNested error: %v", err)
-	}
-	if count == 0 {
-		t.Error("ForeachFileNested should iterate at least once")
-	}
-}
-
-// TestPackageLevel_SaveToFile covers the package-level SaveToFile wrapper.
-// The rest of this file exercises the Processor method, so the wrapper itself
-// had zero coverage (GEN-001 finding).
+// TestPackageLevel_SaveToFile tests the package-level SaveToFile wrapper
 func TestPackageLevel_SaveToFile(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -785,6 +688,79 @@ func TestPackageLevel_SaveToFile(t *testing.T) {
 		// Saving onto a directory path must surface the write error, not panic.
 		if err := SaveToFile(tempDir, map[string]any{"a": 1}); err == nil {
 			t.Error("SaveToFile to a directory path should fail")
+		}
+	})
+}
+
+// TestForeachFilePackageFunctions covers the package-level ForeachFile family
+// wrappers in file.go (previously 0% coverage): happy path per function plus
+// error propagation from a nonexistent file.
+func TestForeachFilePackageFunctions(t *testing.T) {
+	dir := t.TempDir()
+	arrPath := filepath.Join(dir, "arr.json")
+	if err := os.WriteFile(arrPath, []byte(`[{"n":1},{"n":2},{"n":3}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing.json")
+
+	t.Run("ForeachFile", func(t *testing.T) {
+		count := 0
+		if err := ForeachFile(arrPath, func(key any, item *IterableValue) error {
+			count++
+			return nil
+		}); err != nil {
+			t.Fatalf("ForeachFile failed: %v", err)
+		}
+		if count != 3 {
+			t.Errorf("ForeachFile iterated %d items, want 3", count)
+		}
+		if err := ForeachFile(missing, func(key any, item *IterableValue) error { return nil }); err == nil {
+			t.Error("ForeachFile on missing file should fail")
+		}
+	})
+
+	t.Run("ForeachFileWithPath", func(t *testing.T) {
+		objPath := filepath.Join(dir, "obj.json")
+		if err := os.WriteFile(objPath, []byte(`{"users":[{"n":"a"}]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		if err := ForeachFileWithPath(objPath, "users", func(key any, item *IterableValue) error {
+			count++
+			return nil
+		}); err != nil {
+			t.Fatalf("ForeachFileWithPath failed: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("ForeachFileWithPath iterated %d items, want 1", count)
+		}
+	})
+
+	t.Run("ForeachFileChunked", func(t *testing.T) {
+		chunks := 0
+		items := 0
+		if err := ForeachFileChunked(arrPath, 2, func(chunk []*IterableValue) error {
+			chunks++
+			items += len(chunk)
+			return nil
+		}); err != nil {
+			t.Fatalf("ForeachFileChunked failed: %v", err)
+		}
+		if chunks != 2 || items != 3 {
+			t.Errorf("ForeachFileChunked got %d chunks / %d items, want 2/3", chunks, items)
+		}
+	})
+
+	t.Run("ForeachFileNested", func(t *testing.T) {
+		count := 0
+		if err := ForeachFileNested(arrPath, func(key any, item *IterableValue) error {
+			count++
+			return nil
+		}); err != nil {
+			t.Fatalf("ForeachFileNested failed: %v", err)
+		}
+		if count == 0 {
+			t.Error("ForeachFileNested should iterate at least once")
 		}
 	})
 }

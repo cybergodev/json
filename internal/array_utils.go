@@ -257,20 +257,3 @@ func calculateSliceCapacity(rangeSize, step int) int {
 	}
 	return (rangeSize-1)/step + 1
 }
-
-// IsValidIndex checks whether the given index is within bounds [0, length)
-// after normalizing negative indices.
-func IsValidIndex(index, length int) bool {
-	normalizedIndex := NormalizeIndex(index, length)
-	return normalizedIndex >= 0 && normalizedIndex < length
-}
-
-// GetSafeArrayElement retrieves an element by index with bounds checking.
-// Supports negative indices. Returns the element and true, or nil and false.
-func GetSafeArrayElement(arr []any, index int) (any, bool) {
-	normalizedIndex := NormalizeIndex(index, len(arr))
-	if normalizedIndex < 0 || normalizedIndex >= len(arr) {
-		return nil, false
-	}
-	return arr[normalizedIndex], true
-}

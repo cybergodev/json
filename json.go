@@ -1,35 +1,7 @@
-// Package json provides a high-performance, thread-safe JSON processing library
-// with 100% encoding/json compatibility and advanced path operations.
-//
-// Key Features:
-//   - 100% encoding/json compatibility - drop-in replacement
-//   - High-performance path operations with smart caching
-//   - Thread-safe concurrent operations
-//   - Type-safe generic operations with Go generics
-//   - Memory-efficient resource pooling
-//   - Production-ready error handling and validation
-//
-// Basic Usage:
-//
-//	// Simple operations (100% compatible with encoding/json)
-//	data, err := json.Marshal(value)
-//	err = json.Unmarshal(data, &target)
-//
-//	// Advanced path operations
-//	value, err := json.Get(`{"user":{"name":"John"}}`, "user.name")
-//	result, err := json.Set(`{"user":{}}`, "user.age", 30)
-//
-//	// Type-safe operations
-//	name := json.GetString(jsonStr, "user.name", "")
-//	age := json.GetInt(jsonStr, "user.age", 0)
-//
-//	// Advanced processor for complex operations
-//	processor := json.New() // Use default config
-//	defer processor.Close()
-//	value, err := processor.Get(jsonStr, "complex.path[0].field")
-
-// The package documentation lives in doc.go; this header is a plain comment
-// so godoc does not concatenate two package comments.
+// The package documentation lives in doc.go. This header is a plain comment
+// (not a doc comment) so godoc does not concatenate two package comments.
+// D-002/R8 (m6): the duplicated package-header text that used to sit above
+// was removed — doc.go is the single source of truth.
 package json
 
 import (
@@ -88,7 +60,7 @@ func init() {
 	}
 	p, err := New(fallbackCfg)
 	if err != nil {
-		// This should never happen with DefaultConfig (all defaults are validated).
+		// This should never happen with fallbackCfg (every clamped value above is valid).
 		// Log warning and continue - callers must handle nil processor gracefully.
 		fmt.Fprintf(os.Stderr, "json: warning: failed to create fallback processor: %v\n", err)
 		return
@@ -197,13 +169,30 @@ func ShutdownGlobalProcessor() {
 	// RESOURCE FIX: Close all cached processors and clear the config processor cache.
 	// Without this, processors in the config cache retain their caches, goroutines,
 	// and other resources until process exit.
+	//
+	// D-002: closes run in PARALLEL, bounded by asyncCloseSem (the same budget
+	// eviction uses). Sequential Close() could stall for up to ~64 × 5s when
+	// every cached processor has an in-flight op draining; each Close is still
+	// internally bounded by closeOperationTimeout, so the whole batch finishes
+	// within roughly one timeout.
+	var closeWG sync.WaitGroup
 	configProcessorCache.Range(func(key, value any) bool {
 		configProcessorCache.Delete(key)
 		if p, ok := value.(*Processor); ok {
-			_ = p.Close() // best-effort cleanup
+			closeWG.Add(1)
+			go func(p *Processor) {
+				defer closeWG.Done()
+				select {
+				case asyncCloseSem <- struct{}{}:
+					defer func() { <-asyncCloseSem }()
+				default:
+				}
+				_ = p.Close() // best-effort cleanup
+			}(p)
 		}
 		return true
 	})
+	closeWG.Wait()
 }
 
 // Package-level API functions are organized in the following files:
@@ -279,15 +268,9 @@ func StreamLinesInto[T any](reader io.Reader, fn func(lineNum int, data T) error
 	}
 	configPtr := &config
 
-	// Get buffer and line size from config
-	bufSize := configPtr.JSONLBufferSize
-	if bufSize <= 0 {
-		bufSize = 64 * 1024
-	}
-	maxLineSize := configPtr.JSONLMaxLineSize
-	if maxLineSize <= 0 {
-		maxLineSize = 1024 * 1024
-	}
+	// Shared JSONL scanner limits — same fallbacks and off-by-one-free token
+	// cap as the StreamJSONL family and NDJSONProcessor (D-002 unification).
+	bufSize, maxToken := jsonlScanLimits(configPtr)
 
 	// Use processor for security-validated unmarshaling. With no cfg this is
 	// the default/global processor — matching the doc comment — rather than a
@@ -298,27 +281,55 @@ func StreamLinesInto[T any](reader io.Reader, fn func(lineNum int, data T) error
 	}
 
 	scanner := bufio.NewScanner(reader)
-	// Effective token cap is max(cap(buf), maxLine): clamp the initial buffer
-	// so a JSONLMaxLineSize smaller than the buffer size is actually enforced
-	// (same fix as the StreamJSONL family).
-	if bufSize > maxLineSize {
-		bufSize = maxLineSize
+	scanner.Buffer(make([]byte, bufSize), maxToken)
+
+	// Total-bytes cap mirroring StreamJSONL: JSONLMaxMemory falls back to
+	// MaxMemory; zero (the default) disables accounting (D-002: this was the
+	// only JSONL reader without the cap).
+	memLimit := configPtr.JSONLMaxMemory
+	if memLimit <= 0 && configPtr.MaxMemory > 0 {
+		memLimit = configPtr.MaxMemory
 	}
-	scanner.Buffer(make([]byte, bufSize), maxLineSize)
 
 	lineNum := 0
+	var totalBytes int64
 
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Bytes()
 
-		// Use helper to check if line should be skipped
-		if shouldSkipJSONLLineFromConfig(line, configPtr) {
+		// Skip blank lines unconditionally and comments when configured
+		// (shared policy with the other JSONL engines).
+		if skipJSONLLine(line, configPtr) {
 			continue
 		}
 
+		if memLimit > 0 {
+			totalBytes += int64(len(line))
+			if totalBytes > memLimit {
+				// D-002/R8 (m2): ErrSizeLimit sentinel, matching NDJSONProcessor
+				// and the StreamJSONL family.
+				return nil, &JsonsError{
+					Op:      "stream_lines_into",
+					Message: fmt.Sprintf("jsonl memory limit exceeded: processed %d bytes (limit %d bytes at line %d)", totalBytes, memLimit, lineNum),
+					Err:     ErrSizeLimit,
+				}
+			}
+		}
+
 		var data T
-		if err := p.Unmarshal(line, &data); err != nil {
+		// D-002/R9 (m4): honor PreserveNumbers — the no-cfg Unmarshal is
+		// deliberately stdlib-exact (float64), so route through the cfg'd form
+		// when (and only when) preservation is configured. The cfg'd path
+		// validates against the same config the processor was built from, so
+		// validation behavior is unchanged.
+		var err error
+		if configPtr.PreserveNumbers {
+			err = p.Unmarshal(line, &data, *configPtr)
+		} else {
+			err = p.Unmarshal(line, &data)
+		}
+		if err != nil {
 			if configPtr.JSONLContinueOnErr {
 				continue
 			}
@@ -356,6 +367,9 @@ type JSONLStats struct {
 // Each value is written as a single line of JSON, suitable for
 // log files, data pipelines, and streaming applications.
 //
+// NOTE (P-002): JSONLWriter is NOT safe for concurrent use — its error/counter
+// state is unguarded. Use one writer per goroutine or serialize Write calls.
+//
 // Example:
 //
 //	file, _ := os.Create("output.jsonl")
@@ -387,6 +401,11 @@ type JSONLWriter struct {
 //	cfg := json.DefaultConfig()
 //	cfg.EscapeHTML = true
 //	writer := json.NewJSONLWriter(&buf, cfg)
+//
+// NOTE (D-002): Write honors ONLY Config.EscapeHTML from the supplied cfg —
+// not Pretty/Indent/CustomEscapes/FloatPrecision/MaxJSONSize. For full
+// config-driven encoding per line, build lines with Encode and
+// WriteRaw.
 func NewJSONLWriter(writer io.Writer, cfg ...Config) *JSONLWriter {
 	config := getConfigOrDefault(cfg...)
 	return &JSONLWriter{
@@ -439,14 +458,15 @@ func (w *JSONLWriter) Write(data any) error {
 		}
 	}
 
-	// Write encoded JSON + newline
-	n, err := w.writer.Write(internal.StringToBytes(encoded))
-	if err != nil {
-		w.err = err
-		return err
-	}
-	w.bytesOut += int64(n)
-	n, err = w.writer.Write(jsonNewline)
+	// Write encoded JSON + newline as ONE Write call (D-002/R9 m10): the two
+	// writes doubled the syscalls on unbuffered writers (e.g. a bare os.File).
+	// The line is assembled in a pooled buffer, so combining costs one pooled
+	// copy instead of an allocation.
+	buf := internal.GetEncoderBuffer()
+	defer internal.PutEncoderBuffer(buf)
+	buf.WriteString(encoded)
+	buf.WriteByte('\n')
+	n, err := w.writer.Write(buf.Bytes())
 	if err != nil {
 		w.err = err
 		return err
@@ -498,6 +518,9 @@ func (w *JSONLWriter) WriteRaw(line []byte) error {
 		return w.err
 	}
 
+	// NOTE (D-002/R9 m10): deliberately NOT combined with the trailing newline
+	// into a single Write — WriteRaw's contract is zero-copy passthrough of
+	// pre-encoded lines, and combining would force a full copy of every line.
 	n, err := w.writer.Write(line)
 	if err != nil {
 		w.err = err
@@ -566,14 +589,39 @@ func ParseJSONL(data []byte, cfg ...Config) ([]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return p.ParseJSONL(data, cfg...)
+}
+
+// ParseJSONL parses JSONL data from a byte slice using this processor.
+// Uses Config.JSONLSkipComments and Config.JSONLContinueOnErr for processing
+// options — from the optional trailing cfg when supplied, otherwise from the
+// processor's baked configuration. This is the Processor mirror of the
+// package-level json.ParseJSONL (D-005 Phase 2).
+//
+// Errors:
+//   - ErrProcessorClosed: the processor has been closed
+//   - ErrInvalidJSON: a line is not valid JSON
+//   - any scanner error (including bufio.ErrTooLong when a line exceeds the
+//     configured limit)
+func (p *Processor) ParseJSONL(data []byte, cfg ...Config) ([]any, error) {
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
 
 	var results []any
-	err = p.StreamJSONL(bytes.NewReader(data), func(lineNum int, item *IterableValue) error {
+	err := p.StreamJSONL(bytes.NewReader(data), func(_ int, item *IterableValue) error {
 		results = append(results, item.GetData())
 		return nil
-	})
+	}, cfg...)
+	if err != nil {
+		// No partial results on failure — callers that use results before
+		// checking err would otherwise process half a stream as if it were
+		// complete (StreamLinesInto already returned nil here; D-002 aligns
+		// the two contracts).
+		return nil, err
+	}
 
-	return results, err
+	return results, nil
 }
 
 // ToJSONL converts a slice of values to JSONL format.
@@ -595,11 +643,54 @@ func ParseJSONL(data []byte, cfg ...Config) ([]any, error) {
 //   - ErrSizeLimit: encoded output exceeds MaxJSONSize
 //   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 func ToJSONL(data []any, cfg ...Config) ([]byte, error) {
+	// Empty input returns before any processor interaction — preserved from
+	// the pre-Phase-2 implementation, so no processor is constructed (a cfg
+	// with CustomPathParser would otherwise allocate one) for nothing.
 	if len(data) == 0 {
 		return []byte{}, nil
 	}
+	p, err := processorForCfg(cfg...)
+	if err != nil {
+		return nil, err
+	}
+	return p.ToJSONL(data, cfg...)
+}
 
-	config := getConfigOrDefault(cfg...)
+// ToJSONL converts a slice of values to JSONL format using this processor.
+// Encoding options (Config.EscapeHTML etc.) come from the optional trailing
+// cfg when supplied, otherwise from the processor's baked configuration.
+// This is the Processor mirror of the package-level json.ToJSONL
+// (D-005 Phase 2).
+//
+// Errors:
+//   - ErrProcessorClosed: the processor has been closed
+//   - UnsupportedTypeError / UnsupportedValueError / MarshalerError: an element cannot be encoded
+//   - ErrSizeLimit: encoded output exceeds MaxJSONSize
+//   - ErrDepthLimit: encoding exceeds the maximum nesting depth
+func (p *Processor) ToJSONL(data []any, cfg ...Config) ([]byte, error) {
+	// Empty input first (mirrors the package-level contract: no processor
+	// state is consulted for empty data).
+	if len(data) == 0 {
+		return []byte{}, nil
+	}
+	if err := p.checkClosed(); err != nil {
+		return nil, err
+	}
+
+	opts, err := p.resolveJSONLOptions(cfg...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Concurrency governance once for the whole batch (P-001): the per-item
+	// encodeWithConfigToBytes call acquired and released the slot per element;
+	// encodeConfiguredToBuffer below preserves every other part of that funnel
+	// (fast-path eligibility, depth caps, custom-opts fallback, per-item
+	// MaxJSONSize) but must run inside an already-governed op.
+	if err := p.beginGovernedOp(); err != nil {
+		return nil, err
+	}
+	defer p.endGovernedOp()
 
 	// Estimate buffer size
 	estimatedSize := min(len(data)*64, 64*1024)
@@ -613,23 +704,14 @@ func ToJSONL(data []any, cfg ...Config) ([]byte, error) {
 		buf.Grow(estimatedSize - buf.Cap())
 	}
 
-	// Use processor for encoding (the default/global processor when no cfg is
-	// supplied, matching the doc comment; a config-cached processor otherwise)
-	p, err := processorForCfg(cfg...)
-	if err != nil {
-		return nil, err
-	}
-
 	for _, item := range data {
-		// PERFORMANCE: encode straight to bytes — the pooled buffer is the final
-		// destination, so the intermediate string that EncodeWithConfig would
-		// produce (and buf.WriteString would copy again) is skipped entirely.
-		// encodeWithConfigToBytes keeps the per-item governance/op funnel intact.
-		encoded, err := p.encodeWithConfigToBytes(item, config)
-		if err != nil {
+		// PERFORMANCE: encode straight into the shared output buffer — the
+		// per-item []byte that encodeWithConfigToBytes would clone out of the
+		// pooled encoder (one allocation + copy per item) is skipped entirely
+		// (P-001).
+		if err := p.encodeConfiguredToBuffer(item, *opts, buf); err != nil {
 			return nil, err
 		}
-		buf.Write(encoded)
 		buf.WriteByte('\n')
 	}
 
@@ -654,6 +736,19 @@ func ToJSONL(data []any, cfg ...Config) ([]byte, error) {
 // Errors: see ToJSONL.
 func ToJSONLString(data []any, cfg ...Config) (string, error) {
 	result, err := ToJSONL(data, cfg...)
+	if err != nil {
+		return "", err
+	}
+	return string(result), nil
+}
+
+// ToJSONLString converts a slice of values to a JSONL format string using this
+// processor. This is the Processor mirror of the package-level json.ToJSONLString
+// (D-005 Phase 2).
+//
+// Errors: see ToJSONL.
+func (p *Processor) ToJSONLString(data []any, cfg ...Config) (string, error) {
+	result, err := p.ToJSONL(data, cfg...)
 	if err != nil {
 		return "", err
 	}

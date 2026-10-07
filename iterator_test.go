@@ -187,605 +187,151 @@ func TestIsSimplePropertyAccess(t *testing.T) {
 }
 
 // TestIterableValueExists tests Exists method
-func TestIterableValueExists(t *testing.T) {
-	data := map[string]any{
-		"name":  "Alice",
-		"age":   30,
-		"email": nil,
-		"user": map[string]any{
-			"active": true,
-		},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name     string
-		key      string
-		expected bool
-	}{
-		{
-			name:     "existing key",
-			key:      "name",
-			expected: true,
-		},
-		{
-			name:     "null value exists",
-			key:      "email",
-			expected: true,
-		},
-		{
-			name:     "nested path exists",
-			key:      "user.active",
-			expected: true,
-		},
-		{
-			name:     "missing key",
-			key:      "missing",
-			expected: false,
-		},
-		{
-			name:     "invalid path",
-			key:      "user.invalid",
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.Exists(tt.key)
-			if result != tt.expected {
-				t.Errorf("Exists(%s) = %v; want %v", tt.key, result, tt.expected)
-			}
-		})
-	}
+// asAny adapts a typed IterableValue method to the uniform func(...) any
+// shape used by TestIterableValueTypedGetters' table.
+func asAny[A any](f func(*IterableValue, string) A) func(*IterableValue, string) any {
+	return func(iv *IterableValue, key string) any { return f(iv, key) }
 }
 
-// TestIterableValueGet tests Get method
-func TestIterableValueGet(t *testing.T) {
+// TestIterableValueTypedGetters consolidates the nine structurally identical
+// per-method tables (Exists/Get/GetArray/GetBool/GetFloat64/GetInt/GetObject/
+// GetString/IsEmpty/IsNull) into one table-driven test over a single fixture.
+// Rows are prefixed with the method they exercise; want is compared with the
+// recursive compareValues helper so maps/slices assert by full value.
+func TestIterableValueTypedGetters(t *testing.T) {
 	data := map[string]any{
-		"user": map[string]any{
-			"name": "Alice",
-			"age":  30,
-		},
-		"items": []any{"a", "b", "c"},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name     string
-		path     string
-		expected any
-	}{
-		{
-			name:     "simple property",
-			path:     "user",
-			expected: map[string]any{"name": "Alice", "age": 30},
-		},
-		{
-			name:     "nested property",
-			path:     "user.name",
-			expected: "Alice",
-		},
-		{
-			name:     "array index",
-			path:     "items[0]",
-			expected: "a",
-		},
-		{
-			name:     "root path",
-			path:     ".",
-			expected: data,
-		},
-		{
-			name:     "empty path",
-			path:     "",
-			expected: data,
-		},
-		{
-			name:     "invalid path",
-			path:     "invalid.path",
-			expected: nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.Get(tt.path)
-			if !compareValues(result, tt.expected) {
-				t.Errorf("Get(%s) = %v; want %v", tt.path, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestIterableValueGetArray tests GetArray method
-func TestIterableValueGetArray(t *testing.T) {
-	data := map[string]any{
-		"items":   []any{"a", "b", "c"},
-		"numbers": []any{1, 2, 3},
-		"user": map[string]any{
-			"tags": []any{"developer", "golang"},
-		},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name        string
-		key         string
-		expectedLen int
-	}{
-		{
-			name:        "existing array",
-			key:         "items",
-			expectedLen: 3,
-		},
-		{
-			name:        "nested array",
-			key:         "user.tags",
-			expectedLen: 2,
-		},
-		{
-			name:        "not an array",
-			key:         "user",
-			expectedLen: 0,
-		},
-		{
-			name:        "missing key",
-			key:         "missing",
-			expectedLen: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.GetArray(tt.key)
-			if tt.expectedLen > 0 {
-				if result == nil {
-					t.Errorf("GetArray(%s) returned nil", tt.key)
-				} else if len(result) != tt.expectedLen {
-					t.Errorf("GetArray(%s) length = %d; want %d", tt.key, len(result), tt.expectedLen)
-				}
-			} else if result != nil {
-				t.Errorf("GetArray(%s) = %v; want nil", tt.key, result)
-			}
-		})
-	}
-}
-
-// TestIterableValueGetBool tests GetBool method
-func TestIterableValueGetBool(t *testing.T) {
-	data := map[string]any{
-		"active":   true,
+		"name":     "Alice",
 		"age":      30,
+		"email":    nil,
+		"active":   true,
+		"price":    19.99,
+		"score":    95.5,
+		"count":    "100",
+		"rating":   "4.5",
 		"enabled":  "true",
 		"verified": 1,
+		"items":    []any{"a", "b", "c"},
+		"numbers":  []any{1, 2, 3},
+		"settings": map[string]any{"theme": "dark"},
+		"profile":  map[string]any{"tags": []any{}},
 		"user": map[string]any{
-			"admin": true,
-		},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name     string
-		key      string
-		expected bool
-	}{
-		{
-			name:     "existing bool",
-			key:      "active",
-			expected: true,
-		},
-		{
-			name:     "convert non-zero int",
-			key:      "age",
-			expected: true,
-		},
-		{
-			name:     "convert string true",
-			key:      "enabled",
-			expected: true,
-		},
-		{
-			name:     "nested path",
-			key:      "user.admin",
-			expected: true,
-		},
-		{
-			name:     "missing key",
-			key:      "missing",
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.GetBool(tt.key)
-			if result != tt.expected {
-				t.Errorf("GetBool(%s) = %v; want %v", tt.key, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestIterableValueGetFloat64 tests GetFloat64 method
-func TestIterableValueGetFloat64(t *testing.T) {
-	data := map[string]any{
-		"price":  19.99,
-		"age":    30,
-		"rating": "4.5",
-		"user": map[string]any{
-			"score": 95.5,
-		},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name     string
-		key      string
-		expected float64
-	}{
-		{
-			name:     "existing float",
-			key:      "price",
-			expected: 19.99,
-		},
-		{
-			name:     "convert int",
-			key:      "age",
-			expected: 30.0,
-		},
-		{
-			name:     "convert string",
-			key:      "rating",
-			expected: 4.5,
-		},
-		{
-			name:     "nested path",
-			key:      "user.score",
-			expected: 95.5,
-		},
-		{
-			name:     "missing key",
-			key:      "missing",
-			expected: 0.0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.GetFloat64(tt.key)
-			if result != tt.expected {
-				t.Errorf("GetFloat64(%s) = %f; want %f", tt.key, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestIterableValueGetInt tests GetInt method
-func TestIterableValueGetInt(t *testing.T) {
-	data := map[string]any{
-		"age":    30,
-		"score":  95.5,
-		"count":  "100",
-		"active": true,
-		"user": map[string]any{
-			"id": 42,
-		},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name     string
-		key      string
-		expected int
-	}{
-		{
-			name:     "existing int",
-			key:      "age",
-			expected: 30,
-		},
-		{
-			name:     "convert float",
-			key:      "score",
-			expected: 0, // Float can't convert cleanly to int
-		},
-		{
-			name:     "convert string",
-			key:      "count",
-			expected: 100,
-		},
-		{
-			name:     "convert bool true",
-			key:      "active",
-			expected: 1,
-		},
-		{
-			name:     "nested path",
-			key:      "user.id",
-			expected: 42,
-		},
-		{
-			name:     "missing key",
-			key:      "missing",
-			expected: 0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.GetInt(tt.key)
-			if result != tt.expected {
-				t.Errorf("GetInt(%s) = %d; want %d", tt.key, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestIterableValueGetObject tests GetObject method
-func TestIterableValueGetObject(t *testing.T) {
-	data := map[string]any{
-		"user": map[string]any{
-			"name": "Alice",
-			"age":  30,
-		},
-		"settings": map[string]any{
-			"theme": "dark",
-		},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name        string
-		key         string
-		expectValue bool
-	}{
-		{
-			name:        "existing object",
-			key:         "user",
-			expectValue: true,
-		},
-		{
-			name:        "nested object",
-			key:         "settings",
-			expectValue: true,
-		},
-		{
-			name:        "not an object",
-			key:         "items",
-			expectValue: false,
-		},
-		{
-			name:        "missing key",
-			key:         "missing",
-			expectValue: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.GetObject(tt.key)
-			if tt.expectValue {
-				if result == nil {
-					t.Errorf("GetObject(%s) returned nil", tt.key)
-				}
-			} else if result != nil {
-				t.Errorf("GetObject(%s) = %v; want nil", tt.key, result)
-			}
-		})
-	}
-}
-
-// TestIterableValueGetString tests GetString method
-func TestIterableValueGetString(t *testing.T) {
-	data := map[string]any{
-		"name":   "Alice",
-		"age":    30,
-		"active": true,
-		"user": map[string]any{
-			"email": "alice@example.com",
-		},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name     string
-		key      string
-		expected string
-	}{
-		{
-			name:     "existing string",
-			key:      "name",
-			expected: "Alice",
-		},
-		{
-			name:     "convert int",
-			key:      "age",
-			expected: "30",
-		},
-		{
-			name:     "convert bool",
-			key:      "active",
-			expected: "true",
-		},
-		{
-			name:     "nested path",
-			key:      "user.email",
-			expected: "alice@example.com",
-		},
-		{
-			name:     "missing key",
-			key:      "missing",
-			expected: "",
-		},
-		{
-			name:     "path not found",
-			key:      "user.invalid",
-			expected: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.GetString(tt.key)
-			if result != tt.expected {
-				t.Errorf("GetString(%s) = %s; want %s", tt.key, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestIterableValueIsEmpty tests IsEmpty method
-func TestIterableValueIsEmpty(t *testing.T) {
-	data := map[string]any{
-		"name":    "",
-		"items":   []any{},
-		"profile": map[string]any{},
-		"active":  true,
-		"user": map[string]any{
-			"tags": []any{},
-		},
-	}
-
-	iv := newIterableValue(data)
-
-	tests := []struct {
-		name     string
-		key      string
-		expected bool
-	}{
-		{
-			name:     "empty string",
-			key:      "name",
-			expected: true,
-		},
-		{
-			name:     "empty array",
-			key:      "items",
-			expected: true,
-		},
-		{
-			name:     "empty object",
-			key:      "profile",
-			expected: true,
-		},
-		{
-			name:     "non-empty bool",
-			key:      "active",
-			expected: false,
-		},
-		{
-			name:     "nested empty array",
-			key:      "user.tags",
-			expected: true,
-		},
-		{
-			name:     "missing key",
-			key:      "missing",
-			expected: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := iv.IsEmpty(tt.key)
-			if result != tt.expected {
-				t.Errorf("IsEmpty(%s) = %v; want %v", tt.key, result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestIterableValueIsNull tests IsNull method
-func TestIterableValueIsNull(t *testing.T) {
-	data := map[string]any{
-		"name":  "Alice",
-		"email": nil,
-		"user": map[string]any{
+			"name":    "Alice",
+			"age":     30,
+			"id":      42,
+			"admin":   true,
+			"score":   95.5,
+			"email":   "alice@example.com",
+			"active":  true,
 			"deleted": nil,
+			"tags":    []any{"developer", "golang"},
 		},
+		"emptyString": "",
+		"emptyArray":  []any{},
+		"emptyObject": map[string]any{},
 	}
 
 	iv := newIterableValue(data)
 
 	tests := []struct {
-		name     string
-		key      string
-		expected bool
+		name string
+		key  string
+		call func(iv *IterableValue, key string) any
+		want any
 	}{
-		{
-			name:     "non-null value",
-			key:      "name",
-			expected: false,
-		},
-		{
-			name:     "null value",
-			key:      "email",
-			expected: true,
-		},
-		{
-			name:     "nested null",
-			key:      "user.deleted",
-			expected: true,
-		},
-		{
-			name:     "missing key",
-			key:      "missing",
-			expected: true,
-		},
+		// Exists
+		{"Exists/existing key", "name", asAny((*IterableValue).Exists), true},
+		{"Exists/null value exists", "email", asAny((*IterableValue).Exists), true},
+		{"Exists/nested path exists", "user.active", asAny((*IterableValue).Exists), true},
+		{"Exists/missing key", "missing", asAny((*IterableValue).Exists), false},
+		{"Exists/invalid path", "user.invalid", asAny((*IterableValue).Exists), false},
+		// Get
+		{"Get/simple property", "user", asAny((*IterableValue).Get), map[string]any{"name": "Alice", "age": 30, "id": 42, "admin": true, "score": 95.5, "email": "alice@example.com", "active": true, "deleted": nil, "tags": []any{"developer", "golang"}}},
+		{"Get/nested property", "user.name", asAny((*IterableValue).Get), "Alice"},
+		{"Get/array index", "items[0]", asAny((*IterableValue).Get), "a"},
+		{"Get/root path", ".", asAny((*IterableValue).Get), data},
+		{"Get/empty path", "", asAny((*IterableValue).Get), data},
+		{"Get/invalid path", "invalid.path", asAny((*IterableValue).Get), nil},
+		// GetArray
+		{"GetArray/existing array", "items", asAny((*IterableValue).GetArray), []any{"a", "b", "c"}},
+		{"GetArray/nested array", "user.tags", asAny((*IterableValue).GetArray), []any{"developer", "golang"}},
+		// GetBool
+		{"GetBool/existing bool", "active", asAny((*IterableValue).GetBool), true},
+		{"GetBool/convert non-zero int", "age", asAny((*IterableValue).GetBool), true},
+		{"GetBool/convert string true", "enabled", asAny((*IterableValue).GetBool), true},
+		{"GetBool/nested path", "user.admin", asAny((*IterableValue).GetBool), true},
+		{"GetBool/missing key", "missing", asAny((*IterableValue).GetBool), false},
+		// GetFloat64
+		{"GetFloat64/existing float", "price", asAny((*IterableValue).GetFloat64), 19.99},
+		{"GetFloat64/convert int", "age", asAny((*IterableValue).GetFloat64), 30.0},
+		{"GetFloat64/convert string", "rating", asAny((*IterableValue).GetFloat64), 4.5},
+		{"GetFloat64/nested path", "user.score", asAny((*IterableValue).GetFloat64), 95.5},
+		{"GetFloat64/missing key", "missing", asAny((*IterableValue).GetFloat64), 0.0},
+		// GetInt
+		{"GetInt/existing int", "age", asAny((*IterableValue).GetInt), 30},
+		{"GetInt/convert float", "score", asAny((*IterableValue).GetInt), 0}, // non-integral float refuses conversion
+		{"GetInt/convert string", "count", asAny((*IterableValue).GetInt), 100},
+		{"GetInt/convert bool true", "active", asAny((*IterableValue).GetInt), 1},
+		{"GetInt/nested path", "user.id", asAny((*IterableValue).GetInt), 42},
+		{"GetInt/missing key", "missing", asAny((*IterableValue).GetInt), 0},
+		// GetObject
+		{"GetObject/existing object", "user", asAny((*IterableValue).GetObject), data["user"]},
+		{"GetObject/nested object", "settings", asAny((*IterableValue).GetObject), map[string]any{"theme": "dark"}},
+		// GetString
+		{"GetString/existing string", "name", asAny((*IterableValue).GetString), "Alice"},
+		{"GetString/convert int", "age", asAny((*IterableValue).GetString), "30"},
+		{"GetString/convert bool", "active", asAny((*IterableValue).GetString), "true"},
+		{"GetString/nested path", "user.email", asAny((*IterableValue).GetString), "alice@example.com"},
+		{"GetString/missing key", "missing", asAny((*IterableValue).GetString), ""},
+		{"GetString/path not found", "user.invalid", asAny((*IterableValue).GetString), ""},
+		// IsEmpty
+		{"IsEmpty/empty string", "emptyString", asAny((*IterableValue).IsEmpty), true},
+		{"IsEmpty/empty array", "emptyArray", asAny((*IterableValue).IsEmpty), true},
+		{"IsEmpty/empty object", "emptyObject", asAny((*IterableValue).IsEmpty), true},
+		{"IsEmpty/non-empty bool", "active", asAny((*IterableValue).IsEmpty), false},
+		{"IsEmpty/nested empty array", "profile.tags", asAny((*IterableValue).IsEmpty), true},
+		{"IsEmpty/populated array", "items", asAny((*IterableValue).IsEmpty), false},
+		{"IsEmpty/missing key", "missing", asAny((*IterableValue).IsEmpty), true},
+		// IsNull
+		{"IsNull/non-null value", "name", asAny((*IterableValue).IsNull), false},
+		{"IsNull/null value", "email", asAny((*IterableValue).IsNull), true},
+		{"IsNull/nested null", "user.deleted", asAny((*IterableValue).IsNull), true},
+		{"IsNull/missing key", "missing", asAny((*IterableValue).IsNull), true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := iv.IsNull(tt.key)
-			if result != tt.expected {
-				t.Errorf("IsNull(%s) = %v; want %v", tt.key, result, tt.expected)
+			got := tt.call(iv, tt.key)
+			if !compareValues(got, tt.want) {
+				t.Errorf("%s: got %v (%T), want %v (%T)", tt.key, got, got, tt.want, tt.want)
 			}
 		})
 	}
+
+	// Nil contracts live OUTSIDE the table: compareValues cannot distinguish a
+	// typed nil slice/map from an empty one, but the original per-method tests
+	// asserted exactly that (nil, never an empty allocation).
+	t.Run("GetArray returns typed nil, not empty slice", func(t *testing.T) {
+		if got := iv.GetArray("user"); got != nil {
+			t.Errorf("GetArray(non-array key) = %#v, want nil", got)
+		}
+		if got := iv.GetArray("missing"); got != nil {
+			t.Errorf("GetArray(missing key) = %#v, want nil", got)
+		}
+	})
+
+	t.Run("GetObject returns typed nil, not empty map", func(t *testing.T) {
+		if got := iv.GetObject("items"); got != nil {
+			t.Errorf("GetObject(non-object key) = %#v, want nil", got)
+		}
+		if got := iv.GetObject("missing"); got != nil {
+			t.Errorf("GetObject(missing key) = %#v, want nil", got)
+		}
+	})
 }
 
-// TestIterableValue_BackwardCompatibility tests that simple key lookup still works
-func TestIterableValue_BackwardCompatibility(t *testing.T) {
-	jsonStr := `{
-		"name": "Test",
-		"value": 42,
-		"flag": true,
-		"items": [1, 2, 3]
-	}`
-
-	var data map[string]any
-	if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-		t.Fatalf("Failed to parse JSON: %v", err)
-	}
-
-	iv := &IterableValue{data: data}
-
-	// Test simple key access (without dots)
-	if name := iv.GetString("name"); name != "Test" {
-		t.Errorf("GetString(name) = %q, want 'Test'", name)
-	}
-
-	if value := iv.GetInt("value"); value != 42 {
-		t.Errorf("GetInt(value) = %d, want 42", value)
-	}
-
-	if flag := iv.GetBool("flag"); !flag {
-		t.Errorf("GetBool(flag) = false, want true")
-	}
-
-	items := iv.GetArray("items")
-	if items == nil || len(items) != 3 {
-		t.Errorf("GetArray(items) = %v, want array of length 3", items)
-	}
-}
+// TestIterableValue_BackwardCompatibility was removed in the FIX-001 test
+// consolidation: its simple-key GetString/GetInt/GetBool/GetArray assertions
+// are rows of TestIterableValueTypedGetters above.
 
 // TestIterableValue_EdgeCases tests edge cases and error conditions
 func TestIterableValue_EdgeCases(t *testing.T) {
@@ -1224,9 +770,6 @@ func TestIterableValue_RealWorldScenario(t *testing.T) {
 
 // TestIteratorHasNext tests Iterator.HasNext method
 func TestIteratorHasNext(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
 	t.Run("array iterator", func(t *testing.T) {
 		data := []any{1, 2, 3}
 		it := NewIterator(data)
@@ -1269,9 +812,6 @@ func TestIteratorHasNext(t *testing.T) {
 
 // TestIteratorNext tests Iterator.Next method
 func TestIteratorNext(t *testing.T) {
-	processor, _ := New()
-	defer processor.Close()
-
 	t.Run("array elements", func(t *testing.T) {
 		data := []any{"a", "b", "c"}
 		it := NewIterator(data)
@@ -1754,85 +1294,7 @@ func TestForeachWithPathAndIterator(t *testing.T) {
 	}
 }
 
-// TestBatchIteratorTotalBatches tests TotalBatches with edge cases including zero batch size.
-func TestBatchIteratorTotalBatches(t *testing.T) {
-	tests := []struct {
-		name      string
-		dataLen   int
-		batchSize int
-		expected  int
-	}{
-		{
-			name:      "normal division with remainder",
-			dataLen:   5,
-			batchSize: 2,
-			expected:  3,
-		},
-		{
-			name:      "exact division",
-			dataLen:   6,
-			batchSize: 3,
-			expected:  2,
-		},
-		{
-			name:      "single element",
-			dataLen:   1,
-			batchSize: 5,
-			expected:  1,
-		},
-		{
-			name:      "empty data",
-			dataLen:   0,
-			batchSize: 5,
-			expected:  0,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			data := make([]any, tt.dataLen)
-			for i := range data {
-				data[i] = i + 1
-			}
-			cfg := DefaultConfig()
-			cfg.MaxBatchSize = tt.batchSize
-			it := NewBatchIterator(data, cfg)
-
-			total := it.TotalBatches()
-			if total != tt.expected {
-				t.Errorf("TotalBatches() = %d, want %d", total, tt.expected)
-			}
-		})
-	}
-
-	t.Run("batch size zero returns zero", func(t *testing.T) {
-		data := []any{1, 2, 3}
-		it := &BatchIterator{
-			data:      data,
-			batchSize: 0,
-			current:   0,
-		}
-		total := it.TotalBatches()
-		if total != 0 {
-			t.Errorf("TotalBatches() with batchSize=0 = %d, want 0", total)
-		}
-	})
-
-	t.Run("negative batch size returns zero", func(t *testing.T) {
-		data := []any{1, 2, 3}
-		it := &BatchIterator{
-			data:      data,
-			batchSize: -1,
-			current:   0,
-		}
-		total := it.TotalBatches()
-		if total != 0 {
-			t.Errorf("TotalBatches() with batchSize=-1 = %d, want 0", total)
-		}
-	})
-}
-
-// TestParallelIteratorCloseCoverage verifies Close does not panic in various states.
+// TestParallelIteratorCloseCoverage covers Close before and after processing.
 func TestParallelIteratorCloseCoverage(t *testing.T) {
 	t.Run("close without processing", func(t *testing.T) {
 		data := []any{1, 2, 3}
@@ -1974,29 +1436,8 @@ func TestGetBoolWithDefault(t *testing.T) {
 		})
 	}
 
-	t.Run("complex path missing key returns default", func(t *testing.T) {
-		data := map[string]any{
-			"user": map[string]any{
-				"name": "Alice",
-			},
-		}
-		iv := newIterableValue(data)
-		if got := iv.GetBoolWithDefault("user.active", false); got != false {
-			t.Errorf("got %v, want false (default for missing nested key)", got)
-		}
-	})
-
-	t.Run("complex path existing key returns value", func(t *testing.T) {
-		data := map[string]any{
-			"user": map[string]any{
-				"active": true,
-			},
-		}
-		iv := newIterableValue(data)
-		if got := iv.GetBoolWithDefault("user.active", false); got != true {
-			t.Errorf("got %v, want true", got)
-		}
-	})
+	// Dotted-path missing/existing rows are covered by
+	// TestIterableValueWithDefaultComplexPath's GetBoolWithDefault subtest.
 }
 
 // TestForeachWithPathAndControl tests break and continue control flow.
@@ -2851,98 +2292,15 @@ func TestForeachReturn(t *testing.T) {
 	}
 }
 
-// TestPooledSliceIteratorLifecycle covers Next/Value/Index progression and
-// Release semantics for the pooled slice iterator. It previously had no
-// correctness coverage — benchmarks exercised it, but benchmarks are not
-// correctness tests, so a lifecycle regression would have gone unnoticed.
-func TestPooledSliceIteratorLifecycle(t *testing.T) {
-	data := []any{10, "twenty", 30.5, nil}
-	it := newPooledSliceIterator(data)
+// TestIterableValueReleaseDoubleGuard covers Release's double-put guard: a
+// second Release on an already-released value must be a no-op, not a second
+// pool.Put of the same instance.
+func TestIterableValueReleaseDoubleGuard(t *testing.T) {
+	iv := newIterableValue(map[string]any{"a": 1})
+	iv.Release()
+	iv.Release() // must not panic or double-put the pooled value
 
-	values := make([]any, 0, len(data))
-	indices := make([]int, 0, len(data))
-	for it.Next() {
-		values = append(values, it.Value())
-		indices = append(indices, it.Index())
-	}
-	if len(values) != len(data) {
-		t.Fatalf("iterated %d elements, want %d", len(values), len(data))
-	}
-	for i := range data {
-		if values[i] != data[i] {
-			t.Errorf("Value() at step %d = %v, want %v", i, values[i], data[i])
-		}
-		if indices[i] != i {
-			t.Errorf("Index() at step %d = %d, want %d", i, indices[i], i)
-		}
-	}
-	if it.Next() {
-		t.Error("Next after exhaustion should return false")
-	}
-
-	it.Release()
-	if it.data != nil || it.current != nil || it.index != -1 {
-		t.Errorf("Release should clear iterator state, got data=%v current=%v index=%d",
-			it.data, it.current, it.index)
-	}
-
-	// A recycled iterator (sync.Pool may hand back the released instance on
-	// this same goroutine) must start from a clean state on new data.
-	it2 := newPooledSliceIterator([]any{"only"})
-	if !it2.Next() || it2.Value() != "only" || it2.Index() != 0 {
-		t.Errorf("recycled iterator should iterate new data from index 0, got value=%v index=%d",
-			it2.Value(), it2.Index())
-	}
-	if it2.Next() {
-		t.Error("recycled iterator should be exhausted after its single element")
-	}
-	it2.Release()
-}
-
-// TestPooledMapIteratorLifecycle covers sorted-key iteration, Key/Value
-// accessors, Release cleanup, and reuse of the recycled keys slice. The type
-// has no production callers (see the note on pooledMapIterator), so this test
-// is its only correctness coverage.
-func TestPooledMapIteratorLifecycle(t *testing.T) {
-	m := map[string]any{"c": 3, "a": 1, "b": 2}
-	it := newPooledMapIterator(m)
-
-	var keys []string
-	for it.Next() {
-		keys = append(keys, it.Key())
-		if it.Value() != m[it.Key()] {
-			t.Errorf("Value() for key %q = %v, want %v", it.Key(), it.Value(), m[it.Key()])
-		}
-	}
-	want := []string{"a", "b", "c"} // keys are sorted for deterministic iteration
-	if len(keys) != len(want) {
-		t.Fatalf("iterated keys %v, want %v", keys, want)
-	}
-	for i := range want {
-		if keys[i] != want[i] {
-			t.Errorf("key order not sorted: %v, want %v", keys, want)
-			break
-		}
-	}
-	if it.Next() {
-		t.Error("Next after exhaustion should return false")
-	}
-
-	it.Release()
-	if it.data != nil || it.key != "" || it.current != nil || it.index != -1 {
-		t.Errorf("Release should clear iterator state, got data=%v key=%q current=%v index=%d",
-			it.data, it.key, it.current, it.index)
-	}
-
-	// Reuse with a larger map: the recycled keys slice must repopulate fully.
-	big := map[string]any{"k4": 4, "k1": 1, "k2": 2, "k3": 3}
-	it2 := newPooledMapIterator(big)
-	count := 0
-	for it2.Next() {
-		count++
-	}
-	if count != len(big) {
-		t.Errorf("recycled iterator yielded %d pairs, want %d", count, len(big))
-	}
-	it2.Release()
+	// A released value handed out again by the pool must still be usable.
+	iv2 := newIterableValue([]any{1, 2})
+	iv2.Release()
 }

@@ -67,6 +67,16 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	}
 	defer releaseConfig(options)
 
+	// Per-call custom parser: delegate (see delegateForPerCallParser).
+	if q, derr := p.delegateForPerCallParser(options); derr != nil || q != nil {
+		if derr != nil {
+			p.incrementErrorCount()
+			return nil, derr
+		}
+		defer q.Close()
+		return q.Get(jsonStr, path)
+	}
+
 	// PERFORMANCE: Metrics tracking — only allocate closures when metrics are enabled
 	var metricsCollector *internal.MetricsCollector
 	var startTime time.Time
@@ -89,7 +99,11 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 		}
 	}()
 
-	// Defer slow operation logging (no-op when logger is at default level)
+	// Defer slow operation logging. Only active when EnableMetrics=true —
+	// startTime is set solely by the metrics prologue above (D-002/R8 m8: the
+	// old comment claimed logger-level gating, which is the SECOND gate; the
+	// log level then decides visibility: Debug normally, Warn above
+	// slowOperationThreshold).
 	// PERF: ctx is created lazily only when slow operation is detected
 	defer func() {
 		if !startTime.IsZero() {
@@ -100,12 +114,12 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	// Run registered hooks around the operation. A Before hook may abort the
 	// operation by returning an error; an After hook may observe or transform the
 	// result/error. This defer is registered last so it unwinds first, letting
-	// hooks see the raw result before metrics/logging cleanup run. snapshotHooks
-	// returns nil in the common no-hook case, so the whole block is skipped.
-	hc := p.snapshotHooks()
+	// hooks see the raw result before metrics/logging cleanup run. Per-call
+	// cfg.Hooks are merged with the processor's hooks (hooksForOptions).
+	hc := p.hooksForOptions(options)
 	if len(hc) > 0 {
 		hookCtx := HookContext{
-			Operation: "get",
+			Operation: opNameGet,
 			JSONStr:   jsonStr,
 			Path:      path,
 			Config:    options,
@@ -120,8 +134,17 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 		}()
 	}
 
+	// PERFORMANCE (P-001): hash the document ONCE when the result cache is
+	// enabled and share it with the validation cache and both cache keys below —
+	// previously the input was FNV-scanned by ValidateJSONInput and again by
+	// Get. With the cache disabled Get never needs a hash, so validation
+	// computes its own exactly as before.
+	jsonHash := uint64(0)
+	if p.config.EnableCache {
+		jsonHash = hashStringToUint64(jsonStr)
+	}
 	// Validate input using unified helper (handles SkipValidation internally)
-	if err := p.validateOperationInput(jsonStr, path, options); err != nil {
+	if err := p.validateOperationInputHashed(jsonStr, path, options, jsonHash, p.config.EnableCache); err != nil {
 		p.incrementErrorCount()
 		return nil, err
 	}
@@ -134,7 +157,8 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	// json.Unmarshal which always yields float64, so a big-integer property would
 	// lose precision here. When PreserveNumbers is on, fall through to parseJSON
 	// (which routes to p.Parse and preserves json.Number).
-	if isSimplePropertyAccess(path) && !p.config.EnableCache && !p.config.PreserveNumbers && len(cfg) == 0 {
+	if isSimplePropertyAccess(path) && !p.config.EnableCache && !p.config.PreserveNumbers && len(cfg) == 0 &&
+		p.config.CustomPathParser == nil { // custom syntax: never simple (D-002/M33)
 		m, isObj, parseErr := unmarshalRootObject(jsonStr)
 		if parseErr != nil {
 			p.incrementErrorCount()
@@ -175,22 +199,22 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 		return result, nil
 	}
 
-	// PERFORMANCE: Compute hash ONCE for entire operation, reuse for all cache keys
-	// Hash is computed after validation to avoid wasted work on invalid input
-	jsonHash := hashStringToUint64(jsonStr)
-
-	// Check cache after validation
+	// Check cache after validation. jsonHash was computed once above (P-001)
+	// and shared with the validation-cache lookup.
 	cacheKey := p.createCacheKeyWithHash("get", jsonHash, path, options)
 	if cached, ok := p.getCachedResult(cacheKey); ok {
 		// Record cache hit operation
 		if metricsCollector != nil {
 			metricsCollector.RecordCacheHit()
 		}
-		// PERFORMANCE v2: Skip deep copy for JSON primitives (immutable types).
+		// PERFORMANCE: Skip deep copy for JSON primitives (immutable types).
 		// For parsed JSON data, only map[string]any and []any need copying.
 		// This avoids the deepCopySubtree overhead for ~60% of Get results.
+		// D-002/R8 (m1): the library's Number is an immutable string-kind leaf
+		// too (aligned with safeCopyResult) — include it so PreserveNumbers
+		// hits skip a pointless copy.
 		switch cached.(type) {
-		case nil, bool, float64, string, json.Number:
+		case nil, bool, float64, string, json.Number, Number:
 			return cached, nil
 		}
 		// PERFORMANCE: When CacheSharedResults is enabled, return the cached
@@ -225,8 +249,13 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 	if cachedData, ok := p.getCachedResult(parseCacheKey); ok {
 		data = cachedData
 	} else {
-		// Parse JSON with error context
-		parseErr := p.Parse(jsonStr, &data, *options)
+		// Parse JSON with error context. parseJSON (not p.Parse): the input was
+		// already validated by validateOperationInput, and dereferencing options
+		// into p.Parse would build a transient securityValidator and re-run the
+		// full uncached validation on every parse-cache miss (P-001) — the same
+		// helper the simple-property fast path above uses.
+		var parseErr error
+		data, parseErr = p.parseJSON(jsonStr, "get", path, options)
 		if parseErr != nil {
 			p.incrementErrorCount()
 			return nil, parseErr
@@ -250,10 +279,33 @@ func (p *Processor) Get(jsonStr, path string, cfg ...Config) (result any, err er
 		}
 	}
 
-	// Cache result if enabled
+	// Cache result if enabled. The result aliases the shared parse tree (or
+	// the cached parse entry), so the caller must receive an independent copy —
+	// symmetric with the hit path above. Without this, the FIRST caller held
+	// the very map/slice stored in the get: cache (and aliased into the
+	// parse: cache), and any mutation poisoned every subsequent hit (D-002).
 	p.setCachedResult(cacheKey, result, options)
-
-	return result, nil
+	if p.config.CacheSharedResults {
+		// Caller opted into the shared, do-not-mutate contract (see hit path).
+		return result, nil
+	}
+	switch result.(type) {
+	case nil, bool, float64, string, json.Number, Number:
+		// Immutable JSON primitives — no copy needed (mirrors hit path,
+		// including the library's Number; D-002/R8 m1).
+		return result, nil
+	}
+	copied, copyErr := deepCopySubtree(result)
+	if copyErr != nil {
+		p.incrementErrorCount()
+		return nil, &JsonsError{
+			Op:      "get",
+			Path:    path,
+			Message: fmt.Sprintf("cache copy failed: %v", copyErr),
+			Err:     copyErr,
+		}
+	}
+	return copied, nil
 }
 
 // GetWithContext retrieves a value from JSON with boundary-level context checks.
@@ -302,6 +354,14 @@ func (p *Processor) GetWithContext(ctx context.Context, jsonStr, path string, cf
 //
 // OPTIMIZED: Pre-parsing avoids repeated JSON parsing overhead for repeated queries.
 //
+// SHARED DATA (P-002): the tree behind Data() is the parse-cache entry itself
+// (zero-copy) and may be read concurrently by other PreParse/GetFromParsed
+// callers on the same processor. It MUST NOT be mutated — mutation poisons the
+// cache for every reader. GetFromParsed remains safe for value extraction by
+// default (results are copied unless Config.CacheSharedResults is set); for
+// mutating workflows use Get (which deep-copies results) or copy what Data()
+// returns before changing it.
+//
 // Call Release() on the returned ParsedJSON when finished to free the processor reference.
 //
 // Example:
@@ -312,9 +372,12 @@ func (p *Processor) GetWithContext(ctx context.Context, jsonStr, path string, cf
 //	value1, _ := processor.GetFromParsed(parsed, "path1")
 //	value2, _ := processor.GetFromParsed(parsed, "path2")
 func (p *Processor) PreParse(jsonStr string, cfg ...Config) (*ParsedJSON, error) {
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance — PreParse reads/writes the parse cache and
+	// validator. parseJSON (its heavy path) is ungoverned, so no nesting.
+	if err := p.beginGovernedOp(); err != nil {
 		return nil, err
 	}
+	defer p.endGovernedOp()
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
@@ -322,20 +385,22 @@ func (p *Processor) PreParse(jsonStr string, cfg ...Config) (*ParsedJSON, error)
 	}
 	defer releaseConfig(options)
 
-	// Validate input
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// Validate input and build the parse-cache key in one step (P-001: one FNV
+	// scan of the document instead of two — validation self-hash + key build).
+	parseCacheKey, err := p.validateAndCacheKey("parse", jsonStr, options)
+	if err != nil {
 		return nil, err
 	}
-
-	// Try to get from cache first
-	parseCacheKey := p.createCacheKey("parse", jsonStr, "", options)
 	var data any
 
 	if cachedData, ok := p.getCachedResult(parseCacheKey); ok {
 		data = cachedData
 	} else {
-		// Parse JSON
-		parseErr := p.Parse(jsonStr, &data, *options)
+		// Parse JSON. parseJSON (not p.Parse): the input was validated above,
+		// so the sentinel-dereferencing p.Parse call would re-validate through
+		// a transient securityValidator on every parse-cache miss (P-001).
+		var parseErr error
+		data, parseErr = p.parseJSON(jsonStr, "pre_parse", "", options)
 		if parseErr != nil {
 			return nil, parseErr
 		}
@@ -346,6 +411,12 @@ func (p *Processor) PreParse(jsonStr string, cfg ...Config) (*ParsedJSON, error)
 		}
 	}
 
+	// P-002: the tree is returned AS-IS (zero-copy) — this is what makes
+	// PreParse a performance optimization. It is shared with the parse cache
+	// and concurrent GetFromParsed readers; see the Data() contract. Copying
+	// here was measured at ~47x the hit-path cost on a 100KB document
+	// (BenchmarkPreParse_Large 1.3ms vs 28µs), an unacceptable regression for
+	// the API's stated purpose.
 	return &ParsedJSON{
 		data: data,
 	}, nil
@@ -364,9 +435,13 @@ func (p *Processor) GetFromParsed(parsed *ParsedJSON, path string, cfg ...Config
 		}
 	}
 
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance — navigation-only, but registered so Close()
+	// drains it like every other op (recursiveProcessor and the validator it
+	// reads are processor state). ProcessRecursively is ungoverned: no nesting.
+	if err := p.beginGovernedOp(); err != nil {
 		return nil, err
 	}
+	defer p.endGovernedOp()
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
@@ -396,10 +471,10 @@ func (p *Processor) GetFromParsed(parsed *ParsedJSON, path string, cfg ...Config
 		result = safeCopyResult(result)
 	}
 
-	// NOTE: no cache write here. Processor.Get reads "get:"-prefixed keys via
-	// createCacheKey(jsonStr, ...), but ParsedJSON no longer carries a content
-	// hash, so any key built here could never be read back — it would only
-	// pollute the cache and evict live entries.
+	// NOTE: no cache write here. Processor.Get looks up CacheKey{Op: "get", ...}
+	// keys built from the document hash, but ParsedJSON no longer carries a
+	// content hash, so any key built here could never be read back — it would
+	// only pollute the cache and evict live entries.
 
 	return result, nil
 }
@@ -417,9 +492,11 @@ func (p *Processor) SetFromParsed(parsed *ParsedJSON, path string, value any, cf
 		}
 	}
 
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance — see GetFromParsed (mutation variant).
+	if err := p.beginGovernedOp(); err != nil {
 		return nil, err
 	}
+	defer p.endGovernedOp()
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
@@ -442,7 +519,15 @@ func (p *Processor) SetFromParsed(parsed *ParsedJSON, path string, value any, cf
 	// the modified document. Returning `result` here was a bug: it made the new
 	// ParsedJSON hold only the set value, so a follow-up GetFromParsed could not
 	// read any other path. The modified root lives in dataCopy.
-	_, err = p.recursiveProcessor.ProcessRecursivelyWithOptions(dataCopy, path, opSet, value, options.CreatePaths)
+	//
+	// D-002/R10: no-cfg resolves CreatePaths from the baked config (mirrors
+	// Set) — the singleton's true previously re-enabled path creation on a
+	// processor built with CreatePaths=false.
+	createPaths := p.config.CreatePaths
+	if options != &defaultConfigSingleton {
+		createPaths = options.CreatePaths
+	}
+	_, err = p.recursiveProcessor.ProcessRecursivelyWithOptions(dataCopy, path, opSet, value, createPaths)
 	if err != nil {
 		return nil, &JsonsError{
 			Op:      "set_from_parsed",
@@ -494,9 +579,24 @@ func (p *Processor) GetObject(jsonStr, path string, defaultValue ...map[string]a
 }
 
 // GetMultiple retrieves multiple values from JSON using multiple path expressions
-func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (map[string]any, error) {
-	if err := p.checkClosed(); err != nil {
+func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (results map[string]any, err error) {
+	// D-002/R11 (M1): concurrency governance — GetMultiple was the one batch
+	// read never registered as an in-flight op, so Close() could complete (and
+	// release resources) mid-run while every other read/mutation drains, and
+	// MaxConcurrency / MaxOperationsPerSecond did not apply to it. parseJSON,
+	// validateInputForOptions, and the recursive engine are ungoverned callees,
+	// so this acquire never nests.
+	if err := p.beginGovernedOp(); err != nil {
 		return nil, err
+	}
+	defer p.endGovernedOp()
+
+	// Rate limiting, matching Get (D-002). No-op unless operationWindow > 0
+	// (disabled by default).
+	if p.metrics.operationWindow > 0 {
+		if err := p.checkRateLimit(); err != nil {
+			return nil, err
+		}
 	}
 
 	options, err := p.prepareOptions(cfg...)
@@ -510,6 +610,62 @@ func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (
 	// always counted; GetMultiple previously did not.
 	p.incrementOperationCount()
 
+	// Metrics timing + slow-operation logging, matching Get (D-002/R11 M1
+	// 回查): batch reads were the last operations absent from
+	// RecordOperation/GetStats accounting and from slow-op warnings. Both are
+	// no-ops unless EnableMetrics is set. Registered BEFORE the hooks defer so
+	// hooks unwind first and observe the raw result, mirroring Get.
+	var metricsCollector *internal.MetricsCollector
+	var startTime time.Time
+	if p.metrics != nil && p.metrics.enabled {
+		metricsCollector = p.metrics.collector
+		if metricsCollector != nil {
+			startTime = time.Now()
+			metricsCollector.StartConcurrentOperation()
+		}
+	}
+	defer func() {
+		if metricsCollector != nil {
+			metricsCollector.EndConcurrentOperation()
+			if !startTime.IsZero() {
+				metricsCollector.RecordOperation(time.Since(startTime), err == nil, 0)
+			}
+		}
+	}()
+	defer func() {
+		if !startTime.IsZero() {
+			p.logOperation(context.Background(), "get_multiple", fmt.Sprintf("(%d paths)", len(paths)), time.Since(startTime))
+		}
+	}()
+
+	// Run registered hooks around the batch operation (D-002): GetMultiple
+	// previously ran NO hooks, so audit/transform coverage silently
+	// disappeared for batch reads while Get had it. Before may abort; After
+	// observes or transforms the results map.
+	hc := p.hooksForOptions(options)
+	if len(hc) > 0 {
+		hookCtx := HookContext{
+			Operation: "get_multiple",
+			JSONStr:   jsonStr,
+			Path:      fmt.Sprintf("(%d paths)", len(paths)),
+			Config:    options,
+			StartTime: time.Now(),
+		}
+		if hookErr := hc.executeBefore(hookCtx); hookErr != nil {
+			p.incrementErrorCount()
+			return nil, hookErr
+		}
+		defer func() {
+			// Coerce like executeAfterString: a non-map After result is a
+			// no-op on the result (original kept); the error still propagates.
+			r, e := hc.executeAfter(hookCtx, results, err)
+			if m, ok := r.(map[string]any); ok {
+				results = m
+			}
+			err = e
+		}()
+	}
+
 	if err := p.validateInputForOptions(jsonStr, options); err != nil {
 		p.incrementErrorCount()
 		return nil, err
@@ -519,15 +675,17 @@ func (p *Processor) GetMultiple(jsonStr string, paths []string, cfg ...Config) (
 		return make(map[string]any), nil
 	}
 
-	// Parse JSON once for all operations
-	var data any
-	if err := p.Parse(jsonStr, &data, *options); err != nil {
+	// Parse JSON once for all operations. parseJSON (not p.Parse): the input
+	// was validated above; p.Parse would re-validate through a transient
+	// securityValidator per call (P-001).
+	data, err := p.parseJSON(jsonStr, "get_multiple", "", options)
+	if err != nil {
 		p.incrementErrorCount()
 		return nil, err
 	}
 
 	// Sequential processing
-	results := make(map[string]any, len(paths))
+	results = make(map[string]any, len(paths))
 	var firstError error
 	for _, path := range paths {
 		if err := p.validatePath(path); err != nil {

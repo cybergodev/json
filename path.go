@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/cybergodev/json/internal"
 )
@@ -42,13 +42,22 @@ import (
 //	var data any
 //	err := processor.Parse(`{"price":19.99}`, &data, cfg)
 func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
-	// PERFORMANCE v2: Fast path for the most common case — no config,
+	// D-002/R9 (m3): concurrency governance for the whole parse — in-flight
+	// registration (so Close() drains via waitForActiveOps) plus the
+	// MaxConcurrency slot. Parse touches the security validator and is the
+	// entry funnel for Unmarshal's cfg path, GetCompiled, and the file/reader
+	// loaders. No governed callee: the fast paths below call stdlib/decoder
+	// directly (parseJSON never routes back into a governed op), so the
+	// acquire is never nested.
+	if err := p.beginGovernedOp(); err != nil {
+		return err
+	}
+	defer p.endGovernedOp()
+
+	// PERFORMANCE: Fast path for the most common case — no config,
 	// target is *any, not preserving numbers. Avoids config allocation
 	// and uses streamlined error wrapping.
 	if len(cfg) == 0 {
-		if p == nil || atomic.LoadInt32(&p.state) != processorStateActive {
-			return &JsonsError{Op: "parse", Message: "processor is closed", Err: ErrProcessorClosed}
-		}
 		if _, ok := target.(*any); ok && !p.config.PreserveNumbers {
 			// SECURITY: Full input validation is required (size, depth, security patterns)
 			if err := p.validateInput(jsonStr); err != nil {
@@ -87,10 +96,20 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		}
 	}
 
+	// D-002/R8 (C1): no-cfg calls resolve PreserveNumbers from the processor's
+	// baked configuration — the shared singleton carries false and previously
+	// won every no-cfg call, so Parse/ParseAny silently parsed with stdlib
+	// float64 semantics on a PreserveNumbers processor. A supplied cfg still
+	// REPLACES the setting (D-006). See parseJSON for the sibling fix.
+	preserveNumbers := options.PreserveNumbers
+	if options == &defaultConfigSingleton {
+		preserveNumbers = p.config.PreserveNumbers
+	}
+
 	// PERFORMANCE: Fast path for the most common case — parsing into *any
 	// without number preservation. Avoids the fmt.Sprintf allocation for error wrapping
 	// and skips the preservingUnmarshal indirection.
-	if _, ok := target.(*any); ok && !options.PreserveNumbers {
+	if _, ok := target.(*any); ok && !preserveNumbers {
 		if err := json.Unmarshal(stringToBytes(jsonStr), target); err != nil {
 			return &JsonsError{
 				Op:      "parse",
@@ -102,7 +121,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 	}
 
 	// Parse with number preservation to maintain original format
-	if options.PreserveNumbers {
+	if preserveNumbers {
 		// Use numberPreservingDecoder to keep json.Number as-is
 		decoder := newNumberPreservingDecoder(true)
 		data, err := decoder.DecodeToAny(jsonStr)
@@ -127,7 +146,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		encoder := newCustomEncoder(config)
 		defer encoder.Close()
 
-		encodedJson, err := encoder.Encode(data)
+		encodedJSON, err := encoder.Encode(data)
 		if err != nil {
 			return &JsonsError{
 				Op:      "parse",
@@ -137,7 +156,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		}
 
 		// Use number-preserving unmarshal for final conversion
-		if err := preservingUnmarshal(stringToBytes(encodedJson), target, true); err != nil {
+		if err := preservingUnmarshal(stringToBytes(encodedJSON), target, true, options.DisallowUnknown); err != nil {
 			return &JsonsError{
 				Op:      "parse",
 				Message: fmt.Sprintf("invalid JSON for target type %T: %v", target, err),
@@ -146,7 +165,7 @@ func (p *Processor) Parse(jsonStr string, target any, cfg ...Config) error {
 		}
 	} else {
 		// Standard parsing without number preservation
-		if err := preservingUnmarshal(stringToBytes(jsonStr), target, false); err != nil {
+		if err := preservingUnmarshal(stringToBytes(jsonStr), target, false, options.DisallowUnknown); err != nil {
 			return &JsonsError{
 				Op:      "parse",
 				Message: fmt.Sprintf("invalid JSON for target type %T: %v", target, err),
@@ -205,9 +224,13 @@ func (p *Processor) ParseAny(jsonStr string, cfg ...Config) (any, error) {
 //	    // JSON is valid
 //	}
 func (p *Processor) Valid(jsonStr string, cfg ...Config) (bool, error) {
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance (Close-drain + MaxConcurrency) — Valid reads
+	// and writes the result cache and the security validator. Standalone op:
+	// no governed callee, so the acquire is never nested.
+	if err := p.beginGovernedOp(); err != nil {
 		return false, err
 	}
+	defer p.endGovernedOp()
 
 	// Prepare options, then validate against them so a caller-supplied Config
 	// (MaxJSONSize / FullSecurityScan / etc.) is actually enforced. When no
@@ -219,12 +242,14 @@ func (p *Processor) Valid(jsonStr string, cfg ...Config) (bool, error) {
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// Validate input and build the cache key in one step (P-001: one FNV scan
+	// of the document instead of two — validation self-hash + key build).
+	cacheKey, err := p.validateAndCacheKey("validate", jsonStr, options)
+	if err != nil {
 		return false, err
 	}
 
 	// Check cache first
-	cacheKey := p.createCacheKey("validate", jsonStr, "", options)
 	if cached, ok := p.getCachedResult(cacheKey); ok {
 		if val, typeOk := cached.(bool); typeOk {
 			return val, nil
@@ -260,182 +285,103 @@ func (p *Processor) ValidBytes(data []byte) bool {
 	return err == nil && valid
 }
 
-// stringToBytes converts string to []byte efficiently
-// Using standard conversion for safety and compatibility
-// While unsafe.StringData could provide zero-copy conversion,
-// we prioritize safety over marginal performance gains
+// stringToBytes converts string to []byte without copying. It delegates to
+// internal.StringToBytes, which reinterprets the string's backing array via
+// unsafe — see that function for the TOCTOU contract. SAFETY: the returned
+// slice MUST NOT be mutated; all callers in this package pass it to read-only
+// consumers (io.Writer.Write, json.Unmarshal, escape scanners). Prefer
+// []byte(s) when mutation is required.
 func stringToBytes(s string) []byte {
 	return internal.StringToBytes(s)
 }
 
-func (p *Processor) splitPath(path string, segments []internal.PathSegment) []internal.PathSegment {
+// parsePathGuarded invokes a user-installed CustomPathParser, converting a
+// panic inside the user implementation into an error. ParsePath runs inside
+// every path-taking operation (Get, Set, Delete, iteration), so without this
+// guard a misbehaving parser would crash the caller through any public API.
+func parsePathGuarded(parser PathParser, path string) (segments []internal.PathSegment, err error) {
+	// SAFETY (SEC-003): user-implemented extension point — mirrors the hook
+	// guards in interfaces.go (hookChain.executeBefore/executeAfter).
+	defer func() {
+		if r := recover(); r != nil {
+			segments = nil
+			err = fmt.Errorf("custom path parser panicked: %v", r)
+		}
+	}()
+	return parser.ParsePath(path)
+}
+
+// splitPath splits a path into segments for the segment-based walkers
+// (Set's operation path, Delete's dot notation). D-002 (M33): when
+// Config.CustomPathParser is installed it replaces the standard splitter
+// entirely — its dot/bracket assumptions do not hold for custom syntaxes,
+// and the caller-provided scratch slice is not reused (custom parsers
+// return their own storage).
+func (p *Processor) splitPath(path string, segments []internal.PathSegment) ([]internal.PathSegment, error) {
+	if p.config.CustomPathParser != nil {
+		return parsePathGuarded(p.config.CustomPathParser, path)
+	}
+
 	segments = segments[:0]
 
 	// Direct call to internal package - reduces method call overhead
 	if !internal.NeedsPathPreprocessing(path) {
-		return internal.SplitPathIntoSegments(path, segments)
+		return internal.SplitPathIntoSegments(path, segments), nil
 	}
 
 	sb := p.getStringBuilder()
 	defer p.putStringBuilder(sb)
 
 	processedPath := internal.PreprocessPath(path, sb)
-	return internal.SplitPathIntoSegments(processedPath, segments)
+	return internal.SplitPathIntoSegments(processedPath, segments), nil
 }
 
+// parsePath splits a path into string segments. Non-complex (pure dot
+// notation) paths — the only kind Delete's dot-notation walker routes here —
+// are split escape-aware with empty parts dropped, so "a\.b" resolves to the
+// literal key "a.b" like Get and Set do (D-002: the previous raw
+// strings.Split produced ["a\", "b"] and Delete failed with "path not found:
+// a\" while Get succeeded). Complex paths keep the historical
+// segment.String() rendering for direct callers.
 func (p *Processor) parsePath(path string) ([]string, error) {
 	if path == "" {
 		return []string{}, nil
 	}
 
-	if !p.isComplexPath(path) {
-		return strings.Split(path, "."), nil
-	}
-
 	segments := p.getPathSegments()
 	defer p.putPathSegments(segments)
 
-	*segments = p.splitPath(path, *segments)
+	var splitErr error
+	*segments, splitErr = p.splitPath(path, *segments)
+	if splitErr != nil {
+		return nil, splitErr
+	}
 
-	result := make([]string, len(*segments))
-	for i, segment := range *segments {
-		result[i] = segment.String()
+	if p.isComplexPath(path) {
+		result := make([]string, len(*segments))
+		for i, segment := range *segments {
+			result[i] = segment.String()
+		}
+		return result, nil
+	}
+
+	result := make([]string, 0, len(*segments))
+	for _, segment := range *segments {
+		switch segment.Type {
+		case internal.PropertySegment:
+			result = append(result, segment.Key)
+		case internal.ArrayIndexSegment:
+			// Dot-separated numerics ("a.0") parse as index segments but must
+			// stay numeric strings here: the dot-notation walker resolves
+			// them against []any parents (previously strings.Split produced
+			// "0" as a plain part).
+			result = append(result, strconv.Itoa(segment.Index))
+		default:
+			return nil, fmt.Errorf("unexpected segment type %v in dot-notation path %q", segment.Type, path)
+		}
 	}
 
 	return result, nil
-}
-
-func (p *Processor) handleDistributedOperation(data any, segments []internal.PathSegment) (any, error) {
-	return p.getValueWithDistributedOperation(data, internal.ReconstructPath(segments))
-}
-
-func (p *Processor) navigateToPath(data any, path string) (any, error) {
-	if path == "" || path == "." || path == "/" {
-		return data, nil
-	}
-
-	if strings.HasPrefix(path, "/") {
-		return p.navigateJSONPointer(data, path)
-	}
-
-	return p.navigateDotNotation(data, path)
-}
-
-func (p *Processor) navigateDotNotation(data any, path string) (any, error) {
-	current := data
-
-	segments := p.getPathSegments()
-	defer p.putPathSegments(segments)
-
-	*segments = p.splitPath(path, *segments)
-
-	for i := 0; i < len(*segments); i++ {
-		segment := (*segments)[i]
-		if internal.IsExtractionSegment(segment) {
-			return p.handleDistributedOperation(current, (*segments)[i:])
-		}
-
-		switch segment.Type {
-		case internal.PropertySegment:
-			result := p.handlePropertyAccess(current, segment.Key)
-			if !result.exists {
-				return nil, ErrPathNotFound
-			}
-			current = result.value
-
-		case internal.ArrayIndexSegment:
-			result := p.handleArrayAccess(current, segment)
-			if !result.exists {
-				return nil, ErrPathNotFound
-			}
-			current = result.value
-
-		case internal.ArraySliceSegment:
-			result := p.handleArraySlice(current, segment)
-			if !result.exists {
-				return nil, ErrPathNotFound
-			}
-			current = result.value
-
-		case internal.ExtractSegment:
-			extractResult, err := p.handleExtraction(current, segment)
-			if err != nil {
-				return nil, err
-			}
-			current = extractResult
-
-			if i+1 < len(*segments) {
-				nextSegment := (*segments)[i+1]
-				if nextSegment.Type == internal.ArrayIndexSegment || nextSegment.Type == internal.ArraySliceSegment {
-					if segment.IsFlatExtract() {
-						if nextSegment.Type == internal.ArraySliceSegment {
-							result := p.handleArraySlice(current, nextSegment)
-							if result.exists {
-								current = result.value
-							}
-						} else {
-							result := p.handleArrayAccess(current, nextSegment)
-							if result.exists {
-								current = result.value
-							}
-						}
-					} else {
-						current = p.handlePostExtractionArrayAccess(current, nextSegment)
-					}
-					i++ // Skip the next segment since we just processed it
-				}
-			}
-
-		default:
-			return nil, fmt.Errorf("unsupported segment type: %v", segment.TypeString())
-		}
-	}
-
-	return current, nil
-}
-
-func (p *Processor) navigateJSONPointer(data any, path string) (any, error) {
-	if path == "/" {
-		return data, nil
-	}
-
-	pathWithoutSlash := path[1:]
-	segments := strings.Split(pathWithoutSlash, "/")
-
-	current := data
-
-	for _, segment := range segments {
-		if segment == "" {
-			continue
-		}
-
-		if strings.Contains(segment, "~") {
-			segment = internal.UnescapeJSONPointer(segment)
-		}
-
-		// RFC 6902: Array index access — numeric segments target array elements
-		if arr, ok := current.([]any); ok {
-			if idx, err := strconv.Atoi(segment); err == nil {
-				if idx >= 0 && idx < len(arr) {
-					current = arr[idx]
-					continue
-				}
-				return nil, ErrPathNotFound
-			}
-			// "-" refers to the (nonexistent) element after the end of the array
-			if segment == "-" {
-				return nil, ErrPathNotFound
-			}
-		}
-
-		result := p.handlePropertyAccess(current, segment)
-		if !result.exists {
-			return nil, ErrPathNotFound
-		}
-		current = result.value
-	}
-
-	return current, nil
 }
 
 func (p *Processor) handlePropertyAccess(data any, property string) propertyAccessResult {
@@ -499,6 +445,24 @@ func newNumberPreservingDecoder(preserveNumbers bool) *numberPreservingDecoder {
 	return decoderNoPreserve
 }
 
+// decodeSingleValue decodes exactly one JSON value from decoder into v and
+// rejects trailing content. json.Decoder.Decode consumes only the FIRST value
+// and silently ignores the rest, so a decoder-based branch without this probe
+// accepts `{"a":1}{"b":2}` where json.Unmarshal (used by every branch that can)
+// rejects it with "invalid character after top-level value" (D-002/R11 C1 —
+// CompareJSON reported false-equal on garbage-tailed input through exactly
+// this hole). A remainder of pure whitespace still succeeds — Token skips it
+// and returns io.EOF — matching stdlib whole-document semantics.
+func decodeSingleValue(decoder *json.Decoder, v any) error {
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("invalid character after top-level value")
+	}
+	return nil
+}
+
 // DecodeToAny decodes JSON string to any type with performance and number preservation
 func (d *numberPreservingDecoder) DecodeToAny(jsonStr string) (any, error) {
 	if !d.preserveNumbers {
@@ -515,7 +479,9 @@ func (d *numberPreservingDecoder) DecodeToAny(jsonStr string) (any, error) {
 	decoder.UseNumber()
 
 	var result any
-	if err := decoder.Decode(&result); err != nil {
+	// D-002/R11 (C1): decodeSingleValue enforces the same trailing-content
+	// rejection the stdlib branch above gets from json.Unmarshal.
+	if err := decodeSingleValue(decoder, &result); err != nil {
 		return nil, err
 	}
 
@@ -694,8 +660,17 @@ func (d *numberPreservingDecoder) convertJSONNumber(num json.Number) any {
 // preservingUnmarshal unmarshals JSON with number preservation
 // OPTIMIZED: Uses single-pass decoding with json.Number, then direct type conversion
 // to avoid the overhead of marshal/unmarshal cycle for target types that support it.
-func preservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
+// When disallowUnknown is set, struct destinations reject unknown input keys,
+// matching encoding/json Decoder.DisallowUnknownFields semantics.
+func preservingUnmarshal(data []byte, v any, preserveNumbers bool, disallowUnknown bool) error {
 	if !preserveNumbers {
+		if disallowUnknown {
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			// D-002/R11 (C1): decoder-based branch — enforce single-value
+			// semantics like the json.Unmarshal branches (see decodeSingleValue).
+			return decodeSingleValue(decoder, v)
+		}
 		return json.Unmarshal(data, v)
 	}
 
@@ -707,7 +682,8 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
 	// OPTIMIZED: Try direct decoding for *any type to avoid double conversion
 	if anyPtr, ok := v.(*any); ok {
 		var temp any
-		if err := decoder.Decode(&temp); err != nil {
+		// D-002/R11 (C1): see decodeSingleValue — reject trailing content.
+		if err := decodeSingleValue(decoder, &temp); err != nil {
 			return err
 		}
 		// Convert json.Number to our Number type for consistency
@@ -718,7 +694,8 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
 	// For other target types, we still need the conversion step
 	// but we optimize by reusing the decoder's buffer
 	var temp any
-	if err := decoder.Decode(&temp); err != nil {
+	// D-002/R11 (C1): see decodeSingleValue — reject trailing content.
+	if err := decodeSingleValue(decoder, &temp); err != nil {
 		return err
 	}
 
@@ -744,6 +721,11 @@ func preservingUnmarshal(data []byte, v any, preserveNumbers bool) error {
 	convertedBytes, err := json.Marshal(converted)
 	if err != nil {
 		return err
+	}
+	if disallowUnknown {
+		decoder := json.NewDecoder(bytes.NewReader(convertedBytes))
+		decoder.DisallowUnknownFields()
+		return decoder.Decode(v)
 	}
 
 	return json.Unmarshal(convertedBytes, v)

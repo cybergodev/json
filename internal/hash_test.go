@@ -169,6 +169,12 @@ func TestHashStringFNV1a(t *testing.T) {
 			}
 		})
 	}
+
+	// Distinct inputs must hash differently (determinism alone would pass a
+	// constant function).
+	if HashStringFNV1a("a") == HashStringFNV1a("b") {
+		t.Error("HashStringFNV1a produced identical hashes for distinct inputs")
+	}
 }
 
 // TestHashBytesFNV1a tests the HashBytesFNV1a function
@@ -192,6 +198,11 @@ func TestHashBytesFNV1a(t *testing.T) {
 				t.Errorf("HashBytesFNV1a is not deterministic")
 			}
 		})
+	}
+
+	// Distinct inputs must hash differently.
+	if HashBytesFNV1a([]byte{0x41}) == HashBytesFNV1a([]byte{0x42}) {
+		t.Error("HashBytesFNV1a produced identical hashes for distinct inputs")
 	}
 }
 

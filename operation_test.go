@@ -28,7 +28,7 @@ func TestJSONPointerSet(t *testing.T) {
 	}{
 		{name: "overwrite existing nested value", jsonStr: `{"a":{"b":1}}`, path: "/a/b", value: 2, wantJSON: `{"a":{"b":2}}`},
 		{name: "add new key to existing object", jsonStr: `{"a":{"b":1}}`, path: "/a/c", value: 3, wantJSON: `{"a":{"b":1,"c":3}}`},
-		{name: "set root path should error", jsonStr: `{"a":1}`, path: "/", value: 42, wantErr: true, errSubstr: "cannot set root"},
+		{name: "set root path replaces document", jsonStr: `{"a":1}`, path: "/", value: 42, wantJSON: `42`},
 		{name: "create nested path with CreatePaths", jsonStr: `{}`, path: "/x/y/z", value: "hello", cfg: Config{CreatePaths: true}, wantJSON: `{"x":{"y":{"z":"hello"}}}`},
 		{name: "tilde slash escaping ~1 becomes slash", jsonStr: `{}`, path: "/a~1b", value: "val", cfg: Config{CreatePaths: true}, wantJSON: `{"a/b":"val"}`},
 		{name: "tilde escaping ~0 becomes tilde", jsonStr: `{}`, path: "/m~0n", value: "val", cfg: Config{CreatePaths: true}, wantJSON: `{"m~n":"val"}`},
@@ -122,10 +122,11 @@ func TestNavigateJSONPointer(t *testing.T) {
 func TestSetJSONPointerArrayExtension(t *testing.T) {
 	cfg := Config{CreatePaths: true}
 	_, err := Set(`{"arr":[1,2]}`, "/arr/5", "x", cfg)
-	if err != nil {
-		if !strings.Contains(err.Error(), "extend") && !strings.Contains(err.Error(), "failed") {
-			t.Errorf("unexpected error: %v", err)
-		}
+	if err == nil {
+		t.Fatal("expected error: arrays cannot be extended via JSON Pointer")
+	}
+	if !strings.Contains(err.Error(), "cannot extend array via JSON Pointer") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -858,18 +859,6 @@ func TestStructAccess(t *testing.T) {
 
 // --- Distributed array operations ---
 
-func TestDistributedArrayOps(t *testing.T) {
-	t.Run("2D array access", func(t *testing.T) {
-		result, err := Get(`{"matrix":[[1,2],[3,4],[5,6]]}`, "matrix[1][0]")
-		if err != nil {
-			t.Fatalf("Get distributed error: %v", err)
-		}
-		if result != float64(3) {
-			t.Errorf("Get distributed = %v, want 3", result)
-		}
-	})
-}
-
 // --- Error cases ---
 
 func TestOperationErrors(t *testing.T) {
@@ -880,7 +869,7 @@ func TestOperationErrors(t *testing.T) {
 			wantErr          bool
 		}{
 			{"invalid json", `{invalid}`, "a", 1, true},
-			{"empty path", `{"a":1}`, "", 1, true},
+			{"empty path replaces root (GEN-001)", `{"a":1}`, "", 1, false},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -1370,15 +1359,10 @@ func TestOperationSetArrayIndexExtension(t *testing.T) {
 	t.Run("set slice with extension via CreatePaths", func(t *testing.T) {
 		result, err := Set(`{"arr":[1,2]}`, "arr[3:5]", 99, cfg)
 		if err != nil {
-			// Slice extension may not be fully supported, check error message
-			t.Logf("Set slice with extension: %v (may be expected)", err)
-			return
+			t.Fatalf("Set() error: %v", err)
 		}
-		m := mustParseMap(t, result)
-		arr := m["arr"].([]any)
-		if len(arr) < 5 {
-			t.Errorf("expected at least length 5, got %d", len(arr))
-		}
+		// The slice extends with a nil filler at index 2, then writes 99 at 3 and 4.
+		assertJSONEqual(t, `{"arr":[1,2,null,99,99]}`, result)
 	})
 }
 
@@ -1440,37 +1424,23 @@ func TestOperationSetJSONPointerComplex(t *testing.T) {
 
 	t.Run("set via JSON pointer creates nested arrays", func(t *testing.T) {
 		cfg := Config{CreatePaths: true}
-		result, err := Set(`{}`, "/data/0/name", "first", cfg)
-		if err != nil {
-			// May fail if intermediate is nil
-			t.Logf("Set JSON pointer with array creation: %v", err)
-			return
+		_, err := Set(`{}`, "/data/0/name", "first", cfg)
+		if err == nil {
+			t.Fatal("expected error: JSON Pointer cannot create array intermediates")
 		}
-		m := mustParseMap(t, result)
-		data := m["data"].([]any)
-		if len(data) < 1 {
-			t.Fatalf("expected at least 1 element")
-		}
-		obj := data[0].(map[string]any)
-		if obj["name"] != "first" {
-			t.Errorf("expected name=first, got %v", obj["name"])
+		if !strings.Contains(err.Error(), "cannot extend array via JSON Pointer") {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("set via JSON pointer extends existing array", func(t *testing.T) {
 		cfg := Config{CreatePaths: true}
-		result, err := Set(`{"items":["a","b"]}`, "/items/4", "e", cfg)
-		if err != nil {
-			t.Logf("Set JSON pointer array extension: %v", err)
-			return
+		_, err := Set(`{"items":["a","b"]}`, "/items/4", "e", cfg)
+		if err == nil {
+			t.Fatal("expected error: arrays cannot be extended via JSON Pointer")
 		}
-		m := mustParseMap(t, result)
-		arr := m["items"].([]any)
-		if len(arr) != 5 {
-			t.Fatalf("expected length 5, got %d", len(arr))
-		}
-		if arr[4] != "e" {
-			t.Errorf("arr[4] = %v, want 'e'", arr[4])
+		if !strings.Contains(err.Error(), "cannot extend array via JSON Pointer") {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
@@ -1543,6 +1513,11 @@ func TestOperationSetArrayExtract(t *testing.T) {
 	})
 }
 
+// TestOperationSetArrayExtractFlat pins the {flat:field} Set contract on root
+// arrays: the whole value is written to the named field of EVERY element —
+// an array value replaces the field wholesale (not element-wise), a scalar
+// replaces it directly, and a missing field is created (CreatePaths default).
+// These behaviors were previously logged but never asserted (FIX-001).
 func TestOperationSetArrayExtractFlat(t *testing.T) {
 	t.Run("flat extract set with array value", func(t *testing.T) {
 		json := `[{"tags":["a","b"]},{"tags":["c","d"]}]`
@@ -1552,10 +1527,14 @@ func TestOperationSetArrayExtractFlat(t *testing.T) {
 		}
 		arr := mustParseArray(t, result)
 		for i, item := range arr {
-			obj := item.(map[string]any)
-			tags := obj["tags"]
-			// The tags field should have been modified
-			t.Logf("item[%d].tags = %v (%T)", i, tags, tags)
+			obj, ok := item.(map[string]any)
+			if !ok {
+				t.Fatalf("item[%d] is not a map", i)
+			}
+			got, ok := obj["tags"].([]any)
+			if !ok || len(got) != 2 || got[0] != "e" || got[1] != "f" {
+				t.Errorf("item[%d].tags = %#v, want [e f] (wholesale replacement)", i, obj["tags"])
+			}
 		}
 	})
 
@@ -1566,42 +1545,30 @@ func TestOperationSetArrayExtractFlat(t *testing.T) {
 			t.Fatalf("Set() error: %v", err)
 		}
 		arr := mustParseArray(t, result)
-		for _, item := range arr {
+		for i, item := range arr {
 			obj := item.(map[string]any)
-			tags := obj["tags"]
-			// With flat extract + single value, the field gets replaced
-			t.Logf("tags = %v (%T)", tags, tags)
-		}
-	})
-
-	t.Run("flat extract set on field without existing array", func(t *testing.T) {
-		json := `[{"val":"x"},{"val":"y"}]`
-		result, err := Set(json, "{flat:val}", "z")
-		if err != nil {
-			t.Fatalf("Set() error: %v", err)
-		}
-		arr := mustParseArray(t, result)
-		for _, item := range arr {
-			obj := item.(map[string]any)
-			val := obj["val"]
-			t.Logf("val = %v (%T)", val, val)
-		}
-	})
-
-	t.Run("flat extract set creates new field on map elements", func(t *testing.T) {
-		json := `[{"k":[]},{"k":[]}]`
-		result, err := Set(json, "{flat:k}", "v")
-		if err != nil {
-			t.Fatalf("Set() error: %v", err)
-		}
-		arr := mustParseArray(t, result)
-		for _, item := range arr {
-			obj, ok := item.(map[string]any)
-			if !ok {
-				t.Fatalf("expected map, got %T", item)
+			if obj["tags"] != "c" {
+				t.Errorf("item[%d].tags = %#v, want \"c\"", i, obj["tags"])
 			}
-			k := obj["k"]
-			t.Logf("k = %v (%T)", k, k)
+		}
+	})
+
+	t.Run("flat extract set on absent field creates it", func(t *testing.T) {
+		json := `[{"val":"x"},{"val":"y"}]`
+		// The path names "tags"; CreatePaths (default on) creates the field.
+		result, err := Set(json, "{flat:tags}", "z")
+		if err != nil {
+			t.Fatalf("Set() error: %v", err)
+		}
+		arr := mustParseArray(t, result)
+		for i, item := range arr {
+			obj := item.(map[string]any)
+			if obj["tags"] != "z" {
+				t.Errorf("item[%d].tags = %#v, want created \"z\"", i, obj["tags"])
+			}
+			if obj["val"] == nil {
+				t.Errorf("item[%d].val unexpectedly removed", i)
+			}
 		}
 	})
 }
@@ -1637,18 +1604,21 @@ func TestOperationSetValueAtPathDispatch(t *testing.T) {
 		assertJSONEqual(t, `{"items":[{"name":"x"},{"name":"x"}]}`, result)
 	})
 
-	t.Run("set root should error", func(t *testing.T) {
-		_, err := Set(`{"a":1}`, "", 42)
-		if err == nil {
-			t.Fatal("expected error for empty path")
+	t.Run("set root replaces document", func(t *testing.T) {
+		// GEN-001: empty and dot paths replace the whole document.
+		result, err := Set(`{"a":1}`, "", 42)
+		if err != nil {
+			t.Fatalf("expected root replacement, got error: %v", err)
 		}
+		assertJSONEqual(t, `42`, result)
 	})
 
-	t.Run("set dot path should error", func(t *testing.T) {
-		_, err := Set(`{"a":1}`, ".", 42)
-		if err == nil {
-			t.Fatal("expected error for dot path")
+	t.Run("set dot path replaces document", func(t *testing.T) {
+		result, err := Set(`{"a":1}`, ".", []string{"x"})
+		if err != nil {
+			t.Fatalf("expected root replacement, got error: %v", err)
 		}
+		assertJSONEqual(t, `["x"]`, result)
 	})
 }
 
@@ -2179,43 +2149,40 @@ func TestSet_ArrayIndex_Boundary(t *testing.T) {
 	})
 }
 
-// TestNavigateToPath_DistributedExtract covers getValueWithDistributedOperation
-// (operation_array.go) and handleDistributedOperation (path.go): an extract
-// segment ({field}) followed by an array index/slice applies the array op to
-// the field extracted from each element of an array.
-func TestNavigateToPath_DistributedExtract(t *testing.T) {
+// TestDistributedExtractViaGet covers the extract-then-array-op behavior
+// (an extract segment ({field}) followed by an array index/slice applies the
+// array op to the field extracted from each element) through the public Get
+// API. The legacy navigateToPath/getValueWithDistributedOperation chain was
+// removed in D-002; the recursive engine owns this behavior now.
+func TestDistributedExtractViaGet(t *testing.T) {
 	p, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer p.Close()
 
-	data := map[string]any{
-		"items": []any{
-			map[string]any{"tags": []any{"a", "b"}},
-			map[string]any{"tags": []any{"c"}},
-		},
-	}
-
 	t.Run("index after extract", func(t *testing.T) {
-		got, err := p.navigateToPath(data, "items.{tags}[0]")
+		got, err := p.Get(`{"items":[{"tags":["a","b"]},{"tags":["c"]}]}`, "items.{tags}[0]")
 		if err != nil {
-			t.Fatalf("navigateToPath: %v", err)
+			t.Fatalf("Get: %v", err)
 		}
 		arr, ok := got.([]any)
 		if !ok {
 			t.Fatalf("got %T, want []any", got)
 		}
-		// first tag from each item -> ["a","c"]
-		if len(arr) != 2 || arr[0] != "a" || arr[1] != "c" {
-			t.Errorf("got %v, want [a c]", arr)
+		// {tags} extracts [["a","b"],["c"]], then [0] takes the FIRST
+		// extracted array — the recursive engine's semantics (see
+		// TestOperationDistributedGet), NOT the removed legacy chain's
+		// per-element indexing.
+		if len(arr) != 2 || arr[0] != "a" || arr[1] != "b" {
+			t.Errorf("got %v, want [a b]", arr)
 		}
 	})
 
 	t.Run("slice after extract", func(t *testing.T) {
-		got, err := p.navigateToPath(data, "items.{tags}[0:1]")
+		got, err := p.Get(`{"items":[{"tags":["a","b"]},{"tags":["c"]}]}`, "items.{tags}[0:1]")
 		if err != nil {
-			t.Fatalf("navigateToPath: %v", err)
+			t.Fatalf("Get: %v", err)
 		}
 		if _, ok := got.([]any); !ok {
 			t.Errorf("got %T, want []any", got)
@@ -2223,49 +2190,45 @@ func TestNavigateToPath_DistributedExtract(t *testing.T) {
 	})
 }
 
-// TestNavigateToPath_JSONPointer_Edges covers navigateJSONPointer (path.go)
-// branches via the dot/pointer navigator: tilde escapes (~0 -> ~, ~1 -> /),
-// the "-" past-end token, and out-of-bounds indices, which resolve to nil
-// (not-found) rather than an error.
-func TestNavigateToPath_JSONPointer_Edges(t *testing.T) {
+// TestJSONPointer_EdgesViaGet covers JSON Pointer edge cases through the
+// public Get API: tilde escapes (~0 -> ~, ~1 -> /), the "-" past-end token,
+// and out-of-bounds indices. The legacy navigateJSONPointer was removed in
+// D-002; the recursive engine owns pointer navigation now. Note the engine's
+// not-found semantics for pointers: "-" and out-of-bounds indices resolve to
+// nil values without error (the legacy navigator returned ErrPathNotFound —
+// a divergence absorbed when the chain was removed).
+func TestJSONPointer_EdgesViaGet(t *testing.T) {
 	p, err := New()
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	defer p.Close()
 
-	tests := []struct {
-		name    string
-		data    any
-		path    string
-		wantErr bool
-		want    any
-	}{
-		{"tilde1 slash escape", map[string]any{"a/b": float64(1)}, "/a~1b", false, float64(1)},
-		{"tilde0 escape", map[string]any{"a~b": float64(2)}, "/a~0b", false, float64(2)},
-		{"dash past-end not found", map[string]any{"a": []any{float64(1), float64(2)}}, "/a/-", true, nil},
-		{"out-of-bounds index not found", map[string]any{"a": []any{float64(1), float64(2)}}, "/a/9", true, nil},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := p.navigateToPath(tt.data, tt.path)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("navigateToPath(%q) expected error, got nil (val=%v)", tt.path, got)
-				}
-				if !errors.Is(err, ErrPathNotFound) {
-					t.Errorf("navigateToPath(%q) err = %q, want ErrPathNotFound", tt.path, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("navigateToPath() unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("navigateToPath(%q) = %v (%T), want %v", tt.path, got, got, tt.want)
-			}
-		})
-	}
+	t.Run("tilde1 slash escape", func(t *testing.T) {
+		got, err := p.Get(`{"a/b":1}`, "/a~1b")
+		if err != nil || got != float64(1) {
+			t.Errorf("Get(/a~1b) = %v, err=%v; want 1", got, err)
+		}
+	})
+	t.Run("tilde0 escape", func(t *testing.T) {
+		got, err := p.Get(`{"a~b":2}`, "/a~0b")
+		if err != nil || got != float64(2) {
+			t.Errorf("Get(/a~0b) = %v, err=%v; want 2", got, err)
+		}
+	})
+	t.Run("dash past-end distributes as nils", func(t *testing.T) {
+		got, err := p.Get(`{"a":[1,2]}`, "/a/-")
+		arr, ok := got.([]any)
+		if err != nil || !ok || len(arr) != 2 || arr[0] != nil || arr[1] != nil {
+			t.Errorf("Get(/a/-) = %v (%T), err=%v; want [nil nil]", got, got, err)
+		}
+	})
+	t.Run("out-of-bounds index is nil without error", func(t *testing.T) {
+		got, err := p.Get(`{"a":[1,2]}`, "/a/9")
+		if err != nil || got != nil {
+			t.Errorf("Get(/a/9) = %v, err=%v; want nil, nil", got, err)
+		}
+	})
 }
 
 // ============================================================================
@@ -2280,11 +2243,6 @@ func TestNavigateToPath_JSONPointer_Edges(t *testing.T) {
 // ============================================================================
 
 const setArrayInput = `[
-  {"name_cn": "万国数据", "name_en": "GDS Holdings Limited", "name_hk": "万国数据", "symbol": "GDS.US"},
-  {"name_cn": "极氪", "name_en": "ZEEKR Intelligent Technology Holding Limited", "name_hk": "極氪", "symbol": "ZK.US"}
-]`
-
-const deleteArrayInput = `[
   {"name_cn": "万国数据", "name_en": "GDS Holdings Limited", "name_hk": "万国数据", "symbol": "GDS.US"},
   {"name_cn": "极氪", "name_en": "ZEEKR Intelligent Technology Holding Limited", "name_hk": "極氪", "symbol": "ZK.US"}
 ]`
@@ -2547,7 +2505,7 @@ func TestDeleteArrayElementScenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := Delete(deleteArrayInput, tt.path)
+			result, err := Delete(setArrayInput, tt.path)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for path %q, got nil; result: %s", tt.path, result)
@@ -2614,8 +2572,16 @@ func TestOperationSet_Extension_Boundary(t *testing.T) {
 		}
 	})
 	t.Run("root_array_oob_no_panic", func(t *testing.T) {
-		// OOB index on a root-level array must not panic (errors or rejects).
-		_, _ = Set(`[1,2]`, "[5]", 99)
+		// OOB index on a root-level array must not panic: it errors, leaving
+		// the input untouched.
+		const in = `[1,2]`
+		out, err := Set(in, "[5]", 99)
+		if err == nil {
+			t.Error("root OOB index: expected error, got nil")
+		}
+		if out != in {
+			t.Errorf("root OOB index: output %s must equal input %s on error", out, in)
+		}
 	})
 }
 
@@ -2646,7 +2612,15 @@ func TestOperationSet_ArrayExtractFlat_Boundary(t *testing.T) {
 		}
 	})
 	t.Run("non_map_item", func(t *testing.T) {
-		// items[0] is a number, not a map -> cannot set {flat:tags}; must not panic.
-		_, _ = Set(`{"items":[42]}`, "items{flat:tags}", "y")
+		// items[0] is a number, not a map: the flat-set cannot apply and the
+		// element is silently skipped (no error, input unchanged).
+		const in = `{"items":[42]}`
+		out, err := Set(in, "items{flat:tags}", "y")
+		if err != nil {
+			t.Errorf("non-map item: unexpected error %v", err)
+		}
+		if out != in {
+			t.Errorf("non-map item: output %s changed from input %s", out, in)
+		}
 	})
 }

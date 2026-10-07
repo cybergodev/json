@@ -231,11 +231,15 @@ func TestProcessRecursivelyWithOptions_Comprehensive(t *testing.T) {
 		}
 	})
 
-	t.Run("Set root should fail", func(t *testing.T) {
+	t.Run("Set root replaces document", func(t *testing.T) {
+		// GEN-001: root Set returns the new value as the result.
 		data := map[string]any{"key": "value"}
-		_, err := rp.ProcessRecursivelyWithOptions(data, "", opSet, "newroot", false)
-		if err == nil {
-			t.Error("Expected error for setting root")
+		result, err := rp.ProcessRecursivelyWithOptions(data, "", opSet, "newroot", false)
+		if err != nil {
+			t.Fatalf("Expected root replacement, got error: %v", err)
+		}
+		if result != "newroot" {
+			t.Errorf("result = %v, want newroot", result)
 		}
 	})
 
@@ -469,6 +473,7 @@ func TestReleaseConfigCoversAllReferenceFields(t *testing.T) {
 		"CustomTypeEncoders":          true,
 		"CustomValidators":            true,
 		"AdditionalDangerousPatterns": true,
+		"AllowedFileDirs":             true,
 		"Hooks":                       true,
 	}
 
@@ -505,37 +510,7 @@ func TestTypedGetters_Defaults(t *testing.T) {
 }
 
 // --- getProcessorWithConfig cache paths ---
-
-func TestGetProcessorWithConfig_CacheBehavior(t *testing.T) {
-	t.Run("cache hit returns same processor", func(t *testing.T) {
-		cfg := DefaultConfig()
-		p1, err := getProcessorWithConfig(cfg)
-		if err != nil {
-			t.Fatalf("getProcessorWithConfig failed: %v", err)
-		}
-		p2, err := getProcessorWithConfig(cfg)
-		if err != nil {
-			t.Fatalf("getProcessorWithConfig failed: %v", err)
-		}
-		if p1 != p2 {
-			t.Error("expected same processor from cache for identical config")
-		}
-	})
-
-	t.Run("different configs return different processors", func(t *testing.T) {
-		cfg1 := DefaultConfig()
-		cfg2 := DefaultConfig()
-		cfg2.EnableCache = false
-		p1, err := getProcessorWithConfig(cfg1)
-		if err != nil {
-			t.Fatalf("getProcessorWithConfig failed: %v", err)
-		}
-		p2, err := getProcessorWithConfig(cfg2)
-		if err != nil {
-			t.Fatalf("getProcessorWithConfig failed: %v", err)
-		}
-		if p1 == p2 {
-			t.Error("expected different processors for different configs")
-		}
-	})
-}
+// The former TestGetProcessorWithConfig_CacheBehavior was removed in the
+// FIX-001 consolidation: both of its subtests (same-config cache hit,
+// different-config miss) are subsumed by TestGetProcessorWithConfig in
+// coverage_test.go.

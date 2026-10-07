@@ -2,9 +2,14 @@ package json
 
 import (
 	"bytes"
+	"context"
 	stdjson "encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -734,5 +739,740 @@ func TestUnify_JSONL_FamilyAcceptsCfg(t *testing.T) {
 	}
 	if err := StreamJSONLParallel(r(data), 2, func(lineNum int, item *IterableValue) error { return nil }, DefaultConfig()); err != nil {
 		t.Errorf("StreamJSONLParallel with cfg: %v", err)
+	}
+}
+
+// ============================================================================
+// [D-005] Phase 2 — mirror completion
+//
+// The JSONL/stream Processor methods now accept the same trailing cfg as
+// their package-level counterparts; p.CompactString / p.ToJSONL /
+// p.ToJSONLString / p.ParseJSONL join the mirror set; NewSchema replaces
+// NewSchemaWithConfig; Encode becomes the canonical encoder (EncodeWithConfig
+// deprecated, decision D1); the void Foreach/ForeachNested forms are
+// deprecated in favor of the *WithError variants (decision D2).
+// ============================================================================
+
+// unifyLine captures one JSONL callback visit for mirror comparisons.
+type unifyLine struct {
+	line int
+	n    int
+}
+
+// collectUnifyStream runs a JSONL stream and records (lineNum, item.n) per visit.
+func collectUnifyStream(t *testing.T, stream func(fn func(lineNum int, item *IterableValue) error) error) []unifyLine {
+	t.Helper()
+	var got []unifyLine
+	if err := stream(func(lineNum int, item *IterableValue) error {
+		got = append(got, unifyLine{line: lineNum, n: item.GetInt("n")})
+		return nil
+	}); err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	return got
+}
+
+// TestUnify_StreamJSONL_PerCallCfg locks the per-call Config semantics on the
+// Processor side: no cfg → baked config (unchanged behavior); supplied cfg →
+// validated replace, not merge.
+func TestUnify_StreamJSONL_PerCallCfg(t *testing.T) {
+	data := "// comment\n" + `{"n":1}` + "\n"
+
+	skip := DefaultConfig()
+	skip.JSONLSkipComments = true
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	// No cfg: baked default config rejects the comment line.
+	if err := p.StreamJSONL(strings.NewReader(data), func(_ int, _ *IterableValue) error { return nil }); err == nil {
+		t.Errorf("default config accepted a comment line; want parse error")
+	}
+
+	// Per-call cfg enables comment skipping on the same processor.
+	count := 0
+	if err := p.StreamJSONL(strings.NewReader(data), func(_ int, item *IterableValue) error {
+		count++
+		if item.GetInt("n") != 1 {
+			t.Errorf("n = %d, want 1", item.GetInt("n"))
+		}
+		return nil
+	}, skip); err != nil {
+		t.Errorf("per-call JSONLSkipComments: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("callback ran %d times, want 1", count)
+	}
+
+	// A per-call cfg REPLACES the baked config — a processor baked with
+	// JSONLSkipComments still rejects the line when the per-call cfg leaves
+	// it off.
+	baked, err := New(skip)
+	if err != nil {
+		t.Fatalf("New(skip): %v", err)
+	}
+	defer baked.Close()
+	plain := DefaultConfig()
+	if err := baked.StreamJSONL(strings.NewReader(data), func(_ int, _ *IterableValue) error { return nil }, plain); err == nil {
+		t.Errorf("per-call cfg failed to replace baked JSONLSkipComments")
+	}
+	// ...and the no-cfg call on the same processor still uses the baked value.
+	if err := baked.StreamJSONL(strings.NewReader(data), func(_ int, _ *IterableValue) error { return nil }); err != nil {
+		t.Errorf("baked JSONLSkipComments not honored on no-cfg call: %v", err)
+	}
+}
+
+// TestUnify_StreamJSONL_Mirror guards json.StreamJSONL(r, fn, cfg) ≡
+// p.StreamJSONL(r, fn, cfg).
+func TestUnify_StreamJSONL_Mirror(t *testing.T) {
+	data := "// c\n" + `{"n":1}` + "\n" + `{"n":2}` + "\n"
+	cfg := DefaultConfig()
+	cfg.JSONLSkipComments = true
+
+	pkg := collectUnifyStream(t, func(fn func(lineNum int, item *IterableValue) error) error {
+		return StreamJSONL(strings.NewReader(data), fn, cfg)
+	})
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	proc := collectUnifyStream(t, func(fn func(lineNum int, item *IterableValue) error) error {
+		return p.StreamJSONL(strings.NewReader(data), fn, cfg)
+	})
+
+	if !reflect.DeepEqual(pkg, proc) {
+		t.Errorf("package and processor StreamJSONL diverged:\n pkg=%v\nproc=%v", pkg, proc)
+	}
+	// Line 1 is the skipped comment; numbering keeps counting skipped lines.
+	want := []unifyLine{{line: 2, n: 1}, {line: 3, n: 2}}
+	if !reflect.DeepEqual(pkg, want) {
+		t.Errorf("StreamJSONL result = %v, want %v", pkg, want)
+	}
+}
+
+// TestUnify_JSONL_Family_ProcessorPerCallCfg exercises cfg forwarding through
+// the combinator methods and the file/parallel engines.
+func TestUnify_JSONL_Family_ProcessorPerCallCfg(t *testing.T) {
+	data := "// c\n" + `{"n":1}` + "\n" + `{"n":2}` + "\n"
+	skip := DefaultConfig()
+	skip.JSONLSkipComments = true
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	vals, err := p.MapJSONL(strings.NewReader(data), func(_ int, item *IterableValue) (any, error) {
+		return item.GetInt("n"), nil
+	}, skip)
+	if err != nil {
+		t.Errorf("p.MapJSONL per-call cfg: %v", err)
+	} else if !reflect.DeepEqual(vals, []any{1, 2}) {
+		t.Errorf("p.MapJSONL = %v, want [1 2]", vals)
+	}
+
+	items, err := p.CollectJSONL(strings.NewReader(data), skip)
+	if err != nil {
+		t.Errorf("p.CollectJSONL per-call cfg: %v", err)
+	} else if len(items) != 2 {
+		t.Errorf("p.CollectJSONL len = %d, want 2", len(items))
+	}
+
+	first, ok, err := p.FirstJSONL(strings.NewReader(data), func(item *IterableValue) bool {
+		return item.GetInt("n") == 2
+	}, skip)
+	if err != nil || !ok || first == nil {
+		t.Errorf("p.FirstJSONL per-call cfg: ok=%v err=%v", ok, err)
+	}
+
+	filtered, err := p.FilterJSONL(strings.NewReader(data), func(item *IterableValue) bool {
+		return item.GetInt("n") == 1
+	}, skip)
+	if err != nil {
+		t.Errorf("p.FilterJSONL per-call cfg: %v", err)
+	} else if len(filtered) != 1 {
+		t.Errorf("p.FilterJSONL len = %d, want 1", len(filtered))
+	}
+
+	sum, err := p.ReduceJSONL(strings.NewReader(data), 0, func(acc any, item *IterableValue) any {
+		return acc.(int) + item.GetInt("n")
+	}, skip)
+	if err != nil {
+		t.Errorf("p.ReduceJSONL per-call cfg: %v", err)
+	} else if sum.(int) != 3 {
+		t.Errorf("p.ReduceJSONL = %v, want 3", sum)
+	}
+
+	if err := p.ForeachJSONL(strings.NewReader(data), func(_ int, _ *IterableValue) error { return nil }, skip); err != nil {
+		t.Errorf("p.ForeachJSONL per-call cfg: %v", err)
+	}
+	if err := p.StreamJSONLChunked(strings.NewReader(data), 1, func(_ []*IterableValue) error { return nil }, skip); err != nil {
+		t.Errorf("p.StreamJSONLChunked per-call cfg: %v", err)
+	}
+
+	// Parallel engine: callback order is nondeterministic, compare as a set.
+	// The callback runs concurrently on worker goroutines, so the collector
+	// needs its own mutex.
+	var mu sync.Mutex
+	var lines []int
+	if err := p.StreamJSONLParallelWithContext(context.Background(), strings.NewReader(data), 2, func(lineNum int, _ *IterableValue) error {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, lineNum)
+		return nil
+	}, skip); err != nil {
+		t.Errorf("p.StreamJSONLParallelWithContext per-call cfg: %v", err)
+	}
+	slices.Sort(lines)
+	if !reflect.DeepEqual(lines, []int{2, 3}) {
+		t.Errorf("parallel lines = %v, want [2 3]", lines)
+	}
+
+	// File-based variant forwards cfg too.
+	path := filepath.Join(t.TempDir(), "unify.jsonl")
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fileCount := 0
+	if err := p.StreamJSONLFile(path, func(_ int, _ *IterableValue) error {
+		fileCount++
+		return nil
+	}, skip); err != nil {
+		t.Errorf("p.StreamJSONLFile per-call cfg: %v", err)
+	}
+	if fileCount != 2 {
+		t.Errorf("p.StreamJSONLFile visits = %d, want 2", fileCount)
+	}
+}
+
+// TestUnify_CompactString_Mirror guards json.CompactString(s, cfg) ≡
+// p.CompactString(s, cfg) ≡ p.Compact(s, cfg) (D-005 Phase 2 alias).
+func TestUnify_CompactString_Mirror(t *testing.T) {
+	src := "{\n  \"name\": \"Alice\",\n  \"age\": 30\n}\n"
+
+	pkg, err := CompactString(src)
+	if err != nil {
+		t.Fatalf("CompactString: %v", err)
+	}
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	alias, err := p.CompactString(src)
+	if err != nil {
+		t.Fatalf("p.CompactString: %v", err)
+	}
+	underlying, err := p.Compact(src)
+	if err != nil {
+		t.Fatalf("p.Compact: %v", err)
+	}
+
+	if pkg != alias || alias != underlying {
+		t.Errorf("CompactString mirror diverged:\n pkg=%s\nalias=%s\nunder=%s", pkg, alias, underlying)
+	}
+	if pkg != `{"name":"Alice","age":30}` {
+		t.Errorf("CompactString = %q", pkg)
+	}
+}
+
+// TestUnify_ToJSONL_Mirror guards json.ToJSONL(data, cfg) ≡ p.ToJSONL(data,
+// cfg), the string mirror, and that the no-cfg method call uses the baked
+// config.
+func TestUnify_ToJSONL_Mirror(t *testing.T) {
+	data := []any{map[string]any{"url": "<script>"}}
+
+	cfg := DefaultConfig()
+	cfg.EscapeHTML = false
+
+	pkgBytes, err := ToJSONL(data, cfg)
+	if err != nil {
+		t.Fatalf("ToJSONL: %v", err)
+	}
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	procBytes, err := p.ToJSONL(data, cfg)
+	if err != nil {
+		t.Fatalf("p.ToJSONL: %v", err)
+	}
+	procStr, err := p.ToJSONLString(data, cfg)
+	if err != nil {
+		t.Fatalf("p.ToJSONLString: %v", err)
+	}
+
+	if !bytes.Equal(pkgBytes, procBytes) {
+		t.Errorf("ToJSONL mirror diverged:\n pkg=%s\nproc=%s", pkgBytes, procBytes)
+	}
+	if string(procBytes) != procStr {
+		t.Errorf("p.ToJSONLString = %q, want %q", procStr, procBytes)
+	}
+	if !strings.Contains(procStr, "<script>") {
+		t.Errorf("EscapeHTML=false not honored: %q", procStr)
+	}
+
+	// No-cfg method call uses the processor's baked config.
+	baked, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New(cfg): %v", err)
+	}
+	defer baked.Close()
+	bakedOut, err := baked.ToJSONLString(data)
+	if err != nil {
+		t.Fatalf("baked.ToJSONLString: %v", err)
+	}
+	if bakedOut != procStr {
+		t.Errorf("baked config not honored: %q != %q", bakedOut, procStr)
+	}
+}
+
+// TestUnify_ToJSONL_EmptyData_NoProcessorInteraction locks the re-review fix:
+// empty input returns before any processor interaction (the pre-Phase-2
+// package contract), so even a closed processor yields an empty result, not
+// an error.
+func TestUnify_ToJSONL_EmptyData_NoProcessorInteraction(t *testing.T) {
+	for _, data := range [][]any{nil, {}} {
+		got, err := ToJSONL(data)
+		if err != nil || len(got) != 0 {
+			t.Errorf("ToJSONL(%#v) = (%d bytes, %v), want (0, nil)", data, len(got), err)
+		}
+	}
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	got, err := p.ToJSONL(nil)
+	if err != nil || len(got) != 0 {
+		t.Errorf("closed p.ToJSONL(nil) = (%d bytes, %v), want (0, nil)", len(got), err)
+	}
+}
+
+// TestUnify_StreamJSONLChunked_PerCallCfgEffect verifies the chunked engine
+// actually applies a per-call Config (not just accepts the parameter).
+func TestUnify_StreamJSONLChunked_PerCallCfgEffect(t *testing.T) {
+	data := "// c\n" + `{"n":1}` + "\n" + `{"n":2}` + "\n"
+	skip := DefaultConfig()
+	skip.JSONLSkipComments = true
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	// Without cfg the comment line fails to parse.
+	if err := p.StreamJSONLChunked(strings.NewReader(data), 10, func(_ []*IterableValue) error {
+		return nil
+	}); err == nil {
+		t.Errorf("chunked engine accepted a comment line without cfg")
+	}
+
+	items := 0
+	if err := p.StreamJSONLChunked(strings.NewReader(data), 1, func(chunk []*IterableValue) error {
+		items += len(chunk)
+		return nil
+	}, skip); err != nil {
+		t.Errorf("chunked per-call cfg: %v", err)
+	}
+	if items != 2 {
+		t.Errorf("chunked per-call cfg visited %d items, want 2", items)
+	}
+}
+
+// TestUnify_ParseJSONL_Mirror guards json.ParseJSONL(data, cfg) ≡
+// p.ParseJSONL(data, cfg).
+func TestUnify_ParseJSONL_Mirror(t *testing.T) {
+	data := []byte("// c\n" + `{"n":1}` + "\n")
+	skip := DefaultConfig()
+	skip.JSONLSkipComments = true
+
+	pkg, err := ParseJSONL(data, skip)
+	if err != nil {
+		t.Fatalf("ParseJSONL: %v", err)
+	}
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	proc, err := p.ParseJSONL(data, skip)
+	if err != nil {
+		t.Fatalf("p.ParseJSONL: %v", err)
+	}
+
+	if !reflect.DeepEqual(pkg, proc) {
+		t.Errorf("ParseJSONL mirror diverged:\n pkg=%v\nproc=%v", pkg, proc)
+	}
+	if len(proc) != 1 {
+		t.Errorf("p.ParseJSONL len = %d, want 1", len(proc))
+	}
+}
+
+// TestUnify_NewSchema_ReplacesWithConfig guards that NewSchema(cfg) and the
+// deprecated NewSchemaWithConfig(cfg) behave identically.
+func TestUnify_NewSchema_ReplacesWithConfig(t *testing.T) {
+	newSchema := func(ctor func(SchemaConfig) *Schema) *Schema {
+		cfg := DefaultSchemaConfig()
+		cfg.Type = "object"
+		cfg.Required = []string{"name"}
+		return ctor(cfg)
+	}
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	for name, ctor := range map[string]func(SchemaConfig) *Schema{
+		"NewSchema":           NewSchema,
+		"NewSchemaWithConfig": NewSchemaWithConfig,
+	} {
+		violations, err := p.ValidateSchema(`{"age": 30}`, newSchema(ctor), DefaultConfig())
+		if err != nil {
+			t.Fatalf("%s: ValidateSchema: %v", name, err)
+		}
+		if len(violations) == 0 {
+			t.Errorf("%s: expected required-field violation", name)
+		}
+	}
+}
+
+// TestUnify_Encode_Canonical locks decision D1: Encode is canonical and
+// EncodeWithConfig (now deprecated) stays byte-identical on both layers.
+func TestUnify_Encode_Canonical(t *testing.T) {
+	v := unifyUser{Name: "Alice", Age: 30, Active: true}
+
+	pkgCanon, err := Encode(v, PrettyConfig())
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	pkgDeprecated, err := EncodeWithConfig(v, PrettyConfig())
+	if err != nil {
+		t.Fatalf("EncodeWithConfig: %v", err)
+	}
+
+	p, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	procCanon, err := p.Encode(v, PrettyConfig())
+	if err != nil {
+		t.Fatalf("p.Encode: %v", err)
+	}
+	procDeprecated, err := p.EncodeWithConfig(v, PrettyConfig())
+	if err != nil {
+		t.Fatalf("p.EncodeWithConfig: %v", err)
+	}
+
+	if pkgCanon != pkgDeprecated || pkgDeprecated != procCanon || procCanon != procDeprecated {
+		t.Errorf("encode forms diverged:\n pkg=%s\npkgDep=%s\nproc=%s\nprocDep=%s",
+			pkgCanon, pkgDeprecated, procCanon, procDeprecated)
+	}
+
+	// No-cfg Encode stays the compact default.
+	compact, err := Encode(v)
+	if err != nil {
+		t.Fatalf("Encode (no cfg): %v", err)
+	}
+	if compact == pkgCanon || !strings.Contains(compact, `"Name":"Alice"`) && !strings.Contains(compact, `"name":"Alice"`) {
+		t.Errorf("no-cfg Encode output unexpected: %s", compact)
+	}
+}
+
+// TestUnify_ForeachDeprecated_VariantsSurfaceErrors locks decision D2: the
+// *WithError replacements visit the same items and, unlike the void forms,
+// surface failures.
+func TestUnify_ForeachDeprecated_VariantsSurfaceErrors(t *testing.T) {
+	valid := `{"users":[{"n":1},{"n":2}]}`
+	invalid := `{"users":[}`
+
+	// Same visit count as the deprecated void form: Foreach iterates the root
+	// container, so the exact replacement is ForeachWithError(jsonStr, ".", fn).
+	voidCount := 0
+	Foreach(valid, func(_ any, _ *IterableValue) { voidCount++ }) //nolint:staticcheck // deprecated form under test
+
+	errCount := 0
+	if err := ForeachWithError(valid, ".", func(_ any, _ *IterableValue) error {
+		errCount++
+		return nil
+	}); err != nil {
+		t.Fatalf("ForeachWithError on valid input: %v", err)
+	}
+	if errCount != voidCount {
+		t.Errorf("visit counts diverged: void=%d withError=%d", voidCount, errCount)
+	}
+
+	// Path-directed iteration reaches into the array.
+	pathCount := 0
+	if err := ForeachWithError(valid, "users", func(_ any, _ *IterableValue) error {
+		pathCount++
+		return nil
+	}); err != nil {
+		t.Fatalf("ForeachWithError(users): %v", err)
+	}
+	if pathCount != 2 {
+		t.Errorf("ForeachWithError(users) visits = %d, want 2", pathCount)
+	}
+
+	// Errors surface; the void form cannot report them.
+	if err := ForeachWithError(invalid, "users", func(_ any, _ *IterableValue) error { return nil }); err == nil {
+		t.Errorf("ForeachWithError accepted invalid JSON")
+	}
+	if err := ForeachNestedWithError(invalid, func(_ any, _ *IterableValue) error { return nil }); err == nil {
+		t.Errorf("ForeachNestedWithError accepted invalid JSON")
+	}
+
+	nestedCount := 0
+	if err := ForeachNestedWithError(valid, func(_ any, _ *IterableValue) error {
+		nestedCount++
+		return nil
+	}); err != nil {
+		t.Fatalf("ForeachNestedWithError: %v", err)
+	}
+	if nestedCount == 0 {
+		t.Errorf("ForeachNestedWithError visited nothing")
+	}
+}
+
+// ============================================================================
+// [D-006] Dual-layer consistency — the no-cfg path honors the processor's
+// baked configuration, making json.Foo(args, cfg) and New(cfg).Foo(args)
+// interchangeable for option-derived behavior (MergeMode, encoding options,
+// MaxBatchSize). Previously these read the default-config singleton, so a
+// custom-built processor silently ignored its own settings — the exact
+// divergence class the D-006 audit flagged (P1/P2/P5).
+// ============================================================================
+
+func TestUnify_D006_MergeJSON_BakedMergeMode(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MergeMode = MergeIntersection
+
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	a := `{"a":1,"x":1}`
+	b := `{"b":2,"x":2}`
+
+	method, err := p.MergeJSON(a, b)
+	if err != nil {
+		t.Fatalf("p.MergeJSON(no cfg): %v", err)
+	}
+	pkg, err := MergeJSON(a, b, cfg)
+	if err != nil {
+		t.Fatalf("package MergeJSON(cfg): %v", err)
+	}
+	if !reflect.DeepEqual(unifyToMap(t, method), unifyToMap(t, pkg)) {
+		t.Errorf("baked MergeMode ignored by the method:\n method=%s\n pkg   =%s", method, pkg)
+	}
+	// Intersection keeps only the shared key.
+	want := map[string]any{"x": 2.0}
+	if !reflect.DeepEqual(unifyToMap(t, method), want) {
+		t.Errorf("intersection result wrong:\n got =%v\n want=%v", unifyToMap(t, method), want)
+	}
+
+	// MergeMany folds through MergeJSON, so the fix propagates.
+	mMethod, err := p.MergeMany([]string{a, b})
+	if err != nil {
+		t.Fatalf("p.MergeMany(no cfg): %v", err)
+	}
+	mPkg, err := MergeMany([]string{a, b}, cfg)
+	if err != nil {
+		t.Fatalf("package MergeMany(cfg): %v", err)
+	}
+	if !reflect.DeepEqual(unifyToMap(t, mMethod), unifyToMap(t, mPkg)) {
+		t.Errorf("baked MergeMode ignored by MergeMany:\n method=%s\n pkg   =%s", mMethod, mPkg)
+	}
+}
+
+func TestUnify_D006_Encode_BakedEncodingOptions(t *testing.T) {
+	value := map[string]any{"k": 1, "n": map[string]any{"z": true}}
+
+	p, err := New(PrettyConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	method, err := p.Encode(value)
+	if err != nil {
+		t.Fatalf("p.Encode(no cfg): %v", err)
+	}
+	pkg, err := Encode(value, PrettyConfig())
+	if err != nil {
+		t.Fatalf("package Encode(cfg): %v", err)
+	}
+	if method != pkg {
+		t.Errorf("baked encoding options ignored by Encode:\n method=%q\n pkg   =%q", method, pkg)
+	}
+	if !strings.Contains(method, "\n") {
+		t.Errorf("Encode on a Pretty-baked processor produced compact output: %q", method)
+	}
+
+	// The rest of the Encode family resolves through Encode, so the same
+	// parity must hold.
+	if m, err := p.EncodeStream([]any{value}); err != nil || !strings.Contains(m, "\n") {
+		t.Errorf("EncodeStream ignored baked Pretty: %q (err=%v)", m, err)
+	}
+	if m, err := p.EncodeBatch(map[string]any{"k": 1}); err != nil || !strings.Contains(m, "\n") {
+		t.Errorf("EncodeBatch ignored baked Pretty: %q (err=%v)", m, err)
+	}
+	if m, err := p.EncodePretty(value); err != nil || m != pkg {
+		t.Errorf("EncodePretty diverged from package Encode(cfg):\n method=%q\n pkg   =%q (err=%v)", m, pkg, err)
+	}
+
+	// Baked Indent is honored by EncodePretty (was forced to PrettyConfig's).
+	tabbed := PrettyConfig()
+	tabbed.Indent = "\t"
+	p2, err := New(tabbed)
+	if err != nil {
+		t.Fatalf("New(tabbed): %v", err)
+	}
+	defer p2.Close()
+	if m, err := p2.EncodePretty(value); err != nil || !strings.Contains(m, "\t") {
+		t.Errorf("EncodePretty ignored baked Indent: %q (err=%v)", m, err)
+	}
+}
+
+func TestUnify_D006_ProcessBatch_BakedMaxBatchSize(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxBatchSize = 1
+
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	ops := []BatchOperation{
+		{ID: "1", Type: "validate", JSONStr: "1"},
+		{ID: "2", Type: "validate", JSONStr: "2"},
+	}
+	if _, err := p.ProcessBatch(ops); err == nil {
+		t.Error("baked MaxBatchSize not enforced on Processor.ProcessBatch")
+	}
+	// Parity: the package level enforces the same limit via cfg.
+	if _, err := ProcessBatch(ops, cfg); err == nil {
+		t.Error("per-call MaxBatchSize not enforced on package ProcessBatch")
+	}
+	// A single op still passes on both layers.
+	if _, err := p.ProcessBatch(ops[:1]); err != nil {
+		t.Errorf("ProcessBatch(1 op) rejected under MaxBatchSize=1: %v", err)
+	}
+}
+
+func TestUnify_D006_SetMultiple_BakedMaxBatchSize(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxBatchSize = 1
+
+	p, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	updates := map[string]any{"a": 1, "b": 2}
+	if _, err := p.SetMultiple(`{}`, updates); err == nil {
+		t.Error("baked MaxBatchSize not enforced on Processor.SetMultiple")
+	}
+	if _, err := p.SetMultiple(`{}`, map[string]any{"a": 1}); err != nil {
+		t.Errorf("SetMultiple(1 update) rejected under MaxBatchSize=1: %v", err)
+	}
+}
+
+// ============================================================================
+// [D-007] Regression round — locks the two directions of the no-cfg/cfg rule
+// separately, so neither the baked fallback nor the replace semantics can
+// silently drift:
+//   1. Per-call cfg REPLACES the baked setting (including loosening it).
+//   2. EncodePretty does not force Pretty on an explicit cfg (historical
+//      contract; Pretty is forced only on the no-cfg path).
+// ============================================================================
+
+func TestUnify_D007_CfgReplacesBakedMergeMode(t *testing.T) {
+	// Intersection baked; a per-call union cfg must replace it.
+	baked := DefaultConfig()
+	baked.MergeMode = MergeIntersection
+	p, err := New(baked)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	perCall := DefaultConfig() // MergeUnion
+	got, err := p.MergeJSON(`{"a":1,"x":1}`, `{"b":2,"x":2}`, perCall)
+	if err != nil {
+		t.Fatalf("p.MergeJSON(cfg): %v", err)
+	}
+	want := map[string]any{"a": 1.0, "b": 2.0, "x": 2.0}
+	if !reflect.DeepEqual(unifyToMap(t, got), want) {
+		t.Errorf("per-call cfg did not replace baked MergeMode:\n got =%v\n want=%v", unifyToMap(t, got), want)
+	}
+}
+
+func TestUnify_D007_CfgReplacesBakedMaxBatchSize(t *testing.T) {
+	// Loose baked limit (default), tight per-call cfg: the cfg must win.
+	p, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	tight := DefaultConfig()
+	tight.MaxBatchSize = 1
+	ops := []BatchOperation{
+		{ID: "1", Type: "validate", JSONStr: "1"},
+		{ID: "2", Type: "validate", JSONStr: "2"},
+	}
+	if _, err := p.ProcessBatch(ops, tight); err == nil {
+		t.Error("per-call MaxBatchSize=1 not enforced over loose baked limit")
+	}
+	if _, err := p.SetMultiple(`{}`, map[string]any{"a": 1, "b": 2}, tight); err == nil {
+		t.Error("per-call MaxBatchSize=1 not enforced by SetMultiple over loose baked limit")
+	}
+}
+
+func TestUnify_D007_EncodePretty_DoesNotForcePrettyOnCfg(t *testing.T) {
+	p, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+
+	compact := DefaultConfig()
+	compact.Pretty = false
+	got, err := p.EncodePretty(map[string]any{"k": 1}, compact)
+	if err != nil {
+		t.Fatalf("p.EncodePretty(compact cfg): %v", err)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("EncodePretty forced Pretty on an explicit cfg (historical passthrough contract): %q", got)
+	}
+
+	// No-cfg still pretty on both layers.
+	if got, err := p.EncodePretty(map[string]any{"k": 1}); err != nil || !strings.Contains(got, "\n") {
+		t.Errorf("EncodePretty(no cfg) not pretty: %q (err=%v)", got, err)
+	}
+	if got, err := EncodePretty(map[string]any{"k": 1}); err != nil || !strings.Contains(got, "\n") {
+		t.Errorf("package EncodePretty(no cfg) not pretty: %q (err=%v)", got, err)
 	}
 }

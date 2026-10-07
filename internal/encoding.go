@@ -8,7 +8,10 @@ import (
 	"unsafe"
 )
 
-// MarshalJSON marshals a value to JSON string with optional pretty printing
+// MarshalJSON marshals a value to JSON string with optional pretty printing.
+//
+// NOTE (D-002/R8 M5): no production caller — MarshalJSONToBytes is the live
+// path; retained for tests/future use.
 func MarshalJSON(value any, pretty bool, prefix, indent string) (string, error) {
 	resultBytes, err := MarshalJSONToBytes(value, pretty, prefix, indent)
 	if err != nil {

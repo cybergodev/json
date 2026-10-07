@@ -1,11 +1,9 @@
 package internal
 
 import (
-	"container/list"
 	"context"
 	"log/slog"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -79,21 +77,45 @@ type CacheManager struct {
 	// Memory management
 	maxMemory     int64 // Maximum memory for cache
 	highWatermark int64 // Memory threshold for proactive eviction (80% of max)
-	// Lifecycle management for cleanup goroutines
+	// Lifecycle management for cleanup goroutines.
+	// ctx is an OWNED lifecycle context (created in NewCacheManager, cancelled
+	// in Close) used solely to stop this cache's background cleanup workers —
+	// not a request context stored in a struct (which would be a leak vector).
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 	wg         sync.WaitGroup
 	closed     atomic.Bool // prevents wg.Add after Close
 }
 
+// CacheKey is the composite key for result-cache entries: which operation
+// produced the entry, on which source document (FNV-1a of the raw JSON), at
+// which path, under which configuration. OptHash 0 denotes the default
+// configuration.
+//
+// PERFORMANCE (P-001): a comparable struct key replaces the previous
+// "op:hash16:path:opts" string. Constructing that string allocated on every
+// cache-enabled operation (profiling showed ~12% of all allocated objects on
+// the Get path), and the cache then re-hashed the full string just to pick a
+// shard. The struct is built without allocation and shards off JSONHash.
+type CacheKey struct {
+	Op       string
+	JSONHash uint64
+	Path     string
+	OptHash  uint64
+}
+
 // cacheShard represents a single cache shard with LRU eviction
 type cacheShard struct {
-	items       map[string]*list.Element
-	evictList   *list.List
-	mu          sync.RWMutex
-	size        int64
-	maxSize     int
-	lastCleanup int64
+	items map[CacheKey]*lruEntry
+	// lruHead/lruTail are the ends of the shard's intrusive LRU list
+	// (most-recently-used at head, eviction candidates at tail). They replace
+	// container/list, whose per-insert *list.Element allocation was ~12% of
+	// allocated objects on the Get path (P-001 profile).
+	lruHead, lruTail *lruEntry
+	mu               sync.RWMutex
+	size             int64
+	maxSize          int
+	lastCleanup      int64
 	// PERFORMANCE: Counter for probabilistic frequency decay
 	// Instead of decaying on every eviction, we decay every N evictions
 	evictionsSinceDecay int64
@@ -101,8 +123,11 @@ type cacheShard struct {
 
 // lruEntry represents an entry in the LRU cache
 type lruEntry struct {
-	key        string
-	value      any
+	key   CacheKey
+	value any
+	// prev/next are the intrusive LRU links; both must be nil whenever the
+	// entry is not linked into a shard list (in particular when pooled).
+	prev, next *lruEntry
 	timestamp  int64
 	accessTime int64
 	size       int32
@@ -110,11 +135,49 @@ type lruEntry struct {
 	freq       uint8 // Access frequency counter (0-255) for LFU-style eviction
 }
 
+// linkFront inserts e at the head of the shard's LRU list.
+func (s *cacheShard) linkFront(e *lruEntry) {
+	e.prev = nil
+	e.next = s.lruHead
+	if s.lruHead != nil {
+		s.lruHead.prev = e
+	}
+	s.lruHead = e
+	if s.lruTail == nil {
+		s.lruTail = e
+	}
+}
+
+// unlink removes e from the shard's LRU list.
+func (s *cacheShard) unlink(e *lruEntry) {
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		s.lruHead = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		s.lruTail = e.prev
+	}
+	e.prev, e.next = nil, nil
+}
+
+// moveToFront relinks an already-linked entry at the head of the LRU list.
+func (s *cacheShard) moveToFront(e *lruEntry) {
+	if s.lruHead == e {
+		return
+	}
+	s.unlink(e)
+	s.linkFront(e)
+}
+
 // resetEntry resets all fields of an lruEntry for pool reuse
 // This centralizes the reset logic to avoid missing fields
 func (e *lruEntry) reset() {
-	e.key = ""
+	e.key = CacheKey{}
 	e.value = nil
+	e.prev, e.next = nil, nil
 	e.timestamp = 0
 	e.accessTime = 0
 	e.size = 0
@@ -194,9 +257,8 @@ func (cm *CacheManager) Close() {
 // newCacheShard creates a new cache shard
 func newCacheShard(maxSize int) *cacheShard {
 	return &cacheShard{
-		items:     make(map[string]*list.Element, maxSize),
-		evictList: list.New(),
-		maxSize:   maxSize,
+		items:   make(map[CacheKey]*lruEntry, maxSize),
+		maxSize: maxSize,
 	}
 }
 
@@ -241,26 +303,17 @@ func nextPowerOf2(n int) int {
 // - Only upgrades to Lock when TTL expiration needs cleanup
 // - LRU position update is deferred to reduce write lock frequency
 // FIX: Properly handles TOCTOU race condition by re-validating entry after lock upgrade
-func (cm *CacheManager) Get(key string) (any, bool) {
+func (cm *CacheManager) Get(key CacheKey) (any, bool) {
 	if !cm.cacheConfig.enableCache {
 		atomic.AddInt64(&cm.missCount, 1)
 		return nil, false
-	}
-
-	// SECURITY: Normalize long keys identically to Set. Set truncates the key
-	// before sharding and stores the entry under the truncated key, so Get must
-	// apply the same truncation for BOTH shard selection and the items-map lookup.
-	// Without this, keys longer than MaxCacheKeyLength are stored in one shard but
-	// looked up in another — a write-only leak where the entry is never found.
-	if len(key) > MaxCacheKeyLength {
-		key = truncateCacheKey(key)
 	}
 
 	shard := cm.getShard(key)
 
 	// Fast path: read lock only
 	shard.mu.RLock()
-	element, exists := shard.items[key]
+	entry, exists := shard.items[key]
 	if !exists {
 		shard.mu.RUnlock()
 		atomic.AddInt64(&cm.missCount, 1)
@@ -278,8 +331,6 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 		ttlNanos = int64(cm.cacheConfig.cacheTTL.Nanoseconds())
 	}
 
-	entry := element.Value.(*lruEntry)
-
 	// Check TTL while holding read lock
 	if ttlNanos > 0 && now-entry.timestamp > ttlNanos {
 		shard.mu.RUnlock()
@@ -287,15 +338,14 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 		shard.mu.Lock()
 		// FIX: Double-check after acquiring write lock (entry might have been updated)
 		// This handles the TOCTOU race condition properly
-		element, exists = shard.items[key]
+		entry, exists = shard.items[key]
 		if exists {
-			entry = element.Value.(*lruEntry)
 			// FIX: Re-check TTL with fresh timestamp after acquiring write lock
 			// Another goroutine might have updated this entry
 			if now-entry.timestamp > ttlNanos {
 				// Still expired - delete it
 				delete(shard.items, entry.key)
-				shard.evictList.Remove(element)
+				shard.unlink(entry)
 				shard.size--
 				atomic.AddInt64(&cm.entryCount, -1)
 				cm.decMemoryUsage(int64(entry.size))
@@ -317,7 +367,7 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 			if entry.freq < 255 {
 				entry.freq++
 			}
-			shard.evictList.MoveToFront(element)
+			shard.moveToFront(entry)
 			shard.mu.Unlock()
 
 			atomic.AddInt64(&cm.hitCount, 1)
@@ -337,7 +387,7 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 
 	// PERFORMANCE: Adaptive LRU update intervals based on hit count.
 	//
-	// Profiling (P-001) showed the periodic MoveToFront write lock was the
+	// Profiling (P-001) showed the periodic moveToFront write lock was the
 	// dominant source of reader stalls under concurrent hot-key access: every
 	// RWMutex writer arrival forces in-flight/blocked readers through the
 	// kernel semaphore (runtime.lock2/stdlib2 on Windows), which accounted for
@@ -364,14 +414,13 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 	if hits%updateInterval == 1 {
 		shard.mu.Lock()
 		// Verify entry still exists (could have been deleted between unlock and lock)
-		if element, exists := shard.items[key]; exists {
-			entry := element.Value.(*lruEntry)
+		if entry, exists := shard.items[key]; exists {
 			entry.accessTime = now
 			// Increment frequency for LFU-style eviction (cap at 255)
 			if entry.freq < 255 {
 				entry.freq++
 			}
-			shard.evictList.MoveToFront(element)
+			shard.moveToFront(entry)
 		}
 		shard.mu.Unlock()
 	}
@@ -381,15 +430,9 @@ func (cm *CacheManager) Get(key string) (any, bool) {
 }
 
 // Set stores a value in the cache
-func (cm *CacheManager) Set(key string, value any) {
+func (cm *CacheManager) Set(key CacheKey, value any) {
 	if !cm.cacheConfig.enableCache {
 		return
-	}
-
-	// SECURITY: Handle long cache keys safely to prevent collisions
-	// Instead of simple truncation, use hash-based truncation to avoid collisions
-	if len(key) > MaxCacheKeyLength {
-		key = truncateCacheKey(key)
 	}
 
 	shard := cm.getShard(key)
@@ -415,8 +458,7 @@ func (cm *CacheManager) Set(key string, value any) {
 	}
 
 	// Store entry - OPTIMIZED: Update existing entry in-place to avoid pool churn
-	if oldElement, exists := shard.items[key]; exists {
-		oldEntry := oldElement.Value.(*lruEntry)
+	if oldEntry, exists := shard.items[key]; exists {
 		atomic.AddInt64(&cm.memoryUsage, int64(entrySize)-int64(oldEntry.size))
 		// Clamp to prevent negative values from estimation inaccuracies
 		if atomic.LoadInt64(&cm.memoryUsage) < 0 {
@@ -429,7 +471,7 @@ func (cm *CacheManager) Set(key string, value any) {
 		oldEntry.size = int32(entrySize)
 		oldEntry.hits = 1
 		oldEntry.freq = 0 // Reset frequency for new entry
-		shard.evictList.MoveToFront(oldElement)
+		shard.moveToFront(oldEntry)
 	} else {
 		// Only allocate new entry for new keys
 		entry := cm.entryPool.Get().(*lruEntry)
@@ -441,8 +483,8 @@ func (cm *CacheManager) Set(key string, value any) {
 		entry.hits = 1
 		entry.freq = 0
 
-		element := shard.evictList.PushFront(entry)
-		shard.items[key] = element
+		shard.linkFront(entry)
+		shard.items[key] = entry
 		shard.size++
 		atomic.AddInt64(&cm.entryCount, 1)
 		atomic.AddInt64(&cm.memoryUsage, int64(entrySize))
@@ -496,27 +538,19 @@ func (cm *CacheManager) Set(key string, value any) {
 }
 
 // Delete removes a value from the cache
-func (cm *CacheManager) Delete(key string) {
+func (cm *CacheManager) Delete(key CacheKey) {
 	if !cm.cacheConfig.enableCache {
 		return
-	}
-
-	// SECURITY: Normalize long keys identically to Set/Get (see Get's comment
-	// for the shard-mismatch rationale). The entry lives under the truncated
-	// key, so deleting the raw key would miss it and leave a stale entry.
-	if len(key) > MaxCacheKeyLength {
-		key = truncateCacheKey(key)
 	}
 
 	shard := cm.getShard(key)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	if element, exists := shard.items[key]; exists {
-		entry := element.Value.(*lruEntry)
+	if entry, exists := shard.items[key]; exists {
 		cm.decMemoryUsage(int64(entry.size))
 		delete(shard.items, key)
-		shard.evictList.Remove(element)
+		shard.unlink(entry)
 		shard.size--
 		atomic.AddInt64(&cm.entryCount, -1)
 
@@ -538,10 +572,17 @@ func (cm *CacheManager) EntryCount() int64 {
 	return atomic.LoadInt64(&cm.entryCount)
 }
 
-// DeleteByPrefix removes all cache entries whose keys contain the given prefix.
-// Used for invalidating all entries related to a specific JSON input hash.
-func (cm *CacheManager) DeleteByPrefix(prefix string) {
-	if !cm.cacheConfig.enableCache || prefix == "" {
+// DeleteByJSONHash removes every cache entry produced from the document with
+// the given FNV-1a hash (all ops, paths, and configs). Used by mutation
+// operations to invalidate everything derived from a JSON input.
+//
+// P-001: replaces DeleteByPrefix(hexString), which formatted the hash to hex
+// and substring-matched it against every key — besides the formatting cost,
+// a key whose PATH portion happened to contain the 16 hex digits of another
+// document's hash was falsely invalidated. Exact field equality has neither
+// cost nor false positive.
+func (cm *CacheManager) DeleteByJSONHash(jsonHash uint64) {
+	if !cm.cacheConfig.enableCache {
 		return
 	}
 
@@ -557,24 +598,18 @@ func (cm *CacheManager) DeleteByPrefix(prefix string) {
 
 	for _, shard := range cm.shards {
 		shard.mu.Lock()
-		var toDelete []string
-		for key := range shard.items {
-			if strings.Contains(key, prefix) {
-				toDelete = append(toDelete, key)
+		for key, entry := range shard.items {
+			if key.JSONHash != jsonHash {
+				continue
 			}
-		}
-		for _, key := range toDelete {
-			if element, exists := shard.items[key]; exists {
-				entry := element.Value.(*lruEntry)
-				cm.decMemoryUsage(int64(entry.size))
-				delete(shard.items, key)
-				shard.evictList.Remove(element)
-				shard.size--
-				atomic.AddInt64(&cm.entryCount, -1)
-				if cm.entryPool != nil {
-					entry.reset()
-					cm.entryPool.Put(entry)
-				}
+			cm.decMemoryUsage(int64(entry.size))
+			delete(shard.items, key)
+			shard.unlink(entry)
+			shard.size--
+			atomic.AddInt64(&cm.entryCount, -1)
+			if cm.entryPool != nil {
+				entry.reset()
+				cm.entryPool.Put(entry)
 			}
 		}
 		shard.mu.Unlock()
@@ -588,15 +623,13 @@ func (cm *CacheManager) Clear() {
 		shard.mu.Lock()
 		// Return all entries to pool before discarding maps
 		if cm.entryPool != nil {
-			for _, element := range shard.items {
-				if entry, ok := element.Value.(*lruEntry); ok {
-					entry.reset()
-					cm.entryPool.Put(entry)
-				}
+			for _, entry := range shard.items {
+				entry.reset()
+				cm.entryPool.Put(entry)
 			}
 		}
-		shard.items = make(map[string]*list.Element, shard.maxSize)
-		shard.evictList = list.New()
+		shard.items = make(map[CacheKey]*lruEntry, shard.maxSize)
+		shard.lruHead, shard.lruTail = nil, nil
 		shard.size = 0
 		shard.mu.Unlock()
 	}
@@ -700,45 +733,44 @@ func (cm *CacheManager) GetStats() CacheStats {
 	}
 }
 
-// getShard returns the appropriate shard for a key
-func (cm *CacheManager) getShard(key string) *cacheShard {
-	hash := cm.hashKey(key)
-	return cm.shards[hash&cm.shardMask]
-}
-
-// hashKey generates a hash for the key using FNV-1a (no allocations)
-func (cm *CacheManager) hashKey(key string) uint64 {
-	return HashStringFNV1a(key)
+// getShard returns the appropriate shard for a key.
+//
+// PERFORMANCE (P-001): shards off the key's well-distributed JSONHash mixed
+// with the op tag and config hash. The previous string-key design re-hashed
+// the entire composed key with FNV-1a on every Get/Set/Delete just to pick a
+// shard; JSONHash is already uniform, so only the short op string is hashed.
+func (cm *CacheManager) getShard(key CacheKey) *cacheShard {
+	h := key.JSONHash
+	h ^= key.OptHash * 0x9E3779B97F4A7C15
+	h ^= HashStringFNV1a(key.Op)
+	return cm.shards[h&cm.shardMask]
 }
 
 // evictLRU evicts entries using frequency-aware LRU strategy
 // PERFORMANCE: Considers access frequency to keep hot entries in cache
 // OPTIMIZED: Uses probabilistic frequency decay instead of full traversal on every eviction
 func (cm *CacheManager) evictLRU(shard *cacheShard) {
-	element := shard.evictList.Back()
-	if element == nil {
+	entry := shard.lruTail
+	if entry == nil {
 		return
 	}
 
 	// Find the best candidate for eviction among the last 5 entries
 	// This provides LFU-style behavior while keeping overhead low
 	candidates := 0
-	bestCandidate := element
-	bestEntry := element.Value.(*lruEntry)
+	bestCandidate := entry
 
-	for e := element; e != nil && candidates < 5; e = e.Prev() {
-		entry := e.Value.(*lruEntry)
+	for e := entry; e != nil && candidates < 5; e = e.prev {
 		// Prefer evicting entries with lower frequency, or lower hits if frequency is equal
-		if entry.freq < bestEntry.freq || (entry.freq == bestEntry.freq && entry.hits < bestEntry.hits) {
+		if e.freq < bestCandidate.freq || (e.freq == bestCandidate.freq && e.hits < bestCandidate.hits) {
 			bestCandidate = e
-			bestEntry = entry
 		}
 		candidates++
 	}
 
-	entry := bestCandidate.Value.(*lruEntry)
+	entry = bestCandidate
 	delete(shard.items, entry.key)
-	shard.evictList.Remove(bestCandidate)
+	shard.unlink(entry)
 	shard.size--
 	atomic.AddInt64(&cm.entryCount, -1)
 	cm.decMemoryUsage(int64(entry.size))
@@ -750,9 +782,9 @@ func (cm *CacheManager) evictLRU(shard *cacheShard) {
 	shard.evictionsSinceDecay++
 	if shard.evictionsSinceDecay >= 10 {
 		shard.evictionsSinceDecay = 0
-		for e := shard.evictList.Front(); e != nil; e = e.Next() {
-			if en := e.Value.(*lruEntry); en.freq > 0 {
-				en.freq = en.freq - 1
+		for e := shard.lruHead; e != nil; e = e.next {
+			if e.freq > 0 {
+				e.freq = e.freq - 1
 			}
 		}
 	}
@@ -780,17 +812,16 @@ func (cm *CacheManager) cleanupShard(shard *cacheShard) {
 
 	for {
 		shard.mu.Lock()
-		element := shard.evictList.Back()
-		if element == nil {
+		entry := shard.lruTail
+		if entry == nil {
 			shard.mu.Unlock()
 			return // All remaining entries are valid
 		}
 
-		entry := element.Value.(*lruEntry)
 		if now-entry.timestamp > ttlNanos {
 			// Remove expired entry
 			delete(shard.items, entry.key)
-			shard.evictList.Remove(element)
+			shard.unlink(entry)
 			shard.size--
 			atomic.AddInt64(&cm.entryCount, -1)
 			cm.decMemoryUsage(int64(entry.size))
@@ -837,49 +868,125 @@ func safeAdd(a, b, maxVal int64) (int64, bool) {
 
 // estimateSize estimates the memory size of a value more accurately
 // Uses int64 for intermediate calculations to prevent overflow
+//
+// GEN-001: containers are now descended with a BOUNDED recursive walk — up to
+// estimateMaxDepth levels and estimateNodeBudget nodes — so key strings and
+// nested contents are accounted, fixing the D-002 limitation where a parsed
+// 1MB document with 50 keys was estimated at ~3KB (2-3 orders of magnitude
+// under its real footprint, leaving the memory high-watermark unable to bind).
+// Portions beyond the depth/budget bounds still fall back to the flat
+// per-entry charge, so worst-case cost is O(budget) per estimate while
+// typical documents are accounted to within a small factor. The ENTRY-COUNT
+// LRU bound (MaxCacheSize) remains the hard memory limit; the watermark is a
+// soft secondary bound.
 func (cm *CacheManager) estimateSize(value any) int {
+	budget := estimateNodeBudget
+	return int(estimateValueSize(value, 0, &budget))
+}
+
+// Bounds for the recursive size estimate (GEN-001). maxDepth counts
+// container levels below the root value; nodeBudget caps total visited nodes
+// so a hostile deep/wide tree cannot turn estimation into a full traversal.
+const (
+	estimateMaxDepth   = 4
+	estimateNodeBudget = 4096
+)
+
+// estimateValueSize is the recursive core of estimateSize. budget is
+// decremented per visited node; when it reaches zero, remaining siblings are
+// charged only the flat per-entry overhead (the pre-GEN-001 behavior).
+func estimateValueSize(value any, depth int, budget *int) int64 {
 	const maxEstimate int64 = 1 << 30 // 1GB max estimate to prevent overflow
 
 	switch v := value.(type) {
 	case string:
 		// String header (16 bytes) + data
 		if result, ok := safeAdd(16, int64(len(v)), maxEstimate); ok {
-			return int(result)
+			return result
 		}
-		return int(maxEstimate)
+		return maxEstimate
 	case []byte:
 		// Slice header (24 bytes) + data
 		if result, ok := safeAdd(24, int64(len(v)), maxEstimate); ok {
-			return int(result)
+			return result
 		}
-		return int(maxEstimate)
+		return maxEstimate
 	case map[string]any:
-		// Map overhead (48 bytes) + per-entry cost (64 bytes each)
-		mapLen := int64(len(v))
-		if entryCost, ok := safeMultiply(mapLen, 64, maxEstimate); ok {
-			if result, ok := safeAdd(48, entryCost, maxEstimate); ok {
-				return int(result)
+		// Map header (48 bytes) + per entry: bucket overhead (64 B), key
+		// string (16 B header + data), and the value's recursive estimate.
+		total := int64(48)
+		visited := 0
+		for k, val := range v {
+			if *budget == 0 {
+				break
+			}
+			*budget--
+			visited++
+			entry := int64(64 + 16 + len(k))
+			if depth+1 < estimateMaxDepth {
+				entry += estimateValueSize(val, depth+1, budget)
+				if entry > maxEstimate {
+					entry = maxEstimate
+				}
+			}
+			if result, ok := safeAdd(total, entry, maxEstimate); ok {
+				total = result
+			} else {
+				return maxEstimate
 			}
 		}
-		return int(maxEstimate)
+		if remaining := int64(len(v) - visited); remaining > 0 {
+			// Budget exhausted: flat per-entry charge for the unvisited rest
+			if cost, ok := safeMultiply(remaining, 64, maxEstimate); ok {
+				if result, ok := safeAdd(total, cost, maxEstimate); ok {
+					return result
+				}
+			}
+			return maxEstimate
+		}
+		return total
 	case []any:
-		// Slice header (24 bytes) + per-element interface overhead (16 bytes each)
-		sliceLen := int64(len(v))
-		if elemCost, ok := safeMultiply(sliceLen, 16, maxEstimate); ok {
-			if result, ok := safeAdd(24, elemCost, maxEstimate); ok {
-				return int(result)
+		// Slice header (24 bytes) + per element: interface overhead (16 B)
+		// and the element's recursive estimate.
+		total := int64(24)
+		visited := 0
+		for _, elem := range v {
+			if *budget == 0 {
+				break
+			}
+			*budget--
+			visited++
+			entry := int64(16)
+			if depth+1 < estimateMaxDepth {
+				entry += estimateValueSize(elem, depth+1, budget)
+				if entry > maxEstimate {
+					entry = maxEstimate
+				}
+			}
+			if result, ok := safeAdd(total, entry, maxEstimate); ok {
+				total = result
+			} else {
+				return maxEstimate
 			}
 		}
-		return int(maxEstimate)
+		if remaining := int64(len(v) - visited); remaining > 0 {
+			if cost, ok := safeMultiply(remaining, 16, maxEstimate); ok {
+				if result, ok := safeAdd(total, cost, maxEstimate); ok {
+					return result
+				}
+			}
+			return maxEstimate
+		}
+		return total
 	case []PathSegment:
 		// Slice header (24 bytes) + per-element struct size (128 bytes each)
 		pathLen := int64(len(v))
 		if elemCost, ok := safeMultiply(pathLen, 128, maxEstimate); ok {
 			if result, ok := safeAdd(24, elemCost, maxEstimate); ok {
-				return int(result)
+				return result
 			}
 		}
-		return int(maxEstimate)
+		return maxEstimate
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return 8
 	case float32, float64:
@@ -907,36 +1014,4 @@ func (cm *CacheManager) decMemoryUsage(delta int64) {
 			return
 		}
 	}
-}
-
-// truncateCacheKey safely truncates a long cache key using FNV-1a hash.
-// PERFORMANCE v2: Replaced SHA-256 with FNV-1a for ~50x faster truncation.
-// Cache keys are not security-critical (they are internal), so FNV-1a's
-// collision resistance is sufficient for cache key deduplication.
-func truncateCacheKey(key string) string {
-	if len(key) <= MaxCacheKeyLength {
-		return key
-	}
-
-	// Use FNV-1a hash for fast truncation (~2ns vs ~100ns for SHA-256)
-	prefixLen := MaxCacheKeyLength - 19 // "..." + 16 hex chars
-	prefixLen = max(prefixLen, 0)
-
-	// Fast FNV-1a hash of full key
-	h := HashStringFNV1a(key)
-
-	// Format hash as hex directly into result
-	var hashBuf [16]byte
-	const hexChars = "0123456789abcdef"
-	for i := 15; i >= 0; i-- {
-		hashBuf[i] = hexChars[h&0xF]
-		h >>= 4
-	}
-
-	// Build result: prefix + "..." + hex hash
-	result := make([]byte, 0, prefixLen+3+16)
-	result = append(result, key[:prefixLen]...)
-	result = append(result, '.', '.', '.')
-	result = append(result, hashBuf[:]...)
-	return string(result)
 }

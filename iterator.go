@@ -155,6 +155,9 @@ func getPathType(path string) pathType {
 }
 
 // safeTypeAssert performs a safe type assertion with generics
+//
+// NOTE (D-002/R8 M5): no production caller — unifiedTypeConversion
+// (helpers.go) is the live conversion path; retained for tests/future use.
 func safeTypeAssert[T any](value any) (T, bool) {
 	var zero T
 
@@ -228,7 +231,7 @@ type Iterator struct {
 //	    }
 //	    fmt.Println(value)
 //	}
-func NewIterator(data any, cfg ...Config) *Iterator {
+func NewIterator(data any, _ ...Config) *Iterator {
 	// Note: cfg parameter is reserved for future use.
 	// Currently Iterator does not use any configuration options.
 	// The parameter is kept for API consistency.
@@ -366,6 +369,17 @@ func ForeachWithPathAndControl(jsonStr, path string, fn func(key any, value any)
 
 // Foreach iterates over JSON arrays or objects with simplified signature (for test compatibility).
 // Accepts optional Config for consistency with Processor.Foreach.
+//
+// Deprecated: Foreach drops errors — an invalid document or a closed processor
+// silently skips the callback entirely. Use ForeachWithError, which returns the
+// error (its callback must return nil to continue):
+//
+//	err := json.ForeachWithError(jsonStr, ".", func(key any, item *json.IterableValue) error {
+//	    // ...
+//	    return nil
+//	})
+//
+// Foreach will not be removed within v1 (per D-005 the module stays on v1.x).
 func Foreach(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config) {
 	// Delegate to the Processor method so the callback runs on a deep copy of
 	// the resolved value, preventing mutation callbacks from corrupting cached
@@ -532,6 +546,12 @@ func foreachOnValue(data any, fn func(key any, value any) IteratorControl) (err 
 
 // ForeachNested iterates over nested JSON structures.
 // Accepts optional Config for consistency with Processor.ForeachNested.
+//
+// Deprecated: ForeachNested drops errors the same way Foreach does — a failed
+// parse or closed processor silently skips the callback. Use
+// ForeachNestedWithError, which returns the error (its callback must return
+// nil to continue). ForeachNested will not be removed within v1 (per D-005
+// the module stays on v1.x).
 func ForeachNested(jsonStr string, fn func(key any, item *IterableValue), cfg ...Config) {
 	// Delegate to the Processor method so the callback runs on a deep copy of
 	// the resolved value, preventing mutation callbacks from corrupting cached
@@ -694,151 +714,6 @@ func foreachNestedOnValueErrorDepth(data any, fn func(key any, item *IterableVal
 }
 
 // ============================================================================
-// POOLED SLICE ITERATOR - For in-memory iteration with reduced allocations
-// ============================================================================
-
-// pooledSliceIterator uses pooled slices for efficient array iteration
-type pooledSliceIterator struct {
-	data    []any
-	index   int
-	current any
-}
-
-var sliceIteratorPool = sync.Pool{
-	New: func() any {
-		return &pooledSliceIterator{
-			index: -1,
-		}
-	},
-}
-
-// newPooledSliceIterator creates a pooled slice iterator
-func newPooledSliceIterator(data []any) *pooledSliceIterator {
-	it := sliceIteratorPool.Get().(*pooledSliceIterator)
-	it.data = data
-	it.index = -1
-	it.current = nil
-	return it
-}
-
-// Next advances to the next element
-func (it *pooledSliceIterator) Next() bool {
-	it.index++
-	if it.index >= len(it.data) {
-		return false
-	}
-	it.current = it.data[it.index]
-	return true
-}
-
-// Value returns the current element
-func (it *pooledSliceIterator) Value() any {
-	return it.current
-}
-
-// Index returns the current index
-func (it *pooledSliceIterator) Index() int {
-	return it.index
-}
-
-// Release returns the iterator to the pool
-func (it *pooledSliceIterator) Release() {
-	it.data = nil
-	it.current = nil
-	it.index = -1
-	sliceIteratorPool.Put(it)
-}
-
-// ============================================================================
-// POOLED MAP ITERATOR - For efficient object iteration
-// ============================================================================
-
-// pooledMapIterator uses pooled slices for efficient map iteration.
-// NOTE: no production callers — exercised by benchmark_test.go and
-// iterator_test.go (TestPooledMapIteratorLifecycle). Candidate for removal
-// with its tests (D-002 round 6 finding); kept until the maintainer decides.
-type pooledMapIterator struct {
-	data    map[string]any
-	keys    []string
-	index   int
-	key     string
-	current any
-}
-
-var mapIteratorPool = sync.Pool{
-	New: func() any {
-		return &pooledMapIterator{
-			keys:  make([]string, 0, 16),
-			index: -1,
-		}
-	},
-}
-
-// newPooledMapIterator creates a pooled map iterator.
-// The collected keys are sorted so Next() yields key/value pairs in a
-// deterministic order (Go map iteration order is randomized per iteration).
-func newPooledMapIterator(m map[string]any) *pooledMapIterator {
-	it := mapIteratorPool.Get().(*pooledMapIterator)
-	it.data = m
-	it.index = -1
-	it.key = ""
-	it.current = nil
-
-	// PERFORMANCE: Ensure keys slice has sufficient capacity
-	// This avoids repeated slice growth during append
-	mapLen := len(m)
-	if cap(it.keys) < mapLen {
-		it.keys = make([]string, 0, mapLen)
-	} else {
-		it.keys = it.keys[:0]
-	}
-
-	// Pre-populate keys without interning (faster for one-time iteration)
-	for k := range m {
-		it.keys = append(it.keys, k)
-	}
-	slices.Sort(it.keys)
-
-	return it
-}
-
-// Next advances to the next key-value pair
-func (it *pooledMapIterator) Next() bool {
-	it.index++
-	if it.index >= len(it.keys) {
-		return false
-	}
-	it.key = it.keys[it.index]
-	it.current = it.data[it.key]
-	return true
-}
-
-// Key returns the current key
-func (it *pooledMapIterator) Key() string {
-	return it.key
-}
-
-// Value returns the current value
-func (it *pooledMapIterator) Value() any {
-	return it.current
-}
-
-// Release returns the iterator to the pool
-func (it *pooledMapIterator) Release() {
-	it.data = nil
-	it.key = ""
-	it.current = nil
-	it.index = -1
-	// Keep keys slice for reuse but reset length
-	if cap(it.keys) > 256 {
-		it.keys = make([]string, 0, 16)
-	} else {
-		it.keys = it.keys[:0]
-	}
-	mapIteratorPool.Put(it)
-}
-
-// ============================================================================
 // BATCH ITERATOR - Efficient batch processing for large arrays
 // PERFORMANCE: Processes arrays in batches to reduce per-element overhead
 // ============================================================================
@@ -863,9 +738,6 @@ type BatchIterator struct {
 //	cfg := json.DefaultConfig()
 //	cfg.MaxBatchSize = 50
 //	iter := json.NewBatchIterator(data, cfg)
-//
-//	// Legacy pattern (backward compatible)
-//	iter := json.NewBatchIteratorWithSize(data, 50)
 func NewBatchIterator(data []any, cfg ...Config) *BatchIterator {
 	var config Config
 	if len(cfg) > 0 {

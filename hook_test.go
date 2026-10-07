@@ -62,15 +62,6 @@ func (m *mockRecorder) Record(op string, d time.Duration) {
 	m.mu.Unlock()
 }
 
-func (m *mockRecorder) last() (mockTimingRecord, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.records) == 0 {
-		return mockTimingRecord{}, false
-	}
-	return m.records[len(m.records)-1], true
-}
-
 // orderRecord tracks hook execution order.
 type orderRecord struct {
 	name  string
@@ -103,31 +94,16 @@ func TestAddHook(t *testing.T) {
 			},
 		})
 
-		// Verify the hook was stored and is functional when invoked through the
-		// hookChain directly. End-to-end firing during Get/Set/Delete is covered
-		// by d005_library_regression_test.go (TestHookFiresDuringOperations etc.).
-		if len(p.hooks) != 1 {
-			t.Errorf("expected 1 hook, got %d", len(p.hooks))
-		}
-
-		// Verify the hook works when called manually through hookChain.
-		hc := hookChain(p.hooks)
-		ctx := HookContext{
-			Operation: "get",
-			Path:      "test",
-			StartTime: time.Now(),
-		}
-
-		if err := hc.executeBefore(ctx); err != nil {
-			t.Errorf("executeBefore error: %v", err)
+		// The hook must fire during a REAL Get, not just when driven through
+		// hookChain manually (that path is covered by TestHookChainExecution).
+		if _, err := p.Get(`{"key":"value"}`, "key"); err != nil {
+			t.Fatalf("Get error: %v", err)
 		}
 		if !beforeCalled {
-			t.Error("Before hook was not called")
+			t.Error("Before hook did not fire during Get")
 		}
-
-		_, _ = hc.executeAfter(ctx, "result", nil)
 		if !afterCalled {
-			t.Error("After hook was not called")
+			t.Error("After hook did not fire during Get")
 		}
 	})
 
@@ -690,42 +666,6 @@ func TestHookChainExecution(t *testing.T) {
 // ============================================================================
 
 func TestHookIntegrationWithProcessor(t *testing.T) {
-	t.Run("LoggingHookWithProcessorOperations", func(t *testing.T) {
-		p, err := New()
-		if err != nil {
-			t.Fatalf("New() error: %v", err)
-		}
-		defer p.Close()
-
-		logger := &mockLogger{}
-		p.AddHook(LoggingHook(logger))
-
-		// Hook is stored; call via hookChain to verify it works end-to-end.
-		hc := hookChain(p.hooks)
-		ctx := HookContext{
-			Operation: "get",
-			Path:      "users[0]",
-			JSONStr:   `{"users":[{"name":"Alice"}]}`,
-			StartTime: time.Now(),
-		}
-
-		if err := hc.executeBefore(ctx); err != nil {
-			t.Errorf("executeBefore error: %v", err)
-		}
-		_, _ = hc.executeAfter(ctx, "Alice", nil)
-
-		// Should have 2 log calls: "operation starting" and "operation completed"
-		if logger.count() != 2 {
-			t.Errorf("expected 2 log calls, got %d", logger.count())
-		}
-		if logger.calls[0].msg != "operation starting" {
-			t.Errorf("first log: expected 'operation starting', got %q", logger.calls[0].msg)
-		}
-		if logger.calls[1].msg != "operation completed" {
-			t.Errorf("second log: expected 'operation completed', got %q", logger.calls[1].msg)
-		}
-	})
-
 	t.Run("MultipleHookTypesOnProcessor", func(t *testing.T) {
 		p, err := New()
 		if err != nil {

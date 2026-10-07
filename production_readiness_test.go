@@ -7,156 +7,6 @@ import (
 	"testing"
 )
 
-// TestNavigateToPath covers navigateToPath (0% coverage) which dispatches
-// to navigateDotNotation or navigateJSONPointer.
-func TestNavigateToPath(t *testing.T) {
-	p, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-	defer p.Close()
-
-	data := map[string]any{
-		"name": "test",
-		"nested": map[string]any{
-			"value": 42,
-		},
-		"items": []any{"a", "b", "c"},
-	}
-
-	tests := []struct {
-		name    string
-		path    string
-		want    any
-		wantErr bool
-	}{
-		{name: "empty returns root", path: "", wantErr: false},
-		{name: "dot returns root", path: ".", wantErr: false},
-		{name: "slash returns root", path: "/", wantErr: false},
-		{name: "dot property", path: "name", want: "test"},
-		{name: "dot nested", path: "nested.value", want: 42},
-		{name: "dot array", path: "items.1", want: "b"},
-		{name: "pointer property", path: "/name", want: "test"},
-		{name: "pointer nested", path: "/nested/value", want: 42},
-		{name: "pointer array", path: "/items/1", want: "b"},
-		{name: "missing dot", path: "missing", wantErr: true},
-		{name: "missing pointer", path: "/missing", wantErr: true},
-		{name: "oob pointer array", path: "/items/99", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := p.navigateToPath(data, tt.path)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for path %q", tt.path)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error for path %q: %v", tt.path, err)
-			}
-			if tt.path == "" || tt.path == "." || tt.path == "/" {
-				if m, ok := got.(map[string]any); !ok || m["name"] != "test" {
-					t.Fatalf("expected root data, got %v", got)
-				}
-				return
-			}
-			if got != tt.want {
-				t.Fatalf("path %q: expected %v, got %v", tt.path, tt.want, got)
-			}
-		})
-	}
-}
-
-// TestNavigateJSONPointer_Escaping covers tilde/slash escape in JSON Pointer.
-func TestNavigateJSONPointer_Escaping(t *testing.T) {
-	p, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-	defer p.Close()
-
-	data := map[string]any{
-		"a/b": "slash_key",
-		"c~d": "tilde_key",
-		"e":   map[string]any{"f/g": "nested_slash"},
-	}
-
-	tests := []struct {
-		name, path, want string
-	}{
-		{"slash", "/a~1b", "slash_key"},
-		{"tilde", "/c~0d", "tilde_key"},
-		{"nested", "/e/f~1g", "nested_slash"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := p.navigateJSONPointer(data, tt.path)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Fatalf("expected %q, got %v", tt.want, got)
-			}
-		})
-	}
-}
-
-// TestNavigateDotNotation_Segments covers property, array, and slice access via dot notation.
-// Note: extraction paths (items{name}) are handled through a separate recursive code path
-// and are tested via the public Get API in coverage_gap_test.go.
-func TestNavigateDotNotation_Segments(t *testing.T) {
-	p, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-	defer p.Close()
-
-	data := map[string]any{
-		"items": []any{"a", "b", "c"},
-		"nested": map[string]any{
-			"deep": map[string]any{
-				"val": 99,
-			},
-		},
-	}
-
-	t.Run("property access", func(t *testing.T) {
-		got, err := p.navigateDotNotation(data, "nested.deep.val")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != 99 {
-			t.Fatalf("expected 99, got %v", got)
-		}
-	})
-
-	t.Run("array index", func(t *testing.T) {
-		got, err := p.navigateDotNotation(data, "items.1")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != "b" {
-			t.Fatalf("expected 'b', got %v", got)
-		}
-	})
-
-	t.Run("out of bounds", func(t *testing.T) {
-		_, err := p.navigateDotNotation(data, "items.99999")
-		if err == nil {
-			t.Fatal("expected error for out-of-bounds")
-		}
-	})
-
-	t.Run("missing property", func(t *testing.T) {
-		_, err := p.navigateDotNotation(data, "noexist")
-		if err == nil {
-			t.Fatal("expected error for missing property")
-		}
-	})
-}
-
 // TestHandleArraySlice_Coverage covers handleArraySlice (0% coverage).
 func TestHandleArraySlice_Coverage(t *testing.T) {
 	p, err := New()
@@ -328,17 +178,11 @@ func TestSetValueForArrayIndex_Coverage(t *testing.T) {
 		}
 	})
 
-	t.Run("oob with create returns signal", func(t *testing.T) {
-		err := p.setValueForArrayIndex([]any{0, 1, 2}, 5, "x", true)
-		if err == nil {
-			t.Fatal("expected arrayExtensionSignal")
-		}
-		sig, ok := err.(*arrayExtensionSignal)
-		if !ok {
-			t.Fatalf("expected *arrayExtensionSignal, got %T", err)
-		}
-		if sig.requiredLength != 6 {
-			t.Fatalf("expected requiredLength=6, got %d", sig.requiredLength)
+	t.Run("oob with create returns error", func(t *testing.T) {
+		// D-002: arrayExtensionSignal was removed (unreachable from Set);
+		// out-of-bounds is now a plain error on every path.
+		if err := p.setValueForArrayIndex([]any{0, 1, 2}, 5, "x", true); err == nil {
+			t.Fatal("expected error")
 		}
 	})
 
@@ -391,15 +235,11 @@ func TestSetValueForArraySlice_Coverage(t *testing.T) {
 		}
 	})
 
-	t.Run("end oob with create returns signal", func(t *testing.T) {
+	t.Run("end oob with create returns error", func(t *testing.T) {
 		arr := []any{0, 1, 2}
 		seg := newArraySliceSegment(0, 10, 1, true, true, false)
-		err := p.setValueForArraySlice(arr, seg, "x", true)
-		if err == nil {
-			t.Fatal("expected arrayExtensionSignal")
-		}
-		if _, ok := err.(*arrayExtensionSignal); !ok {
-			t.Fatalf("expected *arrayExtensionSignal, got %T", err)
+		if err := p.setValueForArraySlice(arr, seg, "x", true); err == nil {
+			t.Fatal("expected error")
 		}
 	})
 
@@ -419,21 +259,9 @@ func TestSetValueForArraySlice_Coverage(t *testing.T) {
 	})
 }
 
-// TestHandleArrayExtensionAndSet_Coverage covers handleArrayExtensionAndSet (0%).
-func TestHandleArrayExtensionAndSet_Coverage(t *testing.T) {
-	p, err := New()
-	if err != nil {
-		t.Fatalf("New() failed: %v", err)
-	}
-	defer p.Close()
-
-	t.Run("empty segments", func(t *testing.T) {
-		sig := &arrayExtensionSignal{requiredLength: 5, currentLength: 3}
-		if err := p.handleArrayExtensionAndSet(map[string]any{}, nil, sig); err == nil {
-			t.Fatal("expected error for empty segments")
-		}
-	})
-}
+// TestHandleArrayExtensionAndSet_Coverage was removed with the
+// arrayExtensionSignal machinery (D-002): the dispatch was unreachable — Set
+// intercepts createPaths index/slice finals via setValueForArrayIndexWithExtension.
 
 // TestEncodeStruct_StdlibFallback covers encodeStruct's stdlib paths (15.4% coverage).
 func TestEncodeStruct_StdlibFallback(t *testing.T) {

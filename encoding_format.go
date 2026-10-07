@@ -9,6 +9,136 @@ import (
 	"github.com/cybergodev/json/internal"
 )
 
+// appendCompactJSON copies src to dst with insignificant whitespace elided.
+// String literals (including their escapes) are copied byte-for-byte, so key
+// order, number literals ("1e3", "1.10", >2^53 integers), and existing escape
+// sequences are preserved exactly — matching encoding/json.Compact, which is
+// a pure whitespace filter (D-002: the previous parse→re-encode
+// implementation resorted keys, rewrote literals, and lost precision beyond
+// 2^53). The caller MUST have validated src as JSON first; this function
+// makes no syntactic judgments of its own.
+func appendCompactJSON(dst, src []byte) []byte {
+	inString := false
+	escaped := false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inString {
+			dst = append(dst, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			// Insignificant whitespace outside strings: dropped.
+		case '"':
+			dst = append(dst, c)
+			inString = true
+		default:
+			dst = append(dst, c)
+		}
+	}
+	return dst
+}
+
+// nextSignificant returns the index of the next non-whitespace byte at or
+// after i, or -1 when the remainder is all whitespace.
+func nextSignificant(src []byte, i int) int {
+	for ; i < len(src); i++ {
+		switch src[i] {
+		case ' ', '\t', '\r', '\n':
+		default:
+			return i
+		}
+	}
+	return -1
+}
+
+// appendIndentJSON copies src to dst re-indented, preserving every non-space
+// byte exactly (values, key order, number literals, escapes) — the same
+// whitespace-only contract as encoding/json.Indent (D-002: the previous
+// unmarshal→re-marshal pipeline corrupted number literals beyond 2^53 and
+// resorted keys). Empty containers stay inline ({} and []), a space follows
+// each colon, and each nesting level adds one indent after prefix. The
+// caller MUST have validated src as JSON first.
+func appendIndentJSON(dst, src []byte, prefix, indent string) []byte {
+	depth := 0
+	inString := false
+	escaped := false
+	// lineHasContent tracks whether anything was emitted since the last
+	// newline: a closing bracket only emits its own newline when the
+	// container had members.
+	lineHasContent := false
+
+	writeNewline := func() {
+		dst = append(dst, '\n')
+		dst = append(dst, prefix...)
+		for i := 0; i < depth; i++ {
+			dst = append(dst, indent...)
+		}
+	}
+
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inString {
+			dst = append(dst, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+				lineHasContent = true
+			}
+			continue
+		}
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			// Insignificant whitespace: dropped (replaced by structural newlines).
+		case '"':
+			dst = append(dst, c)
+			inString = true
+			lineHasContent = true
+		case '{', '[':
+			if next := nextSignificant(src, i+1); next != -1 &&
+				((c == '{' && src[next] == '}') || (c == '[' && src[next] == ']')) {
+				// Empty container: emit inline as {} / [] like encoding/json.
+				dst = append(dst, c, src[next])
+				i = next
+				lineHasContent = true
+				continue
+			}
+			dst = append(dst, c)
+			depth++
+			writeNewline()
+			lineHasContent = false
+		case '}', ']':
+			depth--
+			if lineHasContent {
+				writeNewline()
+			}
+			dst = append(dst, c)
+			lineHasContent = true
+		case ',':
+			dst = append(dst, c)
+			writeNewline()
+			lineHasContent = false
+		case ':':
+			dst = append(dst, c, ' ')
+			lineHasContent = true
+		default:
+			dst = append(dst, c)
+			lineHasContent = true
+		}
+	}
+	return dst
+}
+
 // Prettify formats JSON string with indentation.
 // This is the recommended method for formatting JSON strings.
 // Uses default indentation of 2 spaces, configurable via Config.Indent and Config.Prefix.
@@ -32,9 +162,12 @@ import (
 //	cfg.Indent = "    " // 4 spaces
 //	pretty, err := processor.Prettify(jsonStr, cfg)
 func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance — Prettify reads/writes the result cache and
+	// the validator. Standalone op (decoder-only body): no governed callee.
+	if err := p.beginGovernedOp(); err != nil {
 		return "", err
 	}
+	defer p.endGovernedOp()
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
@@ -42,12 +175,14 @@ func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// Validate input and build the cache key in one step (P-001: one FNV scan
+	// of the document instead of two — validation self-hash + key build).
+	cacheKey, err := p.validateAndCacheKey("pretty", jsonStr, options)
+	if err != nil {
 		return "", err
 	}
 
 	// Check cache first
-	cacheKey := p.createCacheKey("pretty", jsonStr, "", options)
 	if cached, ok := p.getCachedResult(cacheKey); ok {
 		if val, typeOk := cached.(string); typeOk {
 			return val, nil
@@ -56,10 +191,9 @@ func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
 		p.invalidateCachedResult(cacheKey)
 	}
 
-	// Parse with number preservation to maintain original number types
+	// Syntax-check via the same decoder as before (identical error surface).
 	decoder := newNumberPreservingDecoder(options.PreserveNumbers)
-	data, err := decoder.DecodeToAny(jsonStr)
-	if err != nil {
+	if _, err := decoder.DecodeToAny(jsonStr); err != nil {
 		return "", &JsonsError{
 			Op:      "pretty",
 			Message: fmt.Sprintf("failed to parse JSON: %v", err),
@@ -67,28 +201,17 @@ func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
 		}
 	}
 
-	// Use custom encoder with pretty formatting to preserve number types
-	config := PrettyConfig()
-	config.PreserveNumbers = options.PreserveNumbers
-	// Respect caller's Indent/Prefix if explicitly provided via options
-	if options.Indent != "" {
-		config.Indent = options.Indent
+	// Reformat with a byte-preserving pass (D-002): only whitespace changes,
+	// so key order, number literals (including >2^53 integers), and existing
+	// escapes survive exactly as written. The previous parse→re-encode
+	// pipeline resorted keys, rewrote "1e3"→1000, corrupted integers beyond
+	// 2^53, and added HTML escapes — none of which a formatter should touch.
+	indent := options.Indent
+	if indent == "" {
+		indent = "  "
 	}
-	if options.Prefix != "" {
-		config.Prefix = options.Prefix
-	}
-
-	encoder := newCustomEncoder(config)
-	defer encoder.Close()
-
-	result, err := encoder.Encode(data)
-	if err != nil {
-		return "", &JsonsError{
-			Op:      "pretty",
-			Message: "failed to format JSON",
-			Err:     err,
-		}
-	}
+	buf := make([]byte, 0, len(jsonStr)+len(jsonStr)/4)
+	result := string(appendIndentJSON(buf, internal.StringToBytes(jsonStr), options.Prefix, indent))
 
 	// Cache result if enabled
 	p.setCachedResult(cacheKey, result, options)
@@ -97,6 +220,8 @@ func (p *Processor) Prettify(jsonStr string, cfg ...Config) (string, error) {
 }
 
 // formatJSONString formats a JSON string or encodes a non-JSON string.
+//
+// NOTE (D-002/R8 M5): no production caller; retained for tests/future use.
 func (p *Processor) formatJSONString(jsonStr string, pretty bool) (string, error) {
 	isValid, validErr := p.Valid(jsonStr)
 	if validErr != nil {
@@ -139,9 +264,12 @@ func (p *Processor) formatJSONString(jsonStr string, pretty bool) (string, error
 //	}`)
 //	// Output: {"name":"Alice","age":30}
 func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error) {
-	if err := p.checkClosed(); err != nil {
+	// D-002/R9 (m3): governance — see Prettify (same cache/validator profile;
+	// CompactString/CompactBuffer route through here).
+	if err := p.beginGovernedOp(); err != nil {
 		return "", err
 	}
+	defer p.endGovernedOp()
 
 	options, err := p.prepareOptions(cfg...)
 	if err != nil {
@@ -149,12 +277,14 @@ func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error) {
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// Validate input and build the cache key in one step (P-001: one FNV scan
+	// of the document instead of two — validation self-hash + key build).
+	cacheKey, err := p.validateAndCacheKey("compact", jsonStr, options)
+	if err != nil {
 		return "", err
 	}
 
 	// Check cache first
-	cacheKey := p.createCacheKey("compact", jsonStr, "", options)
 	if cached, ok := p.getCachedResult(cacheKey); ok {
 		if val, typeOk := cached.(string); typeOk {
 			return val, nil
@@ -163,10 +293,9 @@ func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error) {
 		p.invalidateCachedResult(cacheKey)
 	}
 
-	// Parse with number preservation to maintain original number types
+	// Syntax-check via the same decoder as before (identical error surface).
 	decoder := newNumberPreservingDecoder(options.PreserveNumbers)
-	data, err := decoder.DecodeToAny(jsonStr)
-	if err != nil {
+	if _, err := decoder.DecodeToAny(jsonStr); err != nil {
 		return "", &JsonsError{
 			Op:      "compact",
 			Message: fmt.Sprintf("failed to parse JSON: %v", err),
@@ -174,21 +303,12 @@ func (p *Processor) Compact(jsonStr string, cfg ...Config) (string, error) {
 		}
 	}
 
-	// Use custom encoder with compact formatting to preserve number types
-	config := DefaultConfig()
-	config.PreserveNumbers = options.PreserveNumbers
-
-	encoder := newCustomEncoder(config)
-	defer encoder.Close()
-
-	result, err := encoder.Encode(data)
-	if err != nil {
-		return "", &JsonsError{
-			Op:      "compact",
-			Message: "failed to compact JSON",
-			Err:     err,
-		}
-	}
+	// Elide insignificant whitespace with a byte-preserving pass (D-002):
+	// key order, number literals ("1e3", "1.10", >2^53 integers), and
+	// existing escapes are kept exactly, matching encoding/json.Compact. The
+	// previous parse→re-encode pipeline resorted keys, rewrote literals, and
+	// lost precision — data corruption from what claims to be a compaction.
+	result := string(appendCompactJSON(make([]byte, 0, len(jsonStr)), internal.StringToBytes(jsonStr)))
 
 	// Cache result if enabled
 	p.setCachedResult(cacheKey, result, options)
@@ -219,6 +339,17 @@ func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) 
 	return err
 }
 
+// CompactString removes insignificant whitespace from a JSON string and returns
+// the compacted result. It is the same-named Processor mirror of the
+// package-level json.CompactString (json.CompactString(s, cfg) ↔
+// p.CompactString(s, cfg)) — before D-005 Phase 2 the package-level function
+// mapped to p.Compact under a different name, breaking the mirror naming rule.
+//
+// Errors: see Compact.
+func (p *Processor) CompactString(jsonStr string, cfg ...Config) (string, error) {
+	return p.Compact(jsonStr, cfg...)
+}
+
 // Indent appends to dst an indented form of the JSON-encoded src.
 // Compatible with encoding/json.Indent with optional Config support.
 //
@@ -236,15 +367,16 @@ func (p *Processor) CompactBuffer(dst *bytes.Buffer, src []byte, cfg ...Config) 
 //   - ErrDepthLimit: encoding exceeds the maximum nesting depth
 //   - any error returned while writing to dst
 func (p *Processor) Indent(dst *bytes.Buffer, src []byte, prefix, indent string, cfg ...Config) error {
+	// Validate via the same gate as before (security limits + syntax), then
+	// re-indent with a byte-preserving pass: values, key order, number
+	// literals, and escapes are untouched — matching encoding/json.Indent.
+	// The previous unmarshal→re-marshal pipeline corrupted integers beyond
+	// 2^53 and resorted keys (D-002).
 	var data any
 	if err := p.Unmarshal(src, &data, cfg...); err != nil {
 		return err
 	}
-	indented, err := p.MarshalIndent(data, prefix, indent, cfg...)
-	if err != nil {
-		return err
-	}
-	_, err = dst.Write(indented)
+	_, err := dst.Write(appendIndentJSON(make([]byte, 0, len(src)+len(src)/4), src, prefix, indent))
 	return err
 }
 

@@ -248,15 +248,15 @@ compact := buf.String()
 // 或使用 string-in/string-out 形式（直接压缩 JSON 字符串）
 compact, _ = json.CompactString(jsonStr)
 
-// 带配置编码 —— EncodeWithConfig 是推荐的编码函数
-// （json.Encode 是已废弃的别名，计划移除）
+// 带配置编码 —— Encode 是规范的字符串编码函数
+// （EncodeWithConfig 是保留兼容的已废弃别名）
 cfg := json.DefaultConfig()
 cfg.Pretty = true
 cfg.SortKeys = true
-result, _ := json.EncodeWithConfig(data, cfg)
+result, _ := json.Encode(data, cfg)
 
 // 预设配置
-result, _ = json.EncodeWithConfig(data, json.PrettyConfig())
+result, _ = json.Encode(data, json.PrettyConfig())
 
 // 快速美化编码
 result, _ = json.EncodePretty(data)
@@ -408,28 +408,30 @@ names, _ := json.Get(arr, "users{id,name}")
 ### 数据迭代
 
 ```go
-// 基础迭代
-json.Foreach(data, func(key any, item *json.IterableValue) {
+// 基础迭代（返回 error 的形式；void 的 Foreach 已废弃，因其丢弃错误）
+err := json.ForeachWithError(data, ".", func(key any, item *json.IterableValue) error {
     name := item.GetString("name")
     fmt.Printf("键: %v, 名称: %s\n", key, name)
+    return nil
 })
 
 // 带路径迭代
-json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
+err = json.ForeachWithPath(data, "users", func(key any, item *json.IterableValue) {
     name := item.GetString("name")
     fmt.Printf("键: %v, 名称: %s\n", key, name)
 })
 
 // 嵌套迭代（指定嵌套字段路径）
-json.ForeachNested(data, func(key any, item *json.IterableValue) {
+err = json.ForeachNestedWithError(data, func(key any, item *json.IterableValue) error {
     item.ForeachNested("items", func(nestedKey any, nestedItem *json.IterableValue) {
         fmt.Printf("嵌套: %v\n", nestedItem.Get("id"))
     })
+    return nil
 })
 
 // 返回 error 的回调：返回非 nil 的 error 可提前终止迭代。
 // （普通回调请用 ForeachWithPath；基于文件输入请用 ForeachFile。）
-err := json.ForeachWithError(data, "users", func(key any, item *json.IterableValue) error {
+err = json.ForeachWithError(data, "users", func(key any, item *json.IterableValue) error {
     if item.IsNull("id") {
         log.Printf("警告: 键 %v 缺少 id", key)
     }
@@ -532,10 +534,11 @@ writer.Write(record2)
 writer.WriteAll(records)
 stats := writer.Stats() // LinesProcessed, BytesWritten
 
-// NDJSON 文件处理器
-ndjson := json.NewNDJSONProcessor(json.DefaultConfig())
-err = ndjson.ProcessFile("data.ndjson", func(lineNum int, obj map[string]any) error {
-    fmt.Printf("第 %d 行: %v\n", lineNum, obj["id"])
+// NDJSON 文件处理（StreamJSONLFile —— NDJSONProcessor 已废弃）
+proc, _ := json.New(json.DefaultConfig())
+defer proc.Close()
+err = proc.StreamJSONLFile("data.ndjson", func(lineNum int, item *json.IterableValue) error {
+    fmt.Printf("第 %d 行: %v\n", lineNum, item.Get("id")) // item.GetData() 取整个 map
     return nil
 })
 
@@ -852,28 +855,31 @@ if errors.As(err, &jsonErr) {
 
 | 文件 | 描述 |
 |------|------|
-| [1_basic_usage.go](examples/1_basic_usage.go) | 核心操作 |
-| [2_advanced_features.go](examples/2_advanced_features.go) | 复杂路径、嵌套提取 |
-| [3_production_ready.go](examples/3_production_ready.go) | 线程安全模式 |
-| [4_error_handling.go](examples/4_error_handling.go) | 错误处理模式 |
-| [5_encoding_options.go](examples/5_encoding_options.go) | 编码配置 |
-| [6_validation.go](examples/6_validation.go) | Schema 验证 |
-| [7_type_conversion.go](examples/7_type_conversion.go) | 类型转换 |
-| [8_helper_functions.go](examples/8_helper_functions.go) | 辅助工具 |
-| [9_iterator_functions.go](examples/9_iterator_functions.go) | 迭代模式 |
-| [10_file_operations.go](examples/10_file_operations.go) | 文件 I/O |
-| [11_with_defaults.go](examples/11_with_defaults.go) | 默认值处理 |
-| [12_advanced_delete.go](examples/12_advanced_delete.go) | 删除操作 |
-| [13_batch_operations.go](examples/13_batch_operations.go) | 批量处理与缓存 |
-| [14_streaming_iterators.go](examples/14_streaming_iterators.go) | 流式迭代器 |
-| [15_jsonl_processing.go](examples/15_jsonl_processing.go) | JSONL 格式处理 |
-| [16_hooks_and_security.go](examples/16_hooks_and_security.go) | 钩子与安全模式 |
-| [17_advanced_patterns.go](examples/17_advanced_patterns.go) | PreParse、CompiledPath、高级模式 |
+| [1_basic_usage](examples/1_basic_usage/main.go) | 核心操作 |
+| [2_advanced_features](examples/2_advanced_features/main.go) | 复杂路径、嵌套提取 |
+| [3_production_ready](examples/3_production_ready/main.go) | 线程安全模式 |
+| [4_error_handling](examples/4_error_handling/main.go) | 错误处理模式 |
+| [5_encoding_options](examples/5_encoding_options/main.go) | 编码配置 |
+| [6_validation](examples/6_validation/main.go) | Schema 验证 |
+| [7_type_conversion](examples/7_type_conversion/main.go) | 类型转换 |
+| [8_helper_functions](examples/8_helper_functions/main.go) | 辅助工具 |
+| [9_iterator_functions](examples/9_iterator_functions/main.go) | 迭代模式 |
+| [10_file_operations](examples/10_file_operations/main.go) | 文件 I/O |
+| [11_with_defaults](examples/11_with_defaults/main.go) | 默认值处理 |
+| [12_advanced_delete](examples/12_advanced_delete/main.go) | 删除操作 |
+| [13_batch_operations](examples/13_batch_operations/main.go) | 批量处理与缓存 |
+| [14_streaming_iterators](examples/14_streaming_iterators/main.go) | 流式迭代器 |
+| [15_jsonl_processing](examples/15_jsonl_processing/main.go) | JSONL 格式处理 |
+| [16_hooks_and_security](examples/16_hooks_and_security/main.go) | 钩子与安全模式 |
+| [17_advanced_patterns](examples/17_advanced_patterns/main.go) | PreParse、CompiledPath、高级模式 |
 
 ```bash
 # 运行单个示例（需要 build tag）
-go run -tags=example examples/1_basic_usage.go
-go run -tags=example examples/2_advanced_features.go
+go run -tags=example ./examples/1_basic_usage
+go run -tags=example ./examples/2_advanced_features
+
+# 一次性编译检查全部示例（与 CI 门禁一致）
+go vet -tags example ./examples/...
 ```
 
 ---

@@ -49,23 +49,24 @@ func releaseIterableValues(items []*IterableValue) {
 }
 
 // IterableValue wraps a value to provide convenient access methods during iteration.
-// Used by Foreach and ForeachKey callback functions to provide structured access.
+// Used by the Foreach* family of callback functions to provide structured access.
 // Note: Simplified to avoid resource leaks from holding processor/iterator references.
 //
 // Example:
 //
-//	err := processor.Foreach(data, "items", func(item json.IterableValue) error {
-//	    name, _ := item.GetString("name")
-//	    age, _ := item.GetInt("age")
+//	err := processor.ForeachWithError(data, "items", func(key any, item *json.IterableValue) error {
+//	    name := item.GetString("name")
+//	    age := item.GetInt("age")
 //	    fmt.Printf("Name: %s, Age: %d\n", name, age)
 //	    return nil
 //	})
 type IterableValue struct {
 	data any
-	// released guards against a double Put: iteration code pools every value
-	// as soon as the callback returns, so a callback additionally calling the
-	// exported Release() would insert the same pointer twice and hand it to
-	// two goroutines later.
+	// released guards against a double Put: the APIs that DO pool values
+	// (iterator.go's Foreach family after each callback; the chunked JSONL
+	// APIs after each batch) would otherwise insert the same pointer twice
+	// on a callback additionally calling the exported Release(). The serial
+	// JSONL APIs (StreamJSONL family) do NOT pool — see Release's doc."
 	released bool
 }
 
@@ -312,7 +313,7 @@ func (iv *IterableValue) IsEmpty(key string) bool {
 
 // ForeachNested iterates over nested JSON structures with a path
 func (iv *IterableValue) ForeachNested(path string, fn func(key any, item *IterableValue)) {
-	var data any = iv.data
+	var data = iv.data
 
 	if path != "" && path != "." {
 		var err error
@@ -325,9 +326,17 @@ func (iv *IterableValue) ForeachNested(path string, fn func(key any, item *Itera
 	foreachNestedOnValue(data, fn)
 }
 
-// Release returns the IterableValue to the pool. Iteration functions already
-// pool each value after its callback returns, so calling Release from inside
-// a callback is redundant but harmless (guarded against double-put).
+// Release returns the IterableValue to the pool.
+//
+// WHEN this matters: iterator.go's Foreach family pools every value as soon
+// as its callback returns, and the chunked JSONL APIs (StreamJSONLChunked,
+// ForeachFileChunked) pool after each BATCH callback — under those APIs the
+// values handed to callbacks are recycled and must not be retained past the
+// callback. The serial JSONL APIs (StreamJSONL and friends) do NOT pool:
+// their values are caller-owned and safe to retain. Calling Release inside a
+// pooling API's callback is redundant but harmless (guarded against
+// double-put). (D-002 doc correction: the old text claimed ALL iteration
+// functions pool.)
 func (iv *IterableValue) Release() {
 	if iv.released {
 		return

@@ -34,9 +34,6 @@ type ParallelIterator struct {
 //	cfg := json.DefaultConfig()
 //	cfg.MaxConcurrency = 8
 //	iter := json.NewParallelIterator(data, cfg)
-//
-//	// Legacy pattern (backward compatible)
-//	iter := json.NewParallelIteratorWithWorkers(data, 8)
 func NewParallelIterator(data []any, cfg ...Config) *ParallelIterator {
 	var config Config
 	if len(cfg) > 0 {
@@ -80,7 +77,7 @@ func (it *ParallelIterator) ForEach(fn func(int, any) error) error {
 //   - workers stop early once any error is recorded (hasError gate)
 //   - ctx cancellation returns ctx.Err(); iterator Close returns nil
 //   - a callback panic is converted to an error instead of crashing
-func forEachParallel[T any](it *ParallelIterator, ctx context.Context, items []T, fn func(idx int, val T) error, panicLabel string) error {
+func forEachParallel[T any](ctx context.Context, it *ParallelIterator, items []T, fn func(idx int, val T) error, panicLabel string) error {
 	errCh := make(chan error, 1)
 	var wg sync.WaitGroup
 	var hasError int32
@@ -168,7 +165,7 @@ func forEachParallel[T any](it *ParallelIterator, ctx context.Context, items []T
 // Returns the first error encountered, or ctx.Err() if context is cancelled
 // RESOURCE FIX: Added context support for graceful goroutine termination
 func (it *ParallelIterator) ForEachWithContext(ctx context.Context, fn func(int, any) error) error {
-	return forEachParallel(it, ctx, it.data, fn, "parallel iterator worker")
+	return forEachParallel(ctx, it, it.data, fn, "parallel iterator worker")
 }
 
 // ForEachBatch processes elements in batches in parallel
@@ -204,7 +201,7 @@ func (it *ParallelIterator) ForEachBatchWithContext(ctx context.Context, batchSi
 		batches = append(batches, it.data[i:end])
 	}
 
-	return forEachParallel(it, ctx, batches, fn, "parallel iterator batch worker")
+	return forEachParallel(ctx, it, batches, fn, "parallel iterator batch worker")
 }
 
 // Map applies a transformation function to each element in parallel
