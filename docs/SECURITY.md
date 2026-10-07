@@ -1261,6 +1261,8 @@ The library implements a multi-layered security validation system:
 
 The library detects **28 dangerous patterns** across multiple categories, plus supports custom patterns via `RegisterDangerousPattern`.
 
+> **Content-filter limitations:** pattern detection scans the raw JSON text — it is *content* filtering layered on top of syntax validation, not a WAF. It can **reject legitimate payloads** (API responses embedding HTML fragments, code samples, or event-handler documentation), and a denylist can never be exhaustive. Every occurrence of every pattern is context-checked (word-boundary rules; the GEN-001 P0-3 fix closed a first-occurrence shielding bypass). To carry such content: `SkipValidation: true` for stdlib-exact behavior, or `DisableDefaultPatterns: true` to keep size/depth/UTF-8 limits while dropping content patterns (the prototype-pollution `criticalPatterns` remain enforced).
+
 > **Pattern levels:** `PatternLevel` is currently metadata only and does not affect scanning behavior: any registered pattern (custom or global) blocks unconditionally on a match, regardless of level (including Info and Warning). `PatternLevelWarning` and `PatternLevelInfo` are reserved for future tiered enforcement. The 28 built-in patterns carry no level assignment; their behavior is equivalent to `PatternLevelCritical`. Separately, the three prototype-pollution patterns below are members of the `criticalPatterns` set, which means they are **fully scanned regardless of JSON size** even when sampling mode is active.
 
 #### Prototype Pollution Patterns (Critical — always fully scanned)

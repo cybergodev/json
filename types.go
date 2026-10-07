@@ -143,23 +143,34 @@ type Config struct {
 	DetectDuplicateKeys bool `json:"detect_duplicate_keys"`
 
 	// ===== Encoding Options =====
-	Pretty          bool            `json:"pretty"`
-	Indent          string          `json:"indent"`
-	Prefix          string          `json:"prefix"`
-	EscapeHTML      bool            `json:"escape_html"`
-	SortKeys        bool            `json:"sort_keys"`
-	ValidateUTF8    bool            `json:"validate_utf8"`
-	MaxDepth        int             `json:"max_depth"`
-	DisallowUnknown bool            `json:"disallow_unknown"`
-	FloatPrecision  int             `json:"float_precision"`
-	FloatTruncate   bool            `json:"float_truncate"`
-	DisableEscaping bool            `json:"disable_escaping"`
-	EscapeUnicode   bool            `json:"escape_unicode"`
-	EscapeSlash     bool            `json:"escape_slash"`
-	EscapeNewlines  bool            `json:"escape_newlines"`
-	EscapeTabs      bool            `json:"escape_tabs"`
-	IncludeNulls    bool            `json:"include_nulls"`
-	CustomEscapes   map[rune]string `json:"custom_escapes,omitempty"`
+	Pretty          bool   `json:"pretty"`
+	Indent          string `json:"indent"`
+	Prefix          string `json:"prefix"`
+	EscapeHTML      bool   `json:"escape_html"`
+	SortKeys        bool   `json:"sort_keys"`
+	ValidateUTF8    bool   `json:"validate_utf8"`
+	MaxDepth        int    `json:"max_depth"`
+	DisallowUnknown bool   `json:"disallow_unknown"`
+	FloatPrecision  int    `json:"float_precision"`
+	FloatTruncate   bool   `json:"float_truncate"`
+	DisableEscaping bool   `json:"disable_escaping"`
+	EscapeUnicode   bool   `json:"escape_unicode"`
+	EscapeSlash     bool   `json:"escape_slash"`
+	// EscapeNewlines, when false, keeps literal newline bytes inside string
+	// values instead of the short backslash-n escape. CAUTION (GEN-001 review):
+	// a raw
+	// control character makes the output NON-STANDARD JSON — RFC 8259 §7
+	// requires U+0000–U+001F to be escaped, and strict parsers will reject
+	// the result. Only for lenient/non-JSON consumers; this is a deliberate,
+	// test-pinned divergence (unlike DisableEscaping, which always escapes
+	// control characters).
+	EscapeNewlines bool `json:"escape_newlines"`
+	// EscapeTabs, when false, keeps literal tab bytes inside string values —
+	// same RFC 8259 §7 caution as EscapeNewlines: the output is non-standard
+	// and will not re-parse under strict parsers. Deliberate, test-pinned.
+	EscapeTabs    bool            `json:"escape_tabs"`
+	IncludeNulls  bool            `json:"include_nulls"`
+	CustomEscapes map[rune]string `json:"custom_escapes,omitempty"`
 
 	// ===== Observability =====
 	EnableMetrics bool `json:"enable_metrics"`
@@ -666,6 +677,14 @@ type Schema struct {
 	Format string `json:"format,omitempty"`
 
 	// AdditionalProperties controls whether extra properties are allowed (for objects).
+	//
+	// CAUTION (GEN-001 P1): the zero value REJECTS additional properties — the
+	// inverse of JSON Schema's default (additionalProperties defaults to true
+	// there). A hand-written schema literal like &Schema{Type: "object"}
+	// therefore rejects every property; use DefaultSchema() or NewSchema()
+	// (which set this to true) for standard JSON Schema semantics, or set the
+	// field explicitly. Changing the zero-value semantics requires a *bool
+	// field — proposed for v2.
 	AdditionalProperties bool `json:"additionalProperties,omitempty"`
 
 	// MinItems is the minimum number of items (for arrays).

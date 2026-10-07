@@ -95,6 +95,16 @@ func (p *Processor) createCacheKeyWithHash(operation string, jsonHash uint64, pa
 // getCachedResult/setCachedResult calls on the zero key are no-ops: their
 // EnableCache guards short-circuit before touching the cache.
 func (p *Processor) validateAndCacheKey(op, jsonStr string, options *Config) (internal.CacheKey, error) {
+	// GEN-001 P1: honor SkipValidation (essential DoS checks only). This is
+	// Get's validation funnel and previously ignored the flag entirely — even
+	// a per-call Config{SkipValidation: true} could not opt a Get out of
+	// content-pattern scanning, unlike Set/Delete/Parse. Under skip the zero
+	// CacheKey is returned: the result cache is bypassed, mirroring the
+	// validation-skipping intent (the FNV hash for a real key would re-scan
+	// the document anyway).
+	if p.effectiveSkipValidation(options) {
+		return internal.CacheKey{}, p.validateInputEssential(jsonStr)
+	}
 	if !p.config.EnableCache {
 		return internal.CacheKey{}, p.validateInputForOptions(jsonStr, options)
 	}
@@ -127,7 +137,7 @@ func (p *Processor) getCachedPathSegments(path string) ([]internal.PathSegment, 
 
 // getCachedResult retrieves a cached result if available
 func (p *Processor) getCachedResult(key internal.CacheKey) (any, bool) {
-	if !p.config.EnableCache {
+	if !p.config.EnableCache || key == (internal.CacheKey{}) {
 		return nil, false
 	}
 	return p.cache.Get(key)
@@ -142,7 +152,8 @@ func (p *Processor) getCachedResult(key internal.CacheKey) (any, bool) {
 // composed string key) is gone — struct keys are built from internal op tags
 // and the already-validated document hash, so there is no string to inject.
 func (p *Processor) setCachedResult(key internal.CacheKey, result any, options *Config) {
-	if !p.config.EnableCache {
+	// GEN-001 P1 review: zero key stays inert (see setCachedResultInternal).
+	if !p.config.EnableCache || key == (internal.CacheKey{}) {
 		return
 	}
 
@@ -170,7 +181,11 @@ func (p *Processor) setCachedResult(key internal.CacheKey, result any, options *
 // PERFORMANCE: For trusted internal results (parsed JSON, navigation results) where
 // security validation already happened at input. Skips expensive sensitive data scanning.
 func (p *Processor) setCachedResultInternal(key internal.CacheKey, result any) {
-	if !p.config.EnableCache {
+	// GEN-001 P1 review: the zero CacheKey must stay inert here. Under
+	// SkipValidation validateAndCacheKey returns the zero key while
+	// EnableCache may still be true — caching under it would collide every
+	// skip-mode document onto one entry and serve wrong results.
+	if !p.config.EnableCache || key == (internal.CacheKey{}) {
 		return
 	}
 
@@ -180,7 +195,7 @@ func (p *Processor) setCachedResultInternal(key internal.CacheKey, result any) {
 // invalidateCachedResult removes a cache entry by key.
 // Used when a cached value has a type mismatch (corrupted entry).
 func (p *Processor) invalidateCachedResult(key internal.CacheKey) {
-	if !p.config.EnableCache {
+	if !p.config.EnableCache || key == (internal.CacheKey{}) {
 		return
 	}
 	p.cache.Delete(key)

@@ -177,11 +177,13 @@ func init() {
 // the inline second-byte check, and IsMatchPatternIgnoreCase together accept
 // exactly the positions a case-insensitive substring search would report,
 // and ascending iteration keeps the smallest one. The ordered reporting loop
-// in scanWindowForPatterns then fires on those positions — same pattern
-// order, same word-context checks — so the error is byte-for-byte identical
-// to the previous prefilter + per-pattern rescan shape while scanning the
-// window once instead of once per pattern (P-003; profiling attributed ~41%
-// of cold-validation CPU to those rescans).
+// in scanWindowForPatterns then fires from those positions — same pattern
+// order, same word-context checks — while scanning the window once instead of
+// once per pattern (P-003; profiling attributed ~41% of cold-validation CPU
+// to those rescans). GEN-001 P0-3: the reporting loop now context-checks
+// every occurrence from the recorded first one (indexInDangerousContext), so
+// the error differs from the pre-P-003 shape in exactly one case — a benign
+// word-internal first occurrence no longer shields a later standalone one.
 //
 // P-001: common letters ('e', 'o', 's', ...) head several patterns each, so
 // most candidates die inside IsMatchPatternIgnoreCase on the second byte.
@@ -1035,8 +1037,12 @@ func (sv *securityValidator) validateJSONSecurityFull(jsonStr string) error {
 // by ensuring every byte is scanned, while still optimizing for performance by using
 // a sliding window with overlap equal to the longest pattern length.
 //
-// SECURITY RECOMMENDATION: Use FullSecurityScan=true for maximum performance when
-// processing trusted internal data. The optimized mode now provides full coverage.
+// SECURITY NOTE (GEN-001 P1, corrected): the DEFAULT (FullSecurityScan=false)
+// already guarantees 100% coverage via the rolling window and is typically
+// FASTER on clean input — the indicator checks can skip scanning entirely.
+// FullSecurityScan=true selects the simpler single-pass scan of every byte:
+// deterministic, but usually slower. For trusted internal data prefer
+// SkipValidation (which still enforces size/depth limits), not this flag.
 func (sv *securityValidator) validateJSONSecurityOptimized(jsonStr string) error {
 	// If full security scan is enabled, use the simpler full scan approach
 	if sv.fullSecurityScan {
@@ -1165,10 +1171,12 @@ func (sv *securityValidator) scanWithRollingWindow(jsonStr string) error {
 // Critical patterns (__proto__, constructor, prototype) are always enforced.
 func (sv *securityValidator) scanWindowForPatterns(window string) error {
 	if sv.disableDefaultPatterns {
-		// Only scan critical patterns when defaults are disabled
+		// Only scan critical patterns when defaults are disabled.
+		// GEN-001 P0-3: all occurrences context-checked (see the reporting
+		// loop below) — a benign first hit must not shield a later one.
 		for _, cp := range criticalPatterns {
 			if idx := fastIndexIgnoreCase(window, cp.pattern); idx != -1 {
-				if sv.isDangerousContextIgnoreCase(window, idx, len(cp.pattern)) {
+				if sv.indexInDangerousContext(window, cp.pattern, idx) >= 0 {
 					return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", cp.name))
 				}
 			}
@@ -1178,11 +1186,18 @@ func (sv *securityValidator) scanWindowForPatterns(window string) error {
 
 	// Single-pass scan (P-003): record each pattern's FIRST case-insensitive
 	// occurrence in one pass over the window (scanWindowPatterns), then run
-	// the ordered reporting loop over the recorded positions. Behaviorally
-	// identical to the previous prefilter + per-pattern fastIndexIgnoreCase
-	// rescan — same first-occurrence-per-pattern semantics, same pattern
+	// the ordered reporting loop over the recorded positions — same pattern
 	// order, same context checks — but the window is scanned once instead of
 	// once per pattern (~29 rescans whenever the old prefilter hit).
+	//
+	// GEN-001 P0-3: the context check now covers EVERY occurrence of the
+	// pattern, not only the recorded first one. Previously a benign
+	// word-internal first occurrence (the "onerror" inside "myonerrorx")
+	// shielded a later standalone occurrence in the same window — a trivially
+	// exploitable detection bypass pinned by an old test. indexInDangerousContext
+	// starts at the recorded first position and walks the remaining
+	// occurrences; the extra pass is paid only for patterns whose first hit
+	// was context-declined, so clean windows keep the single-pass fast path.
 	first := make([]int32, len(dangerousPatterns))
 	for i := range first {
 		first[i] = -1
@@ -1193,7 +1208,7 @@ func (sv *securityValidator) scanWindowForPatterns(window string) error {
 		if idx < 0 {
 			continue
 		}
-		if sv.isDangerousContextIgnoreCase(window, idx, len(dp.pattern)) {
+		if sv.indexInDangerousContext(window, dp.pattern, idx) >= 0 {
 			return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
 		}
 	}
@@ -1219,10 +1234,12 @@ func (sv *securityValidator) scanCustomPatterns(window string) error {
 
 // scanPatternSlice scans a window for the given patterns using the same
 // case-insensitive context check as the built-in pattern scan.
+// GEN-001 P0-3: all occurrences context-checked — a benign word-internal
+// first hit must not shield a later standalone one.
 func (sv *securityValidator) scanPatternSlice(window string, patterns []dangerousPattern) error {
 	for _, dp := range patterns {
 		if idx := fastIndexIgnoreCase(window, dp.pattern); idx != -1 {
-			if sv.isDangerousContextIgnoreCase(window, idx, len(dp.pattern)) {
+			if sv.indexInDangerousContext(window, dp.pattern, idx) >= 0 {
 				return newSecurityError("validate_json_security", fmt.Sprintf("dangerous pattern: %s", dp.name))
 			}
 		}
@@ -1369,6 +1386,27 @@ func (sv *securityValidator) isDangerousContextIgnoreCase(s string, idx, pattern
 	after := endsWithDelimiter || idx+patternLen >= len(s) || !internal.IsWordChar(s[idx+patternLen])
 
 	return before && after
+}
+
+// indexInDangerousContext returns the index of the first occurrence of
+// pattern in s at or after `from` that sits in a dangerous context, or -1.
+//
+// GEN-001 P0-3: the pattern gates used to context-check only each pattern's
+// FIRST occurrence, so a benign word-internal first occurrence (the "onerror"
+// inside "myonerrorx") shielded every later standalone occurrence in the same
+// window — a trivially exploitable detection bypass. This helper walks the
+// occurrences from `from` until one is context-dangerous (or none is). It is
+// only reached for patterns that already occurred, so the extra pass costs
+// one window sweep per benignly-occurring pattern, not per pattern.
+func (sv *securityValidator) indexInDangerousContext(s, pattern string, from int) int {
+	n := len(pattern)
+	for i := from; i+n <= len(s); i++ {
+		if internal.IsMatchPatternIgnoreCase(s[i:i+n], pattern) &&
+			sv.isDangerousContextIgnoreCase(s, i, n) {
+			return i
+		}
+	}
+	return -1
 }
 
 // validatePathSecurity validates JSON paths for security issues.

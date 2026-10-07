@@ -247,8 +247,8 @@ func TestContainsUnicodeLookalike_Table(t *testing.T) {
 		{"fullwidth backslash", "dir＼file", true},
 		{"fraction slash", "dir⁄file", true},
 		{"BOM", "file" + string(rune(0xFEFF)) + ".txt", true},
-		{"zero width space", "file​.txt", true},
-		{"soft hyphen", "file­.txt", true},
+		{"zero width space", "file\u200b.txt", true},
+		{"soft hyphen", "file\u00ad.txt", true},
 		{"ideographic space", "file　.txt", true},
 	}
 	for _, tt := range tests {
@@ -1313,11 +1313,12 @@ func TestPathEdgeCases_Boundary(t *testing.T) {
 	})
 
 	t.Run("large array index", func(t *testing.T) {
-		// An out-of-bounds index is a missing value, not a malformed query: it
-		// returns nil with no error.
+		// GEN-001 P0-4: an out-of-bounds index is a missing path — it returns
+		// ErrPathNotFound (the errors.go contract; the compiled fast path
+		// already behaved this way) instead of a silent nil.
 		val, err := Get(`{"arr":[1,2,3]}`, "arr[999999]")
-		if err != nil {
-			t.Fatalf("unexpected error for out-of-bounds index: %v", err)
+		if !errors.Is(err, ErrPathNotFound) {
+			t.Fatalf("out-of-bounds index: err = %v, want ErrPathNotFound", err)
 		}
 		if val != nil {
 			t.Errorf("out-of-bounds array index should return nil, got %v", val)

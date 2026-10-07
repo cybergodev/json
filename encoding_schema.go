@@ -58,7 +58,12 @@ func (p *Processor) ValidateSchema(jsonStr string, schema *Schema, cfg ...Config
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(jsonStr, options); err != nil {
+	// GEN-001 P1 review: honor SkipValidation like the other input funnels.
+	if p.effectiveSkipValidation(options) {
+		if err := p.validateInputEssential(jsonStr); err != nil {
+			return nil, err
+		}
+	} else if err := p.validateInputForOptions(jsonStr, options); err != nil {
 		return nil, err
 	}
 

@@ -251,15 +251,22 @@ func (h *HookFunc) After(ctx HookContext, result any, err error) (any, error) {
 func LoggingHook(logger interface{ Info(msg string, args ...any) }) Hook {
 	return &HookFunc{
 		BeforeFn: func(ctx HookContext) error {
-			logger.Info("operation starting", "op", ctx.Operation, "path", ctx.Path)
+			// GEN-001 P1: sanitize exactly like the library's own logging
+			// (logOperation/logError) — the raw path may carry credentials
+			// (.users[0].auth.token) and must not reach logs verbatim.
+			logger.Info("operation starting", "op", ctx.Operation, "path", sanitizePath(ctx.Path))
 			return nil
 		},
 		AfterFn: func(ctx HookContext, result any, err error) (any, error) {
+			errStr := ""
+			if err != nil {
+				errStr = sanitizeError(err) // GEN-001 P1: same redaction as logError
+			}
 			logger.Info("operation completed",
 				"op", ctx.Operation,
-				"path", ctx.Path,
+				"path", sanitizePath(ctx.Path),
 				"duration", time.Since(ctx.StartTime),
-				"error", err)
+				"error", errStr)
 			return result, err
 		},
 	}

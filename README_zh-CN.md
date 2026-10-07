@@ -6,7 +6,7 @@
 [![Thread Safe](https://img.shields.io/badge/Thread_Safe-Yes-brightgreen.svg)](#)
 [![Security](https://img.shields.io/badge/Security-Hardened-red.svg)](docs/SECURITY.md)
 
-> 一个高性能、线程安全的 Go JSON 处理库，100% 兼容 `encoding/json`。
+> 一个高性能、线程安全的 Go JSON 处理库——`encoding/json` 签名直接替换，默认开启安全加固（见[兼容性说明](docs/COMPATIBILITY.md#security-hardening-differences-d-002)）。
 > 强大的路径语法、类型安全、流式处理、生产级性能。
 
 **[English Documentation](README.md)** | **[www.cybergo.dev/json](https://www.cybergo.dev/json)**
@@ -48,13 +48,13 @@
 | 内存池 | - | 热路径使用 `sync.Pool` |
 | 路径缓存 | - | 智能 TTL 路径缓存 |
 | 批量操作 | - | `ProcessBatch()` 批量处理 |
-| 100% 兼容性 | 原生 | 直接替换（签名扩展了可选配置参数） |
+| 直接替换兼容 | 原生 | 相同签名（可选配置扩展）；[默认安全加固](docs/COMPATIBILITY.md) |
 
 ---
 
 ## 特性
 
-- **100% 兼容** - 直接替换 `encoding/json`，所有标准函数签名支持，并可选扩展配置参数
+- **直接替换兼容** - 所有 `encoding/json` 函数签名支持，可选配置扩展；[默认安全校验](docs/COMPATIBILITY.md#security-hardening-differences-d-002) 会拒绝 `encoding/json` 接受的部分文档（超大、超深、非法 UTF-8、含危险内容模式）
 - **强大路径** - 点号语法、数组切片、字段提取、JSON Pointer (RFC 6901)
 - **高性能** - 智能缓存、内存池、优化的热路径
 - **类型安全** - 泛型支持 `GetTyped[T]`、内置默认值、`AccessResult` 类型转换
@@ -113,7 +113,7 @@ func main() {
     newAge := json.GetInt(updated, "user.age")
     fmt.Println(newAge) // 29
 
-    // 100% encoding/json 兼容
+    // encoding/json 兼容签名
     bytes, _ := json.Marshal(map[string]any{"status": "ok"})
     fmt.Println(string(bytes)) // {"status":"ok"}
 }
@@ -232,7 +232,7 @@ result, err = json.SetMultipleCreate(data, map[string]any{
 ### 编码与格式化
 
 ```go
-// 标准编码（100%兼容）
+// 标准编码（典型值输出字节兼容）
 bytes, _ := json.Marshal(data)
 json.Unmarshal(bytes, &target)
 bytes, _ := json.MarshalIndent(data, "", "  ")
@@ -789,6 +789,8 @@ import "github.com/cybergodev/json"
 兼容类型：`Encoder`、`Decoder`、`Number`、`Token`、`Delim`、`SyntaxError`、`UnmarshalTypeError`、`InvalidUnmarshalError`、`UnsupportedTypeError`、`UnsupportedValueError`、`MarshalerError`。
 
 **注意**：`RawMessage` 目前未重新导出。如需使用，请直接使用 `encoding/json.RawMessage`。
+
+**默认安全加固——一处真实行为差异**：与 `encoding/json` 不同，默认配置会对输入做校验。`Unmarshal` 会拒绝超过 `MaxJSONSize` / 嵌套深度限制、包含非法 UTF-8 或携带内置危险内容模式（`<script`、`javascript:`、`onerror`、`eval(` 等）的文档；`Valid` 对它们返回 `false`。若你的数据合法地包含此类内容（HTML 片段、代码示例），请设置 `SkipValidation: true`（与标准库行为完全一致）或 `DisableDefaultPatterns: true`（保留大小/深度限制，仅关闭内容模式）。
 
 详见 [兼容性指南](docs/COMPATIBILITY.md)。
 

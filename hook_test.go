@@ -301,18 +301,48 @@ func TestLoggingHook(t *testing.T) {
 		if entry.msg != "operation completed" {
 			t.Errorf("expected msg 'operation completed', got %q", entry.msg)
 		}
-		// The error should appear in the variadic args.
-		// LoggingHook passes "error", err as args.
+		// GEN-001 P1: the error is logged SANITIZED (as a string, like the
+		// library's own logError redaction), not as the raw error value.
 		found := false
 		for i := 0; i < len(entry.args)-1; i++ {
-			if entry.args[i] == "error" && entry.args[i+1] == testErr {
+			if entry.args[i] == "error" && entry.args[i+1] == testErr.Error() {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Error("expected 'error' key with the test error in log args")
+			t.Errorf("expected 'error' key with sanitized error %q in log args", testErr.Error())
 		}
+	})
+
+	t.Run("SensitivePathRedacted", func(t *testing.T) {
+		// GEN-001 P1: LoggingHook must sanitize the path exactly like the
+		// library's own logging — a path through a credential field must not
+		// reach logs verbatim.
+		logger := &mockLogger{}
+		hook := LoggingHook(logger)
+
+		ctx := HookContext{
+			Operation: "get",
+			Path:      "users[0].auth.token",
+			StartTime: time.Now(),
+		}
+		if err := hook.Before(ctx); err != nil {
+			t.Fatalf("Before: %v", err)
+		}
+		entry, ok := logger.last()
+		if !ok {
+			t.Fatal("expected a log entry")
+		}
+		for i := 0; i < len(entry.args)-1; i++ {
+			if entry.args[i] == "path" {
+				if entry.args[i+1] != "[REDACTED_PATH]" {
+					t.Errorf("path arg = %v, want [REDACTED_PATH]", entry.args[i+1])
+				}
+				return
+			}
+		}
+		t.Error("expected a 'path' key in log args")
 	})
 }
 

@@ -376,6 +376,18 @@ func (p *Processor) prepareOperation(jsonStr, path string, cfg ...Config) (*Conf
 	return options, jsonHash, nil
 }
 
+// effectiveSkipValidation reports whether validation should be skipped for an
+// operation running under options: either the per-call cfg asked for it, or
+// no cfg was supplied and the processor's own baked configuration did.
+//
+// GEN-001 P1: New(Config{SkipValidation: true}) was previously dead — every
+// no-cfg call resolved options to the default singleton (SkipValidation=false),
+// so the processor-level setting was never consulted anywhere.
+func (p *Processor) effectiveSkipValidation(options *Config) bool {
+	return options.SkipValidation ||
+		(options == &defaultConfigSingleton && p.config.SkipValidation)
+}
+
 // validateOperationInputHashed validates JSON input and path for an operation.
 // Handles the SkipValidation flag: when true, only essential size/depth checks
 // run. It reuses a caller-held document hash (P-001): callers that already
@@ -384,7 +396,7 @@ func (p *Processor) prepareOperation(jsonStr, path string, cfg ...Config) (*Conf
 // whether jsonHash was computed — with false the validation paths hash
 // internally.
 func (p *Processor) validateOperationInputHashed(jsonStr, path string, options *Config, jsonHash uint64, hasHash bool) error {
-	if !options.SkipValidation {
+	if !p.effectiveSkipValidation(options) {
 		var err error
 		if hasHash {
 			err = p.validateInputForOptionsHashed(jsonStr, options, jsonHash)

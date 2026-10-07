@@ -10,6 +10,17 @@ import (
 
 // iterableValuePool pools IterableValue objects to reduce allocations
 // PERFORMANCE: Significant reduction in allocations during nested iteration
+//
+// GEN-001 P0-1 single-putter invariant: exactly one goroutine — the iteration
+// loop that took a value from the pool — ever Puts it back, and only after
+// its callback returned. The public Release() merely clears the data
+// reference and never touches the pool. This invariant closes the pool
+// corruption the previous design allowed (Release and putIterableValue both
+// Put, potentially from different goroutines: after a re-Get reset the
+// released flag, a late Put that should have lost its guard instead won it
+// and recycled an object another goroutine was actively using). Values handed
+// to a callback must not be retained past the callback — pooling APIs
+// recycle them immediately after it returns.
 var iterableValuePool = sync.Pool{
 	New: func() any {
 		return &IterableValue{}
@@ -17,8 +28,8 @@ var iterableValuePool = sync.Pool{
 }
 
 // getIterableValue takes an IterableValue from the pool with data set.
-// All pooling call sites go through this helper and putIterableValue so the
-// released guard is applied uniformly.
+// Must be called on the goroutine that will later putIterableValue the value
+// (the single-putter invariant above).
 func getIterableValue(data any) *IterableValue {
 	iv := iterableValuePool.Get().(*IterableValue)
 	iv.data = data
@@ -26,16 +37,15 @@ func getIterableValue(data any) *IterableValue {
 	return iv
 }
 
-// putIterableValue returns an IterableValue to the pool unless the callback
-// already released it through the public Release API (double Put would hand
-// one pointer to two goroutines). Marking released on the way in also makes a
-// stray Release() on a pooled (not yet re-Get) object a no-op.
+// putIterableValue returns an IterableValue to the pool. The released guard
+// makes it idempotent — a structural double-put at a call site inserts the
+// pointer only once. Only the owning iteration loop calls this.
 func putIterableValue(iv *IterableValue) {
 	if iv.released {
 		return
 	}
-	iv.data = nil
 	iv.released = true
+	iv.data = nil
 	iterableValuePool.Put(iv)
 }
 
@@ -62,11 +72,11 @@ func releaseIterableValues(items []*IterableValue) {
 //	})
 type IterableValue struct {
 	data any
-	// released guards against a double Put: the APIs that DO pool values
-	// (iterator.go's Foreach family after each callback; the chunked JSONL
-	// APIs after each batch) would otherwise insert the same pointer twice
-	// on a callback additionally calling the exported Release(). The serial
-	// JSONL APIs (StreamJSONL family) do NOT pool — see Release's doc."
+	// released is a same-goroutine double-put guard for putIterableValue:
+	// set when the value is returned to the pool, reset when the pool hands
+	// the object out again. GEN-001 P0-1: the public Release does NOT set it
+	// — a Released value still belongs to the owning loop, which recycles it
+	// (with data already cleared) as usual.
 	released bool
 }
 
@@ -326,24 +336,26 @@ func (iv *IterableValue) ForeachNested(path string, fn func(key any, item *Itera
 	foreachNestedOnValue(data, fn)
 }
 
-// Release returns the IterableValue to the pool.
+// Release drops the value's data reference immediately, letting large parsed
+// payloads be garbage-collected before the iteration finishes.
 //
 // WHEN this matters: iterator.go's Foreach family pools every value as soon
 // as its callback returns, and the chunked JSONL APIs (StreamJSONLChunked,
 // ForeachFileChunked) pool after each BATCH callback — under those APIs the
 // values handed to callbacks are recycled and must not be retained past the
 // callback. The serial JSONL APIs (StreamJSONL and friends) do NOT pool:
-// their values are caller-owned and safe to retain. Calling Release inside a
-// pooling API's callback is redundant but harmless (guarded against
-// double-put). (D-002 doc correction: the old text claimed ALL iteration
-// functions pool.)
+// their values are caller-owned and safe to retain. (D-002 doc correction:
+// the old text claimed ALL iteration functions pool.)
+//
+// GEN-001 P0-1: Release is mark-only — it does NOT return the object to the
+// pool. Under concurrent iteration a callback's Put could race another
+// goroutine's Get (resetting the pool guard), turning the owning loop's own
+// later put into a second Put of an object in active use. Instead the owning
+// loop alone recycles the value after the callback returns, with the data
+// already cleared. On the non-pooling serial APIs Release is safe too: it
+// simply clears the caller-owned value's data.
 func (iv *IterableValue) Release() {
-	if iv.released {
-		return
-	}
-	iv.released = true
 	iv.data = nil
-	iterableValuePool.Put(iv)
 }
 
 // navigateToPathSimple provides simple path navigation for IterableValue

@@ -71,6 +71,14 @@ func (p *Processor) effectiveReadMaxSize(cfg ...Config) int64 {
 	}
 	if len(cfg) > 0 && cfg[0].MaxJSONSize > 0 {
 		maxSize = cfg[0].MaxJSONSize
+		// GEN-001 P1: Config.Validate caps MaxJSONSize at DefaultMaxJSONSize
+		// (100MB). The read layer previously trusted the raw per-call value,
+		// so a cfg with MaxJSONSize=1GB read (and buffered) up to 1GB before
+		// the subsequent validation clamped it to 100MB and rejected the file
+		// anyway — a pure memory-amplification window.
+		if maxSize > int64(DefaultMaxJSONSize) {
+			maxSize = int64(DefaultMaxJSONSize)
+		}
 	}
 	return maxSize
 }
@@ -996,9 +1004,17 @@ var criticalUnixDirs = []string{
 
 // validateUnixPath validates Unix-specific path security
 func validateUnixPath(absPath string) error {
-	// Block access to critical system directories using case-insensitive matching
+	// GEN-001 P1: match case-sensitively on case-sensitive filesystems. The
+	// previous unconditional case-insensitive prefix match rejected
+	// legitimate paths on Linux (/Var/log/app/events.json and /ROOT2/… are
+	// ordinary directories there, distinct from /var/log and /root). Windows
+	// and macOS default filesystems are case-insensitive, so the folded match
+	// is kept for them.
+	caseFold := runtime.GOOS == "windows" || runtime.GOOS == "darwin"
 	for _, dir := range criticalUnixDirs {
-		if hasPrefixIgnoreCase(absPath, dir) {
+		blocked := caseFold && hasPrefixIgnoreCase(absPath, dir) ||
+			!caseFold && strings.HasPrefix(absPath, dir)
+		if blocked {
 			return newSecurityError("validate_unix_path", "access to system directory not allowed")
 		}
 	}

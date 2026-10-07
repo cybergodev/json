@@ -1019,11 +1019,21 @@ func (p *Processor) CompareJSON(json1, json2 string, cfg ...Config) (bool, error
 	}
 	defer releaseConfig(options)
 
-	if err := p.validateInputForOptions(json1, options); err != nil {
-		return false, fmt.Errorf("invalid JSON in first argument: %w", err)
-	}
-	if err := p.validateInputForOptions(json2, options); err != nil {
-		return false, fmt.Errorf("invalid JSON in second argument: %w", err)
+	// GEN-001 P1 review: honor SkipValidation like the other input funnels.
+	if p.effectiveSkipValidation(options) {
+		if err := p.validateInputEssential(json1); err != nil {
+			return false, fmt.Errorf("invalid JSON in first argument: %w", err)
+		}
+		if err := p.validateInputEssential(json2); err != nil {
+			return false, fmt.Errorf("invalid JSON in second argument: %w", err)
+		}
+	} else {
+		if err := p.validateInputForOptions(json1, options); err != nil {
+			return false, fmt.Errorf("invalid JSON in first argument: %w", err)
+		}
+		if err := p.validateInputForOptions(json2, options); err != nil {
+			return false, fmt.Errorf("invalid JSON in second argument: %w", err)
+		}
 	}
 
 	// D-002/R9 (m3): marshal via THIS processor, not the package-level default

@@ -2,7 +2,6 @@ package json
 
 import (
 	"context"
-	"encoding/json"
 	stdjson "encoding/json"
 	"errors"
 	"io"
@@ -122,7 +121,7 @@ func TestD002_ExtractThenSliceDelete_HonorsStep(t *testing.T) {
 	}
 }
 
-// M5: convertToUint64 must accept json.Number values in (MaxInt64, MaxUint64].
+// M5: convertToUint64 must accept stdjson.Number values in (MaxInt64, MaxUint64].
 func TestD002_ConvertToUint64_LargeJSONNumber(t *testing.T) {
 	cases := []string{
 		"9223372036854775808",  // MaxInt64 + 1
@@ -139,7 +138,7 @@ func TestD002_ConvertToUint64_LargeJSONNumber(t *testing.T) {
 	}
 	// Negative still rejected.
 	if _, ok := convertToUint64(stdjson.Number("-1")); ok {
-		t.Fatalf("M5: negative json.Number must not convert to uint64")
+		t.Fatalf("M5: negative stdjson.Number must not convert to uint64")
 	}
 }
 
@@ -1246,16 +1245,16 @@ func TestD002Round7_NumberNoCfgRoundTrip(t *testing.T) {
 	}
 
 	// Invalid literals are rejected rather than written verbatim (matching
-	// the encodeJSONNumber guard and stdlib json.Number semantics).
+	// the encodeJSONNumber guard and stdlib stdjson.Number semantics).
 	if _, err := Marshal(Number("1_0")); err == nil {
 		t.Error("Marshal(Number(\"1_0\")): expected error for invalid literal")
 	}
 
-	// Fast-vs-custom asymmetry mirrors the existing stdlib json.Number design:
+	// Fast-vs-custom asymmetry mirrors the existing stdlib stdjson.Number design:
 	// without custom opts the (config-less) fast path honors the literal's
 	// self-description (1e3 stays 1e3, 1.10 stays 1.10); the custom encoder,
 	// which has config context, normalizes when PreserveNumbers=false
-	// (json.Number 1e3→1000, Number 1.10→1.1 — pinned by
+	// (stdjson.Number 1e3→1000, Number 1.10→1.1 — pinned by
 	// TestEncodeJSONNumber_NonPreserve for the stdlib type).
 	if s, err := p.EncodeWithConfig(Number("1.10"), DefaultConfig()); err != nil || s != `1.10` {
 		t.Errorf("fast-path literal = %s, %v; want 1.10", s, err)
@@ -1662,17 +1661,17 @@ func TestA2EncoderEquivalence(t *testing.T) {
 		B string `json:"b"`
 	}
 	type outer struct {
-		Name string          `json:"name"`
-		N    int             `json:"n"`
-		F    float64         `json:"f"`
-		Arr  []int           `json:"arr"`
-		Obj  inner           `json:"obj"`
-		Ptr  *int            `json:"ptr"`
-		Raw  json.RawMessage `json:"raw"`
-		Num  json.Number     `json:"num"`
-		T    time.Time       `json:"t"`
-		Skip string          `json:"-"`
-		Opt  string          `json:"opt,omitempty"`
+		Name string             `json:"name"`
+		N    int                `json:"n"`
+		F    float64            `json:"f"`
+		Arr  []int              `json:"arr"`
+		Obj  inner              `json:"obj"`
+		Ptr  *int               `json:"ptr"`
+		Raw  stdjson.RawMessage `json:"raw"`
+		Num  stdjson.Number     `json:"num"`
+		T    time.Time          `json:"t"`
+		Skip string             `json:"-"`
+		Opt  string             `json:"opt,omitempty"`
 	}
 	seven := 7
 	values := []any{
@@ -1682,11 +1681,11 @@ func TestA2EncoderEquivalence(t *testing.T) {
 		[]int{1, 2, 3}, map[string]any{"a": 1, "b": []any{"x", "y"}},
 		map[string]any{"deep": map[string]any{"deeper": []any{map[string]any{"k": "<v>"}}}},
 		[]byte("binary<h>"),
-		json.RawMessage(`{"raw":[1,2]}`),
-		json.Number("1.2300"),
+		stdjson.RawMessage(`{"raw":[1,2]}`),
+		stdjson.Number("1.2300"),
 		time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC),
 		outer{Name: "n", N: 9, F: 3.5, Arr: []int{1}, Obj: inner{B: "<b>"}, Ptr: &seven,
-			Raw: json.RawMessage(`[3]`), Num: json.Number("1e2"), Skip: "x"},
+			Raw: stdjson.RawMessage(`[3]`), Num: stdjson.Number("1e2"), Skip: "x"},
 		&outer{Name: "ptr"},
 	}
 
@@ -2208,7 +2207,7 @@ func TestD002Round10_NoCfgBakedEncodeLimits(t *testing.T) {
 }
 
 // TestD002Round10_NumberConversions pins the R10 conversion fix: the
-// convertTo* family handles the library's Number like json.Number. Before the
+// convertTo* family handles the library's Number like stdjson.Number. Before the
 // fix, PreserveNumbers JSONL made item.GetInt return 0 for every number.
 func TestD002Round10_NumberConversions(t *testing.T) {
 	if n, ok := convertToInt(Number("42")); !ok || n != 42 {
@@ -2232,10 +2231,10 @@ func TestD002Round10_NumberConversions(t *testing.T) {
 	if s := convertToString(Number("42")); s != "42" {
 		t.Fatalf("R10 convertToString(Number) = %q", s)
 	}
-	// Non-integral Number behaves like non-integral json.Number (Int64
+	// Non-integral Number behaves like non-integral stdjson.Number (Int64
 	// refuses; GetInt falls back to its default).
 	if _, ok := convertToInt(Number("1.5")); ok {
-		t.Fatal("R10 convertToInt(Number(1.5)) = true, want false (mirror json.Number)")
+		t.Fatal("R10 convertToInt(Number(1.5)) = true, want false (mirror stdjson.Number)")
 	}
 
 	// Behavior level: IterableValue getters on a PreserveNumbers JSONL stream.

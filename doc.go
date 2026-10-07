@@ -1,5 +1,7 @@
 // Package json provides a high-performance, thread-safe JSON processing library
-// with 100% encoding/json compatibility and advanced path operations.
+// with drop-in encoding/json signatures and advanced path operations. Unlike
+// encoding/json, input validation (size/depth/UTF-8/content patterns) is on by
+// default — see Default Security Validation below.
 //
 // The package uses an internal package for implementation details:
 //
@@ -12,7 +14,7 @@
 //
 // # Basic Usage
 //
-// Simple operations (100% compatible with encoding/json):
+// Simple operations (encoding/json-compatible signatures):
 //
 //	data, err := json.Marshal(value)
 //	err = json.Unmarshal(data, &target)
@@ -95,9 +97,24 @@
 //     the Processor method always validates. Pass a cfg — or call the method —
 //     to validate untrusted input.
 //
+// # Default Security Validation
+//
+// Unlike encoding/json, the default configuration validates input: documents
+// beyond MaxJSONSize, deeper than the nesting cap, with invalid UTF-8, or
+// carrying built-in dangerous content patterns (<script, javascript:,
+// onerror, eval(, ...) anywhere in their text are rejected — Valid returns
+// false for them. This is deliberate hardening for untrusted input, at the
+// cost of rejecting some payloads encoding/json accepts (e.g. JSON that
+// legitimately embeds HTML fragments or code samples). Use
+// Config.SkipValidation for stdlib-exact behavior, or
+// Config.DisableDefaultPatterns to keep the size/depth/UTF-8 limits while
+// dropping the content patterns (prototype-pollution patterns remain).
+// See docs/COMPATIBILITY.md (D-002) for the full difference list.
+//
 // # Key Features
 //
-//   - 100% encoding/json compatibility - drop-in replacement
+//   - Drop-in encoding/json compatibility - signatures and typical output (see
+//     Default Security Validation for the deliberate differences)
 //   - High-performance path operations with smart caching
 //   - Thread-safe concurrent operations
 //   - Type-safe generic operations with Go generics
